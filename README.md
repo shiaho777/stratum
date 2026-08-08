@@ -1,5 +1,7 @@
 # Stratum
 
+[English](README.md) | [简体中文](README_CN.md)
+
 A pure-C transformer inference engine with the lowest wired-memory footprint of any engine: **weights are a stream, not a resident**. ~7 MB anonymous RAM runs a 27B dense model, because weights are read directly from the OS page cache via `mmap` — wired memory is decoupled from model size.
 
 ## Why it exists
@@ -82,14 +84,14 @@ This project stands on the shoulders of:
 ## Repository layout
 
 ```
-├── README.md          ← this file
+├── README.md          ← this file (English)
+├── README_CN.md       ← 中文版
 ├── AGENTS.md          ← development guide, boundaries, env-var reference
 └── stratum/
     ├── native/        ← the engine (C/Metal, 25k lines), Makefile, gate scripts
     ├── docs/          ← experiment evidence archive (159 runs) + README
     ├── tools/         ← standalone GGUF utilities
-    ├── benchmarks/    ← shell/python benchmark scripts
-    └── HISTORY.md     ← development history & lessons learned
+    └── benchmarks/    ← shell/python benchmark scripts
 ```
 
 ## License
