@@ -14,6 +14,7 @@ gguf-test/*.gguf
 # Compiled binaries
 stratum/native/stratum
 stratum/native/stratum_p*
+!stratum/native/stratum_p35.c
 stratum/native/stratum_v*
 stratum/native/quant_test
 stratum/native/q4k_test

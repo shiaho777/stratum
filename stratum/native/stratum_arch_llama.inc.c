@@ -862,7 +862,14 @@ int run_llama_arch(int argc, char** argv) {
 #ifdef STRATUM_USE_METAL
     if (getenv("STRATUM_GPU")) {
         const char* mlpath = getenv("STRATUM_METALLIB");
-        if (!mlpath) mlpath = "native/stratum_q4k.metallib";
+        if (!mlpath) {
+            if (access("stratum_q4k.metallib", R_OK) == 0)
+                mlpath = "stratum_q4k.metallib";
+            else if (access("native/stratum_q4k.metallib", R_OK) == 0)
+                mlpath = "native/stratum_q4k.metallib";
+            else
+                mlpath = "stratum_q4k.metallib";
+        }
         if (stratum_metal_init(mlpath, g_st.mmap_base, g_st.mmap_size) == 0) {
             g_st.use_metal = 1;
             if (getenv("STRATUM_GPU_BATCH")) {

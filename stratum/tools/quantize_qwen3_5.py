@@ -16,7 +16,7 @@ Output:
   + copied config.json, tokenizer.json, etc.
 
 Usage:
-  python tools/quantize_qwen3_5.py --src ../model --dst ../model-int4
+  python tools/quantize_qwen3_5.py --src <model-dir> --dst <out-dir>
 """
 
 import argparse

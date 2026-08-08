@@ -143,7 +143,8 @@ def mtp_forward(prev_token_id, main_hidden, hdr, body, embed_w, position):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--model', default='../model/model.safetensors-00001-of-00001.safetensors')
+    ap.add_argument('--model', required=True,
+                    help='path to Qwen3.5-VL text safetensors (no default)')
     ap.add_argument('--main-hidden', required=True,
                     help='space-separated 1024 floats representing main g_xn')
     ap.add_argument('--prev-token', type=int, required=True)

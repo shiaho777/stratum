@@ -16,7 +16,7 @@ Embedding gets vanilla INT4 (no input statistics — embedding is a lookup,
 not a matmul on activations).
 
 Usage:
-  python tools/quantize_qwen3_5_awq.py --src ../model --dst ../model-int4-awq \
+  python tools/quantize_qwen3_5_awq.py --src <model-dir> --dst <out-dir> \
         --num-calib 32 --max-tokens 256
 """
 

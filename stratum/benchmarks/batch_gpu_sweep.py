@@ -32,7 +32,6 @@ def run_one(model: Path, n_gen: int, b: int, repeats: int, extra_env: dict[str, 
         env.update({
             "STRATUM_GPU": "1",
             "STRATUM_GPU_BATCH_FULL": "1",
-            "STRATUM_METALLIB": "stratum_q4k.metallib",
             "STRATUM_MULTISEQ": str(b),
         })
         cmd = ["./stratum", str(model), str(n_gen), *prompt]

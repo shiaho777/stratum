@@ -1,12 +1,12 @@
 # Stratum native runtime build.
 #
-# Two binaries:
+# Binaries:
 #   stratum       — universal GGUF runtime (Llama-arch + qwen35-arch)
-#   stratum_p35   — original Qwen3.5-VL-0.8B optimized binary (Phase 7)
+#   stratum_p35.c — historical Phase-7 source kept as archive only (not
+#                   buildable: its dependency stratum_prefetch.h is gone)
 #
 # Usage:
-#   make            # builds both
-#   make stratum    # just the universal binary
+#   make            # builds the universal binary (+ metallib)
 #   make clean
 
 CC      := clang
@@ -36,7 +36,7 @@ endif
 
 .PHONY: all clean check tests
 
-all: stratum stratum_p35 $(METAL_LIB)
+all: stratum $(METAL_LIB)
 
 stratum: stratum.c stratum_arch_llama.inc.c stratum_arch_qwen35.inc.c $(METAL_OBJ) \
          stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
@@ -49,7 +49,7 @@ stratum: stratum.c stratum_arch_llama.inc.c stratum_arch_qwen35.inc.c $(METAL_OB
          stratum_q6k.h stratum_q6k_neon.h \
          stratum_q8_0.h \
          stratum_bf16.h \
-         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h stratum_prefetch.h
+         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h
 	$(CC) $(CFLAGS) -o $@ stratum.c $(METAL_OBJ) $(LDFLAGS)
 ifeq ($(USE_MEMX),1)
 	@install_name_tool -change build/libmemx_runtime.dylib $(MEMX_HOME)/build/libmemx_runtime.dylib $@ 2>/dev/null || true
@@ -67,9 +67,9 @@ stratum_q4k.metallib: stratum_q4k.metal stratum_q5k.metal stratum_q6k.metal stra
 	    -o stratum_q4k.metallib
 	rm -f stratum_q4k.air stratum_q5k.air stratum_q6k.air stratum_q2k.air
 
-stratum_p35: stratum_p35.c
-	$(CC) -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations \
-	    -fblocks -framework Accelerate -lpthread -o $@ stratum_p35.c
+# stratum_p35.c is kept in the tree as a historical Phase-7 archive only:
+# it depends on stratum_prefetch.h, which no longer exists, so it is NOT
+# buildable and has no build target. See stratum_p35.c header comment.
 
 quant_test: quant_test.c stratum_q2k.h stratum_q2k_neon.h stratum_q3k.h stratum_q3k_neon.h stratum_q4k.h \
             stratum_q4k_neon.h stratum_q5k.h stratum_q5k_neon.h \
@@ -102,5 +102,5 @@ tests: quant_test spec_sample_test
 	./spec_sample_test
 
 clean:
-	rm -f stratum stratum_p35 quant_test metal_test spec_sample_test stratum_metal.o \
+	rm -f stratum quant_test metal_test spec_sample_test stratum_metal.o \
 	      stratum_q4k.metallib stratum_q4k.air

@@ -13,13 +13,16 @@ This directory holds the **measured evidence behind the claims in the root READM
 
 ## Reproducing
 
+The scripts below are the only required entry points. **None of them hardcode a model path — pass yours as an argument.**
+
 - **headtohead**: `stratum/benchmarks/headtohead.sh <model.gguf> [N_GEN]`
-- **manifesto**: `stratum/benchmarks/manifesto.sh <model.gguf>`
-- **memory floor**: `stratum/benchmarks/memory_floor.py <model.gguf>`
-- **pressure test**: `stratum/benchmarks/pressure_test.sh <model.gguf>`
+- **manifesto (current revision)**: `stratum/benchmarks/manifesto_v2.sh <model.gguf> [N_GEN] [PROMPT_IDS...]`
 
 All run on the CPU path (`STRATUM_NO_GPU=1`), greedy decoding.
 
+The other records (`manifesto_results.json`, `memory_floor.json`, `pressure_test_results.txt`) were captured against earlier engine revisions whose harnesses lived in the removed Python-era line; the data is kept as historical evidence, but those harnesses are not part of the current tree.
+
 ## What was removed
 
-The original archive contained ~150 additional JSON files recording per-kernel parameter sweeps (threadgroup sizes, batch widths, fused-op variants) from the development log. They were internal tuning records — not reproducible against the current code and not meaningful to readers without the surrounding development context. They are preserved in the git history; only the externally-facing evidence is kept in the tree.
+- ~150 additional JSON files recording per-kernel parameter sweeps (threadgroup sizes, batch widths, fused-op variants) from the development log. They were internal tuning records — not reproducible against the current code and not meaningful to readers without the surrounding development context. They are preserved in the git history; only the externally-facing evidence is kept in the tree.
+- Python-era benchmark harnesses (`run_all.py`, `memory_floor*.py`, `*_worker.py`, `manifesto.sh`, `pressure_test.sh`, `tests/baseline_truth.json`) that referenced deleted model directories or the removed `stratum_p35` binary. Removed in the same cleanup.

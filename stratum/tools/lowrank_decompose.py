@@ -15,7 +15,7 @@ At inference: y = x @ W^T  =>  y = x @ V^T @ U^T
   For r=256: 256*4608 = 1.18M vs 3.67M (32% compute)
 
 Usage:
-  python lowrank_decompose.py --model-dir ../model --rank 256 --output-dir ../model-lr256
+  python lowrank_decompose.py --model-dir <model-dir> --rank 256 --output-dir <out-dir>
 """
 import argparse
 import json
