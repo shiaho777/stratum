@@ -64,11 +64,31 @@ Apple M4 Pro（14 核），24 GB 统一内存，macOS，贪心解码，CPU 路�
 
 stratum 以约 **77 MB 匿名内存**将 27B 跑到完成（权重经 mmap 从页缓存流式读取）。llama.cpp 在这里无法可用地运行：`-ngl 0` 抖动，`-ngl 99` 需要 16 GB 权重驻留统一内存。Stratum 是唯一能产出 token 的引擎。
 
-### 机制极限（诚实）
+## 机制极限
 
 - 单流解码受带宽限制：每个 token 完整读取一次权重流（本机 11.98 GB @ ~27 GB/s 热 ≈ 0.44 s/token）
 - Q2_K 解包受计算限制（14 核约 7 GB/s）；nibble 布局打破它（2.2×），代价是文件体积 +50%——需 ≥32 GB 内存保持热
 - 长生成树效率 2.46 tok/main——瓶颈是 draft 质量，不是树参数
+
+## 硬件需求
+
+引擎仅支持 Apple Silicon（NEON + 可选 Metal）。无需 GPU——CPU 路径是完整的。
+
+| | 最低 | 推荐 | 理想 |
+|---|---|---|---|
+| 芯片 | 任意 Apple Silicon（M1+） | M 系列 Pro/Max | M 系列 Max/Ultra |
+| 内存 | 8 GB（全流式；绑定 ~7 MB） | 16–24 GB | ≥ 模型体积（全热） |
+| 磁盘 | ≥ 模型文件体积（27B 混合 ≈ 12 GB） | NVMe SSD | NVMe SSD |
+| GPU | 不需要 | 可选（Metal） | 可选 |
+
+**性能如何随硬件变化**：每个 token 都完整消费一次权重流，所以每 token 耗时 = `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)`——内存决定模型有多少能热驻留在页缓存（f_hot），SSD 决定冷流式速度。27B 预估表现：
+
+| 硬件 | 内存 | 预期（估算） |
+|---|---|---|
+| M1/M2 基础款，8 GB | 全冷流式 | ~0.2–0.3 tok/s（SSD ~3 GB/s） |
+| M4 Pro，24 GB | 部分热 | **5.73 tok/s 热短测 / 持续 ~1.4–2**（实测） |
+| M4 Max，48 GB+ | 全热 | ~8–10 tok/s（更高带宽） |
+| ≥128 GB 工作站 | 全热 + nibble 布局 | 12+ tok/s（Q2_K 解包 2.2×） |
 
 ## 致谢
 
@@ -79,7 +99,7 @@ stratum 以约 **77 MB 匿名内存**将 27B 跑到完成（权重经 mmap 从�
 - **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** —— 8 GB 跑 2.78T；O_DIRECT、打包数据直算、位级确定性契约。我们的 nibble 布局质疑格式本身，正如 k3 质疑每一个字节。
 - **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** —— Apple Silicon 上的纯 C/Metal MoE；SSD 专家流式、FMA 融合解包、"信任 OS 页缓存"。
 - **[HuggingFace transformers](https://github.com/huggingface/transformers)** —— 参考框架。
-- 另参考：[**tessera**](https://github.com/geoph9/tessera)（NoCopy + `MADV_DONTNEED`——推翻了我们此前"NoCopy 会 wire 内存"的结论）与 ggml/llama.cpp（量化格式与工具链）。
+- 另参考：[**tessera**](https://github.com/geoph9/tessera)（NoCopy + `MADV_DONTNEED` 页驱逐）与 ggml/llama.cpp（量化格式与工具链）。
 
 ## 仓库布局
 

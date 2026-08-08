@@ -9,7 +9,7 @@ A pure-C transformer inference engine with the lowest wired-memory footprint of 
 Traditional engines assume weights must fit in RAM/VRAM. Stratum assumes the opposite: every token consumes the whole weight stream once, so working set stays constant regardless of model size.
 
 - **Binding RAM**: ~7 MB anonymous (vs hundreds of MB for llama.cpp) — measured, see below
-- **Models larger than RAM**: runs to completion where llama.cpp thrashes or OOMs — the uncontested niche
+- **Models larger than RAM**: runs to completion where llama.cpp thrashes or OOMs
 - **Bit-exact**: greedy decoding is token-for-token identical to a scalar reference
 - **No quantization by the engine**: it consumes Q2_K–Q6_K / Q8_0 / F16 / F32 as-is, never degrades them
 
@@ -64,11 +64,31 @@ Apple M4 Pro (14 cores), 24 GB unified memory, macOS, greedy decoding, CPU path 
 
 stratum runs the 27B to completion in **~77 MB anonymous RAM** (weights stream from page cache via mmap). llama.cpp cannot run it usably here: `-ngl 0` thrashes, `-ngl 99` needs 16 GB in unified memory. Stratum is the only engine that produces tokens.
 
-### Mechanism limits (honest)
+## Mechanism limits
 
 - Single-stream decode is bandwidth-bound: every token reads the whole weight stream once (11.98 GB @ ~27 GB/s hot ≈ 0.44 s/token on this machine)
 - Q2_K unpack is compute-bound (~7 GB/s at 14 cores); the nibble layout breaks this (2.2×) at the cost of +50% file size — needs ≥32 GB RAM to stay hot
 - The long-generation tree efficiency is 2.46 tok/main — draft quality, not tree parameters, is the wall
+
+## Hardware requirements
+
+The engine is Apple-Silicon only (NEON + optional Metal). No GPU is required — the CPU path is complete.
+
+| | Minimum | Recommended | Ideal |
+|---|---|---|---|
+| Chip | Any Apple Silicon (M1+) | M-series Pro/Max | M-series Max/Ultra |
+| RAM | 8 GB (full streaming; ~7 MB wired) | 16–24 GB | ≥ model size (fully hot) |
+| Disk | ≥ model file size (27B mixed ≈ 12 GB) | NVMe SSD | NVMe SSD |
+| GPU | not required | optional (Metal) | optional |
+
+**How performance scales**: every token consumes the whole weight stream once, so per-token time is `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)` — RAM determines how much of the model stays hot in page cache (f_hot), and the SSD determines the cold-streaming rate. Estimated 27B behavior:
+
+| Hardware | RAM | Expected (estimate) |
+|---|---|---|
+| M1/M2 base, 8 GB | fully cold streaming | ~0.2–0.3 tok/s (SSD ~3 GB/s) |
+| M4 Pro, 24 GB | partially hot | **5.73 tok/s hot short-run / ~1.4–2 sustained** (measured) |
+| M4 Max, 48 GB+ | fully hot | ~8–10 tok/s (higher bandwidth) |
+| ≥128 GB workstation | fully hot + nibble layout | 12+ tok/s (Q2_K 2.2× unpack)
 
 ## Acknowledgements
 
@@ -79,7 +99,7 @@ This project stands on the shoulders of:
 - **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** — 2.78T on 8 GB; O_DIRECT, packed-data direct consumption, bit-level determinism contract. Our nibble layout questions the format itself, as k3 questions every byte.
 - **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** — pure C/Metal MoE on Apple Silicon; SSD expert streaming, FMA-fused dequant, "trust the OS page cache".
 - **[HuggingFace transformers](https://github.com/huggingface/transformers)** — the reference framework.
-- Also consulted: **[tessera](https://github.com/geoph9/tessera)** (NoCopy + `MADV_DONTNEED` — overturned our earlier "NoCopy wires memory" conclusion) and ggml/llama.cpp (quant formats + toolchain).
+- Also consulted: **[tessera](https://github.com/geoph9/tessera)** (NoCopy + `MADV_DONTNEED` page eviction) and ggml/llama.cpp (quant formats + toolchain).
 
 ## Repository layout
 
