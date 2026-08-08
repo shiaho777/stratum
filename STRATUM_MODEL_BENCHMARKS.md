@@ -22,13 +22,13 @@
 
 | Model | GGUF path |
 |---|---|
-| Qwen3.6-27B-mixed | `/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/model-27b-gguf/qwen3.6-27b-mixed.gguf` |
-| Qwen2.5-Coder-0.5B (Q4_K) | `/Users/shiaho/Desktop/0-/Qwen2.5-Coder-0.5B/Qwen2.5-Coder-0.5B.q4k.gguf` |
-| Qwen2.5-Coder-0.5B (F16) | `/Users/shiaho/Desktop/0-/Qwen2.5-Coder-0.5B/Qwen2.5-Coder-0.5B.llama.f16.gguf` |
-| Qwen3-0.6B (Q4_K) | `/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.q4k.gguf` |
-| Qwen3-0.6B (F16) | `/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.llama.f16.gguf` |
-| MiniCPM5-1B-Base (Q4_K) | `/Users/shiaho/Desktop/MiniCPM5-1B-Base/MiniCPM5-1B-Base.q4k.gguf` |
-| MiniCPM5-1B-Base (F16) | `/Users/shiaho/Desktop/MiniCPM5-1B-Base/MiniCPM5-1B-Base.f16.gguf` |
+| Qwen3.6-27B-mixed | `model-27b-gguf/qwen3.6-27b-mixed.gguf` |
+| Qwen2.5-Coder-0.5B (Q4_K) | `<path-to>/Qwen2.5-Coder-0.5B/Qwen2.5-Coder-0.5B.q4k.gguf` |
+| Qwen2.5-Coder-0.5B (F16) | `<path-to>/Qwen2.5-Coder-0.5B/Qwen2.5-Coder-0.5B.llama.f16.gguf` |
+| Qwen3-0.6B (Q4_K) | `<path-to>/Qwen3-0.6B/Qwen3-0.6B.q4k.gguf` |
+| Qwen3-0.6B (F16) | `<path-to>/Qwen3-0.6B/Qwen3-0.6B.llama.f16.gguf` |
+| MiniCPM5-1B-Base (Q4_K) | `<path-to>/MiniCPM5-1B-Base.q4k.gguf` |
+| MiniCPM5-1B-Base (F16) | `<path-to>/MiniCPM5-1B-Base.f16.gguf` |
 
 ## Detailed Notes
 
@@ -58,6 +58,6 @@
 ## Reproduction
 
 ```bash
-cd /Users/shiaho/Desktop/Qwen3.5-0.8B-hf/stratum/native
+cd stratum/native
 STRATUM_NO_GPU=1 /usr/bin/time -p ./stratum <model.gguf> 64 0 1
 ```

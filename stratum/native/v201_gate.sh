@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "$(dirname "$0")"
-MODEL="${1:-/Users/shiaho/Downloads/llm/models/qwen3.6-27b-mixed.gguf}"
+MODEL="${1:-./qwen3.6-27b-mixed.gguf}"
 BIN=./stratum
 if [[ ! -x $BIN ]]; then make stratum; fi
 

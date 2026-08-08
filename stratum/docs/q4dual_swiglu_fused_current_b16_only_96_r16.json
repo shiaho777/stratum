@@ -1,5 +1,5 @@
 {
-  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "model": "/path/to/model.gguf",
   "n_gen": 96,
   "rounds": 16,
   "shuffle": true,

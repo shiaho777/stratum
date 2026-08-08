@@ -1,5 +1,5 @@
 {
-  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/model-mlx-8bit",
+  "model": "/path/to/model.gguf",
   "ngram_orders": [
     2,
     3

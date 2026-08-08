@@ -1,6 +1,6 @@
 {
   "baseline_ppl": 39.935065045070495,
-  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/model-mlx-8bit",
+  "model": "/path/to/model.gguf",
   "n_layers": 24,
   "ssm_layers": [
     0,
