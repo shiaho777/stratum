@@ -72,23 +72,39 @@ stratum runs the 27B to completion in **~77 MB anonymous RAM** (weights stream f
 
 ## Hardware requirements
 
-The engine is Apple-Silicon only (NEON + optional Metal). No GPU is required — the CPU path is complete.
+**CPU — Apple Silicon (ARM64) required.** The engine's hot path is hand-written NEON SIMD, which exists only on Apple Silicon. Intel-based Macs (x86_64) are not supported. Any M-series chip works: M1 / M2 / M3 / M4, including the base, Pro, Max and Ultra variants.
+
+**GPU — none required, none to buy.** Apple Silicon has no discrete GPU; the GPU is integrated into the SoC and exposed through Metal. The engine runs fully on CPU, and uses that integrated GPU only for optional acceleration (`STRATUM_GPU_NC` etc.). There is nothing to install or configure — if you have an M-series Mac, you already have the GPU.
+
+**Memory — unified.** CPU and GPU share one pool of RAM (unified memory). This is exactly why a 27B model can run on a 24 GB machine: weights stream from page cache and are reclaimable, so only ~7 MB is truly wired. What RAM size buys is *how much of the model stays hot*: 8 GB streams fully from SSD, 24 GB keeps a large share hot, and ≥ model size (e.g. 32 GB+ for a 27B) keeps it fully resident in page cache.
+
+**Memory bandwidth matters more than core count.** Decode is bandwidth-bound, and Apple Silicon memory bandwidth grows with the chip tier — this is the single biggest performance lever:
+
+| Chip tier | Memory bandwidth (approx.) |
+|---|---|
+| M1 / M2 / M3 base | ~70–100 GB/s |
+| M1 Pro / M2 Pro | ~200 GB/s |
+| M4 / M4 Pro | ~120 / 273 GB/s |
+| M3 Max / M4 Max | ~400 / 546 GB/s |
+| Ultra (dual Max) | ~800+ GB/s |
+
+**Disk — NVMe SSD recommended.** Cold weights stream from disk; an SSD with ~3 GB/s sequential read keeps the cold path usable, and the OS page cache turns repeated passes into RAM-speed once hot.
 
 | | Minimum | Recommended | Ideal |
 |---|---|---|---|
-| Chip | Any Apple Silicon (M1+) | M-series Pro/Max | M-series Max/Ultra |
-| RAM | 8 GB (full streaming; ~7 MB wired) | 16–24 GB | ≥ model size (fully hot) |
-| Disk | ≥ model file size (27B mixed ≈ 12 GB) | NVMe SSD | NVMe SSD |
-| GPU | not required | optional (Metal) | optional |
+| CPU | Any Apple Silicon (M1, 8 GB) | M4 Pro, 24 GB | M4 Max/Ultra, ≥48 GB |
+| GPU | integrated (none to buy) | integrated (optional Metal) | integrated |
+| RAM | 8 GB | 16–24 GB | ≥ model size (fully hot) |
+| Disk | ≥ model file size, SSD | NVMe SSD | NVMe SSD |
 
-**How performance scales**: every token consumes the whole weight stream once, so per-token time is `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)` — RAM determines how much of the model stays hot in page cache (f_hot), and the SSD determines the cold-streaming rate. Estimated 27B behavior:
+**How performance scales**: every token consumes the whole weight stream once, so per-token time is `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)` — RAM decides how much of the model stays hot in page cache (f_hot), memory bandwidth sets BW_hot, and the SSD sets the cold-streaming rate. Estimated 27B behavior:
 
 | Hardware | RAM | Expected (estimate) |
 |---|---|---|
-| M1/M2 base, 8 GB | fully cold streaming | ~0.2–0.3 tok/s (SSD ~3 GB/s) |
+| M1 base, 8 GB | fully cold streaming | ~0.2–0.3 tok/s (SSD ~3 GB/s) |
 | M4 Pro, 24 GB | partially hot | **5.73 tok/s hot short-run / ~1.4–2 sustained** (measured) |
 | M4 Max, 48 GB+ | fully hot | ~8–10 tok/s (higher bandwidth) |
-| ≥128 GB workstation | fully hot + nibble layout | 12+ tok/s (Q2_K 2.2× unpack)
+| ≥128 GB workstation | fully hot + nibble layout | 12+ tok/s (Q2_K 2.2× unpack) |
 
 ## Acknowledgements
 

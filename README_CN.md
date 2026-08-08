@@ -72,20 +72,36 @@ stratum 以约 **77 MB 匿名内存**将 27B 跑到完成（权重经 mmap 从�
 
 ## 硬件需求
 
-引擎仅支持 Apple Silicon（NEON + 可选 Metal）。无需 GPU——CPU 路径是完整的。
+**CPU——必须 Apple Silicon（ARM64）**。引擎的热路径是手写 NEON SIMD 指令，仅存在于 Apple Silicon。Intel 版 Mac（x86_64）不支持。任何 M 系列芯片都可以：M1 / M2 / M3 / M4，含基础款、Pro、Max、Ultra 各变体。
+
+**GPU——不需要买，也不需要装**。Apple Silicon 没有独立显卡，GPU 集成在 SoC 里、通过 Metal 暴露。引擎完全在 CPU 上运行，集成 GPU 只用于可选的加速（`STRATUM_GPU_NC` 等）。只要你有 M 系列 Mac，就已经有 GPU 了，无需任何配置。
+
+**内存——统一内存架构**。CPU 与 GPU 共享同一块 RAM（统一内存）。这正是 24 GB 机器能跑 27B 模型的原因：权重从页缓存流式读取、可回收，真正绑定的只有 ~7 MB。内存大小买的是"模型有多少能保持热"：8 GB 全程从 SSD 流式，24 GB 能保持很大一部分热，≥ 模型体积（27B 需 32 GB+）则完全驻留页缓存。
+
+**内存带宽比核心数更重要**。解码受带宽限制，而 Apple Silicon 的内存带宽随芯片档次增长——这是最大的性能杠杆：
+
+| 芯片档次 | 内存带宽（约） |
+|---|---|
+| M1 / M2 / M3 基础款 | ~70–100 GB/s |
+| M1 Pro / M2 Pro | ~200 GB/s |
+| M4 / M4 Pro | ~120 / 273 GB/s |
+| M3 Max / M4 Max | ~400 / 546 GB/s |
+| Ultra（双 Max） | ~800+ GB/s |
+
+**磁盘——推荐 NVMe SSD**。冷权重从磁盘流式读取；顺序读 ~3 GB/s 的 SSD 能让冷路径保持可用，热后 OS 页缓存会把重复读取变成内存速度。
 
 | | 最低 | 推荐 | 理想 |
 |---|---|---|---|
-| 芯片 | 任意 Apple Silicon（M1+） | M 系列 Pro/Max | M 系列 Max/Ultra |
-| 内存 | 8 GB（全流式；绑定 ~7 MB） | 16–24 GB | ≥ 模型体积（全热） |
-| 磁盘 | ≥ 模型文件体积（27B 混合 ≈ 12 GB） | NVMe SSD | NVMe SSD |
-| GPU | 不需要 | 可选（Metal） | 可选 |
+| CPU | 任意 Apple Silicon（M1，8 GB） | M4 Pro，24 GB | M4 Max/Ultra，≥48 GB |
+| GPU | 集成（无需购买） | 集成（可选 Metal） | 集成 |
+| 内存 | 8 GB | 16–24 GB | ≥ 模型体积（全热） |
+| 磁盘 | ≥ 模型文件体积，SSD | NVMe SSD | NVMe SSD |
 
-**性能如何随硬件变化**：每个 token 都完整消费一次权重流，所以每 token 耗时 = `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)`——内存决定模型有多少能热驻留在页缓存（f_hot），SSD 决定冷流式速度。27B 预估表现：
+**性能如何随硬件变化**：每个 token 都完整消费一次权重流，所以每 token 耗时 = `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)`——内存决定模型有多少能热驻留在页缓存（f_hot），内存带宽决定 BW_hot，SSD 决定冷流式速度。27B 预估表现：
 
 | 硬件 | 内存 | 预期（估算） |
 |---|---|---|
-| M1/M2 基础款，8 GB | 全冷流式 | ~0.2–0.3 tok/s（SSD ~3 GB/s） |
+| M1 基础款，8 GB | 全冷流式 | ~0.2–0.3 tok/s（SSD ~3 GB/s） |
 | M4 Pro，24 GB | 部分热 | **5.73 tok/s 热短测 / 持续 ~1.4–2**（实测） |
 | M4 Max，48 GB+ | 全热 | ~8–10 tok/s（更高带宽） |
 | ≥128 GB 工作站 | 全热 + nibble 布局 | 12+ tok/s（Q2_K 解包 2.2×） |
