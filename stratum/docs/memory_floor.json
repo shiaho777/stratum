@@ -1,0 +1,82 @@
+{
+  "transformers-baseline": {
+    "rss_at_start_mb": 16.90625,
+    "rss_after_load_mb": 1509.5,
+    "rss_peak_mb": 2023.859375,
+    "load_s": 4.368852624989813,
+    "gen_s": 40.773859290988185,
+    "tok_per_s": 0.196204140081686,
+    "new_ids": [
+      3629,
+      13,
+      353,
+      1044,
+      264,
+      220,
+      17,
+      15
+    ],
+    "text": "Hello, my name is John. I am a 20",
+    "wall_total": 48.13597833298263
+  },
+  "bf16-cache2": {
+    "rss_at_start_mb": 16.90625,
+    "rss_after_load_mb": 536.296875,
+    "rss_peak_mb": 1121.765625,
+    "load_s": 0.30775904102483764,
+    "gen_s": 40.936060750012984,
+    "tok_per_s": 0.19542671799453645,
+    "new_ids": [
+      3629,
+      13,
+      353,
+      1044,
+      264,
+      220,
+      17,
+      15
+    ],
+    "text": "Hello, my name is John. I am a 20",
+    "wall_total": 44.214921666978626
+  },
+  "int4-vanilla-cache2": {
+    "rss_at_start_mb": 16.796875,
+    "rss_after_load_mb": 538.296875,
+    "rss_peak_mb": 690.71875,
+    "load_s": 0.2711678750056308,
+    "gen_s": 49.46538062498439,
+    "tok_per_s": 0.16172927204686852,
+    "new_ids": [
+      3629,
+      13,
+      353,
+      599,
+      264,
+      2609,
+      314,
+      4602
+    ],
+    "text": "Hello, my name is John. I have a lot of questions",
+    "wall_total": 52.550229666987434
+  },
+  "int4-awq-cache2": {
+    "rss_at_start_mb": 16.734375,
+    "rss_after_load_mb": 534.28125,
+    "rss_peak_mb": 823.671875,
+    "load_s": 0.2607406669994816,
+    "gen_s": 46.09260383300716,
+    "tok_per_s": 0.17356363786658452,
+    "new_ids": [
+      3629,
+      11,
+      353,
+      1044,
+      264,
+      220,
+      20,
+      337
+    ],
+    "text": "Hello, my name is John, I am a 5th",
+    "wall_total": 49.29599704200518
+  }
+}

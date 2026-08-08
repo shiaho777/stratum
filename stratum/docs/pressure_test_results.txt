@@ -1,0 +1,23 @@
+=== Stratum pressure test — 128 tokens ===
+  prompt: Once upon a time
+  Each pressure run launches a sibling python that allocates
+  + dirties anon memory, forcing the OS to evict our page cache.
+  We measure how stratum's tok/s degrades.
+
+[baseline] no anon pressure
+  127 gen tokens in 1.71s (74.20 tok/s)
+
+[pressure] +256 MB sibling anon
+  127 gen tokens in 1.74s (72.85 tok/s)
+
+[pressure] +1024 MB sibling anon
+  127 gen tokens in 1.80s (70.50 tok/s)
+
+[pressure] +4096 MB sibling anon
+  127 gen tokens in 1.75s (72.44 tok/s)
+
+=== Verdict ===
+  stratum never OOMs — even with multi-GB sibling pressure,
+  the model's mapped file pages get reclaimed, stratum re-reads
+  them from disk via mmap fault, and generation continues.
+  Throughput drops with disk seek frequency, never crashes.

@@ -1,0 +1,19 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/llama-3.2-3b-instruct-q4km.gguf",
+  "n_gen": 32,
+  "stratum": {
+    "wall_secs": 14.60,
+    "peak_anon_mb": 13.300,
+    "peak_mapped_file_mb": 1945.600,
+    "peak_total_phys_mb": 1958.700,
+    "samples": 16
+  },
+  "llamacpp": {
+    "wall_secs": 7.49,
+    "peak_anon_mb": 2048.000,
+    "peak_mapped_file_mb": 2048.000,
+    "peak_total_phys_mb": 4096.000,
+    "samples": 8
+  },
+  "anon_ratio_llamacpp_over_stratum": 154.0
+}

@@ -1,0 +1,106 @@
+# Stratum native runtime build.
+#
+# Two binaries:
+#   stratum       — universal GGUF runtime (Llama-arch + qwen35-arch)
+#   stratum_p35   — original Qwen3.5-VL-0.8B optimized binary (Phase 7)
+#
+# Usage:
+#   make            # builds both
+#   make stratum    # just the universal binary
+#   make clean
+
+CC      := clang
+CFLAGS  := -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations \
+           -fblocks -mcpu=apple-m1
+LDFLAGS := -framework Accelerate -lpthread
+
+# MemX compressed-memory runtime (set USE_MEMX=0 to disable)
+USE_MEMX ?= 1
+ifeq ($(USE_MEMX),1)
+  MEMX_HOME ?= $(HOME)/Desktop/memx
+  CFLAGS  += -DSTRATUM_USE_MEMX -I$(MEMX_HOME)/include
+  LDFLAGS += -L$(MEMX_HOME)/build -lmemx_runtime -Wl,-rpath,$(MEMX_HOME)/build
+endif
+
+# Metal GPU support (set USE_METAL=0 to disable)
+USE_METAL ?= 1
+ifeq ($(USE_METAL),1)
+  CFLAGS  += -DSTRATUM_USE_METAL
+  LDFLAGS += -framework Metal -framework Foundation -fobjc-arc
+  METAL_OBJ := stratum_metal.o
+  METAL_LIB := stratum_q4k.metallib
+else
+  METAL_OBJ :=
+  METAL_LIB :=
+endif
+
+.PHONY: all clean check tests
+
+all: stratum stratum_p35 $(METAL_LIB)
+
+stratum: stratum.c stratum_arch_llama.inc.c stratum_arch_qwen35.inc.c $(METAL_OBJ) \
+         stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
+         stratum_metal.h \
+         stratum_memx.h \
+         stratum_sro.h \
+         stratum_q2k.h stratum_q2k_neon.h stratum_q3k.h stratum_q3k_neon.h \
+         stratum_q4k.h stratum_q4k_neon.h \
+         stratum_q5k.h stratum_q5k_neon.h \
+         stratum_q6k.h stratum_q6k_neon.h \
+         stratum_q8_0.h \
+         stratum_bf16.h \
+         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h stratum_prefetch.h
+	$(CC) $(CFLAGS) -o $@ stratum.c $(METAL_OBJ) $(LDFLAGS)
+ifeq ($(USE_MEMX),1)
+	@install_name_tool -change build/libmemx_runtime.dylib $(MEMX_HOME)/build/libmemx_runtime.dylib $@ 2>/dev/null || true
+endif
+
+stratum_metal.o: stratum_metal.m stratum_metal.h
+	$(CC) -ObjC -O3 -fobjc-arc -c stratum_metal.m -o stratum_metal.o
+
+stratum_q4k.metallib: stratum_q4k.metal stratum_q5k.metal stratum_q6k.metal stratum_q2k.metal
+	xcrun -sdk macosx metal -c stratum_q4k.metal -o stratum_q4k.air
+	xcrun -sdk macosx metal -c stratum_q5k.metal -o stratum_q5k.air
+	xcrun -sdk macosx metal -c stratum_q6k.metal -o stratum_q6k.air
+	xcrun -sdk macosx metal -c stratum_q2k.metal -o stratum_q2k.air
+	xcrun -sdk macosx metallib stratum_q4k.air stratum_q5k.air stratum_q6k.air stratum_q2k.air \
+	    -o stratum_q4k.metallib
+	rm -f stratum_q4k.air stratum_q5k.air stratum_q6k.air stratum_q2k.air
+
+stratum_p35: stratum_p35.c
+	$(CC) -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations \
+	    -fblocks -framework Accelerate -lpthread -o $@ stratum_p35.c
+
+quant_test: quant_test.c stratum_q2k.h stratum_q2k_neon.h stratum_q3k.h stratum_q3k_neon.h stratum_q4k.h \
+            stratum_q4k_neon.h stratum_q5k.h stratum_q5k_neon.h \
+            stratum_q6k.h stratum_q6k_neon.h stratum_q8_0.h stratum_bf16.h
+	$(CC) -O3 -ffast-math -fblocks -mcpu=apple-m1 -o $@ quant_test.c
+
+metal_test: metal_test.c stratum_metal.o stratum_q4k.metallib
+	$(CC) -O3 -ffast-math -fobjc-arc -framework Metal -framework Foundation \
+	    -o $@ metal_test.c stratum_metal.o
+
+spec_sample_test: spec_sample_test.c
+	$(CC) -O2 -o $@ spec_sample_test.c
+
+# Quick correctness sanity:
+#   - Run all quant kernel cross-validation
+#   - Run TinyLlama generation and check the output starts as expected
+check: stratum quant_test spec_sample_test
+	@echo "=== quant kernel cross-validation ==="
+	./quant_test
+	@echo ""
+	@echo "=== Leviathan-Chen rejection-sampling exactness ==="
+	./spec_sample_test
+	@echo ""
+	@echo "=== TinyLlama 1.1B Q4_K_M (llama arch, NEON) ==="
+	./stratum ~/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf \
+		2 1 450 7483 310 3444 338 2>&1 | tail -3
+
+tests: quant_test spec_sample_test
+	./quant_test
+	./spec_sample_test
+
+clean:
+	rm -f stratum stratum_p35 quant_test metal_test spec_sample_test stratum_metal.o \
+	      stratum_q4k.metallib stratum_q4k.air

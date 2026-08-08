@@ -1,0 +1,12 @@
+# Build artifacts (regenerable via `make`)
+stratum
+stratum_p35
+quant_test
+metal_test
+metal_quant_test
+spec_sample_test
+*_probe
+*.metallib
+*.air
+*.o
+*.dSYM/

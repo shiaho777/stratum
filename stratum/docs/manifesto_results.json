@@ -1,0 +1,8 @@
+[
+[default-strict-10mb] args=''
+  toks=255 secs=5.04 rate=50.60 tok/s peak_phys=9.59 MB file_pages=410.0 MB
+  {"label":"default-strict-10mb","args":"","toks":255,"secs":5.04,"rate":50.60,"peak_phys_mb":9.59,"file_pages_mb":410.0},
+[cache-bf16] args='--cache-bf16'
+  toks=255 secs=4.49 rate=56.82 tok/s peak_phys=12.20 MB file_pages=410.0 MB
+  {"label":"cache-bf16","args":"--cache-bf16","toks":255,"secs":4.49,"rate":56.82,"peak_phys_mb":12.20,"file_pages_mb":410.0}
+]

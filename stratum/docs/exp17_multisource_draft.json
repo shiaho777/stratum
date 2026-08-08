@@ -1,0 +1,50 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/model-mlx-8bit",
+  "ngram_orders": [
+    2,
+    3
+  ],
+  "by_task": {
+    "code": {
+      "self_top1": 0.8740740740740741,
+      "self_top2": 0.9333333333333333,
+      "ngram": 0.2,
+      "union_self1_ngram": 0.8814814814814815,
+      "union_self2_ngram": 0.9407407407407408,
+      "tokens": 135,
+      "ngram_only_gain_over_self1": 0.007407407407407418
+    },
+    "json": {
+      "self_top1": 0.8692307692307693,
+      "self_top2": 0.9461538461538461,
+      "ngram": 0.5692307692307692,
+      "union_self1_ngram": 0.8846153846153846,
+      "union_self2_ngram": 0.9615384615384616,
+      "tokens": 130,
+      "ngram_only_gain_over_self1": 0.01538461538461533
+    },
+    "prose": {
+      "self_top1": 0.42105263157894735,
+      "self_top2": 0.49122807017543857,
+      "ngram": 0.0,
+      "union_self1_ngram": 0.42105263157894735,
+      "union_self2_ngram": 0.49122807017543857,
+      "tokens": 57,
+      "ngram_only_gain_over_self1": 0.0
+    },
+    "repeat_qa": {
+      "self_top1": 0.9066666666666666,
+      "self_top2": 0.9333333333333333,
+      "ngram": 0.4666666666666667,
+      "union_self1_ngram": 0.9066666666666666,
+      "union_self2_ngram": 0.9333333333333333,
+      "tokens": 75,
+      "ngram_only_gain_over_self1": 0.0
+    }
+  },
+  "verdict": {
+    "max_copy_gain": 0.01538461538461533,
+    "avg_copy_gain": 0.00759734093067425,
+    "prose_gain": 0.0
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "model_size_mb": 637.81,
+  "n_gen": 32,
+  "samples": 4,
+  "peak_physical_mb": 643.082,
+  "peak_mapped_file_mb": 637.800,
+  "peak_anonymous_mb": 5.282,
+  "ratio_anon_to_model": 0.0083
+}

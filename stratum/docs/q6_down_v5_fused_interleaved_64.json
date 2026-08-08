@@ -1,0 +1,182 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "repeats": 2,
+  "variants": [
+    "default",
+    "v5_fused"
+  ],
+  "results": [
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 259.0,
+      "per_stream_tok_s": 16.2,
+      "wall_s": 5.010562792
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 260.9,
+      "per_stream_tok_s": 16.3,
+      "wall_s": 4.461920500000001
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 257.0,
+      "per_stream_tok_s": 16.1,
+      "wall_s": 4.533539209000001
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 258.9,
+      "per_stream_tok_s": 16.2,
+      "wall_s": 4.498190541
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 243.8,
+      "per_stream_tok_s": 10.2,
+      "wall_s": 7.072930082999999
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 236.6,
+      "per_stream_tok_s": 9.9,
+      "wall_s": 7.278045916
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 239.2,
+      "per_stream_tok_s": 10.0,
+      "wall_s": 7.175736125
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 246.4,
+      "per_stream_tok_s": 10.3,
+      "wall_s": 7.012065665999998
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 237.8,
+      "per_stream_tok_s": 7.4,
+      "wall_s": 9.546973791
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 229.7,
+      "per_stream_tok_s": 7.2,
+      "wall_s": 9.893078875
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "v5_fused",
+      "aggregate_tok_s": 238.0,
+      "per_stream_tok_s": 7.4,
+      "wall_s": 9.534489832999995
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 236.4,
+      "per_stream_tok_s": 7.4,
+      "wall_s": 9.642983666999996
+    }
+  ],
+  "summary": [
+    {
+      "B": 16,
+      "default": {
+        "best": 259.0,
+        "median": 258.95,
+        "mean": 258.95,
+        "runs": [
+          259.0,
+          258.9
+        ]
+      },
+      "v5_fused": {
+        "best": 260.9,
+        "median": 258.95,
+        "mean": 258.95,
+        "runs": [
+          260.9,
+          257.0
+        ]
+      },
+      "v5_fused_over_default_best_pct": 0.7335907335907166,
+      "v5_fused_over_default_median_pct": 0.0,
+      "v5_fused_over_default_mean_pct": 0.0
+    },
+    {
+      "B": 24,
+      "default": {
+        "best": 246.4,
+        "median": 245.10000000000002,
+        "mean": 245.10000000000002,
+        "runs": [
+          243.8,
+          246.4
+        ]
+      },
+      "v5_fused": {
+        "best": 239.2,
+        "median": 237.89999999999998,
+        "mean": 237.89999999999998,
+        "runs": [
+          236.6,
+          239.2
+        ]
+      },
+      "v5_fused_over_default_best_pct": -2.922077922077926,
+      "v5_fused_over_default_median_pct": -2.9375764993880282,
+      "v5_fused_over_default_mean_pct": -2.9375764993880282
+    },
+    {
+      "B": 32,
+      "default": {
+        "best": 237.8,
+        "median": 237.10000000000002,
+        "mean": 237.10000000000002,
+        "runs": [
+          237.8,
+          236.4
+        ]
+      },
+      "v5_fused": {
+        "best": 238.0,
+        "median": 233.85,
+        "mean": 233.85,
+        "runs": [
+          229.7,
+          238.0
+        ]
+      },
+      "v5_fused_over_default_best_pct": 0.0841042893187538,
+      "v5_fused_over_default_median_pct": -1.3707296499367527,
+      "v5_fused_over_default_mean_pct": -1.3707296499367527
+    }
+  ],
+  "ts": 1780983164.9594932
+}

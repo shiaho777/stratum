@@ -1,0 +1,182 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 96,
+  "repeats": 2,
+  "variants": [
+    "default",
+    "q4_g2"
+  ],
+  "results": [
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 305.7,
+      "per_stream_tok_s": 19.1,
+      "wall_s": 5.504139709
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 337.4,
+      "per_stream_tok_s": 21.1,
+      "wall_s": 4.980022041
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 336.7,
+      "per_stream_tok_s": 21.0,
+      "wall_s": 4.998867375
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 304.8,
+      "per_stream_tok_s": 19.0,
+      "wall_s": 5.521034666999999
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 308.2,
+      "per_stream_tok_s": 12.8,
+      "wall_s": 8.120602416
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 317.4,
+      "per_stream_tok_s": 13.2,
+      "wall_s": 7.834351582999997
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 316.2,
+      "per_stream_tok_s": 13.2,
+      "wall_s": 7.891624583000002
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 293.7,
+      "per_stream_tok_s": 12.2,
+      "wall_s": 8.490975667
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "default",
+      "aggregate_tok_s": 295.8,
+      "per_stream_tok_s": 9.2,
+      "wall_s": 11.187092083000003
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 305.9,
+      "per_stream_tok_s": 9.6,
+      "wall_s": 10.829331499999995
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "q4_g2",
+      "aggregate_tok_s": 306.9,
+      "per_stream_tok_s": 9.6,
+      "wall_s": 10.787591750000004
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "default",
+      "aggregate_tok_s": 297.1,
+      "per_stream_tok_s": 9.3,
+      "wall_s": 11.142985291999992
+    }
+  ],
+  "summary": [
+    {
+      "B": 16,
+      "default": {
+        "best": 305.7,
+        "median": 305.25,
+        "mean": 305.25,
+        "runs": [
+          305.7,
+          304.8
+        ]
+      },
+      "q4_g2": {
+        "best": 337.4,
+        "median": 337.04999999999995,
+        "mean": 337.04999999999995,
+        "runs": [
+          337.4,
+          336.7
+        ]
+      },
+      "q4_g2_over_default_best_pct": 10.369643441282307,
+      "q4_g2_over_default_median_pct": 10.417690417690405,
+      "q4_g2_over_default_mean_pct": 10.417690417690405
+    },
+    {
+      "B": 24,
+      "default": {
+        "best": 308.2,
+        "median": 300.95,
+        "mean": 300.95,
+        "runs": [
+          308.2,
+          293.7
+        ]
+      },
+      "q4_g2": {
+        "best": 317.4,
+        "median": 316.79999999999995,
+        "mean": 316.79999999999995,
+        "runs": [
+          317.4,
+          316.2
+        ]
+      },
+      "q4_g2_over_default_best_pct": 2.985074626865658,
+      "q4_g2_over_default_median_pct": 5.266655590629665,
+      "q4_g2_over_default_mean_pct": 5.266655590629665
+    },
+    {
+      "B": 32,
+      "default": {
+        "best": 297.1,
+        "median": 296.45000000000005,
+        "mean": 296.45000000000005,
+        "runs": [
+          295.8,
+          297.1
+        ]
+      },
+      "q4_g2": {
+        "best": 306.9,
+        "median": 306.4,
+        "mean": 306.4,
+        "runs": [
+          305.9,
+          306.9
+        ]
+      },
+      "q4_g2_over_default_best_pct": 3.298552675866695,
+      "q4_g2_over_default_median_pct": 3.356383875864366,
+      "q4_g2_over_default_mean_pct": 3.356383875864366
+    }
+  ],
+  "ts": 1780982567.2920508
+}

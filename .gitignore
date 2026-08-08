@@ -1,0 +1,57 @@
+# Model weights (large binary files)
+model/*.safetensors
+model-27b-bf16/
+model-27b-gguf/
+model-int4/*.safetensors
+model-int4-awq/*.safetensors
+model-mlx-4bit/*.safetensors
+model-mlx-4bit-g32/*.safetensors
+model-mlx-8bit/*.safetensors
+
+# GGUF test models
+gguf-test/*.gguf
+
+# Compiled binaries
+stratum/native/stratum
+stratum/native/stratum_p*
+stratum/native/stratum_v*
+stratum/native/quant_test
+stratum/native/q4k_test
+stratum/native/q5k_test
+stratum/native/q6k_test
+stratum/native/spec_sample_test
+stratum/native/gguf_inspect
+stratum/native/llama_inspect
+stratum/native/hotcold_probe
+stratum/native/hotread_probe
+stratum/native/probe_10mb
+stratum/native/_f16_gemv_probe
+stratum/native/*.metallib
+stratum/native/*.o
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Transformers submodule compiled
+transformers-main/src/transformers.egg-info/
+
+# Native dev binaries (rebuildable from source)
+stratum/native/bench_*
+stratum/native/*_probe
+stratum/native/gguf_nib_convert
+stratum/native/q2k_nibble_convert
+stratum/native/*.bak.*
+
+# Native dev binaries (rebuildable from source)
+stratum/native/bench_*
+stratum/native/*_probe
+stratum/native/gguf_nib_convert
+stratum/native/q2k_nibble_convert
+stratum/native/*.bak.*

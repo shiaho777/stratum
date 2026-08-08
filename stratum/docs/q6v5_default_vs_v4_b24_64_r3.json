@@ -1,0 +1,77 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "B": 24,
+  "repeats": 3,
+  "variants": [
+    "default_auto",
+    "force_v4"
+  ],
+  "results": [
+    {
+      "repeat": 0,
+      "variant": "default_auto",
+      "aggregate_tok_s": 256.7,
+      "per_stream_tok_s": 10.7,
+      "wall_s": 7.253874542
+    },
+    {
+      "repeat": 0,
+      "variant": "force_v4",
+      "aggregate_tok_s": 233.5,
+      "per_stream_tok_s": 9.7,
+      "wall_s": 7.299131083000001
+    },
+    {
+      "repeat": 1,
+      "variant": "force_v4",
+      "aggregate_tok_s": 243.9,
+      "per_stream_tok_s": 10.2,
+      "wall_s": 7.161425000000001
+    },
+    {
+      "repeat": 1,
+      "variant": "default_auto",
+      "aggregate_tok_s": 249.6,
+      "per_stream_tok_s": 10.4,
+      "wall_s": 6.840317667000001
+    },
+    {
+      "repeat": 2,
+      "variant": "default_auto",
+      "aggregate_tok_s": 210.0,
+      "per_stream_tok_s": 8.8,
+      "wall_s": 8.161263917
+    },
+    {
+      "repeat": 2,
+      "variant": "force_v4",
+      "aggregate_tok_s": 212.5,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 8.107189167000001
+    }
+  ],
+  "summary": {
+    "default_auto": {
+      "best": 256.7,
+      "median": 249.6,
+      "mean": 238.76666666666665,
+      "runs": [
+        256.7,
+        249.6,
+        210.0
+      ]
+    },
+    "force_v4": {
+      "best": 243.9,
+      "median": 233.5,
+      "mean": 229.96666666666667,
+      "runs": [
+        233.5,
+        243.9,
+        212.5
+      ]
+    }
+  },
+  "ts": 1780938091.3425632
+}

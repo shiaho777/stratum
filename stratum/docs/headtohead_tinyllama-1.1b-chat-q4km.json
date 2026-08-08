@@ -1,0 +1,19 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 128,
+  "stratum": {
+    "wall_secs": 12.21,
+    "peak_anon_mb": 9.423,
+    "peak_mapped_file_mb": 637.800,
+    "peak_total_phys_mb": 647.223,
+    "samples": 13
+  },
+  "llamacpp": {
+    "wall_secs": 6.21,
+    "peak_anon_mb": 635.800,
+    "peak_mapped_file_mb": 665.600,
+    "peak_total_phys_mb": 1301.400,
+    "samples": 6
+  },
+  "anon_ratio_llamacpp_over_stratum": 67.5
+}

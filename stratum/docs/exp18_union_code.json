@@ -1,0 +1,354 @@
+{
+  "summary": {
+    "label": "code",
+    "ngram_orders": [
+      1,
+      2,
+      3
+    ],
+    "scored_tokens": 47,
+    "mtp_rate": 0.8085106382978723,
+    "ngram_rate": 0.2553191489361702,
+    "union_rate": 0.8297872340425532,
+    "union_minus_mtp": 0.021276595744680882,
+    "ngram_saves": 1
+  },
+  "per_token": [
+    {
+      "step": 0,
+      "committed": 292,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": false
+    },
+    {
+      "step": 1,
+      "committed": 271,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 2,
+      "committed": 727,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 3,
+      "committed": 3319,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 4,
+      "committed": 2784,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 5,
+      "committed": 11,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 6,
+      "committed": 292,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 7,
+      "committed": 1590,
+      "mtp_hit": false,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 8,
+      "committed": 198,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 9,
+      "committed": 262,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 10,
+      "committed": 413,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 11,
+      "committed": 292,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 12,
+      "committed": 606,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 13,
+      "committed": 220,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 14,
+      "committed": 15,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 15,
+      "committed": 25,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 16,
+      "committed": 198,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 17,
+      "committed": 285,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 18,
+      "committed": 460,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 19,
+      "committed": 328,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 20,
+      "committed": 1401,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 21,
+      "committed": 25,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 22,
+      "committed": 14074,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 23,
+      "committed": 539,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 24,
+      "committed": 6942,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 25,
+      "committed": 1,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 26,
+      "committed": 198,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 27,
+      "committed": 262,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 28,
+      "committed": 460,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 29,
+      "committed": 264,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 30,
+      "committed": 593,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 31,
+      "committed": 292,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 32,
+      "committed": 271,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 33,
+      "committed": 727,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 34,
+      "committed": 28974,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 35,
+      "committed": 4406,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 36,
+      "committed": 198,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 37,
+      "committed": 262,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 38,
+      "committed": 1133,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 39,
+      "committed": 437,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 40,
+      "committed": 15893,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 41,
+      "committed": 34835,
+      "mtp_hit": false,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 42,
+      "committed": 871,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 43,
+      "committed": 198,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    },
+    {
+      "step": 44,
+      "committed": 262,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 45,
+      "committed": 1133,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 46,
+      "committed": 437,
+      "mtp_hit": true,
+      "ngram_hit": true,
+      "scored": true
+    },
+    {
+      "step": 47,
+      "committed": 3270,
+      "mtp_hit": true,
+      "ngram_hit": false,
+      "scored": true
+    }
+  ]
+}

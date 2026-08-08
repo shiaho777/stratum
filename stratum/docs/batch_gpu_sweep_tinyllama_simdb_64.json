@@ -1,0 +1,231 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "repeats": 2,
+  "mode": "simdb",
+  "golden_first_steps": [
+    29889,
+    13,
+    13,
+    29906,
+    29889,
+    350,
+    29889,
+    29907
+  ],
+  "results": [
+    {
+      "B": 2,
+      "best": {
+        "aggregate_tok_s": 158.6,
+        "per_stream_tok_s": 79.3,
+        "wall_s": 1.0402218749999999,
+        "first_token": 3681,
+        "first_steps": [
+          29889,
+          13,
+          13,
+          29906,
+          29889,
+          350,
+          29889,
+          29907
+        ]
+      },
+      "runs": [
+        {
+          "aggregate_tok_s": 158.6,
+          "per_stream_tok_s": 79.3,
+          "wall_s": 1.0402218749999999,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        },
+        {
+          "aggregate_tok_s": 155.8,
+          "per_stream_tok_s": 77.9,
+          "wall_s": 1.053127083,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        }
+      ]
+    },
+    {
+      "B": 4,
+      "best": {
+        "aggregate_tok_s": 176.7,
+        "per_stream_tok_s": 44.2,
+        "wall_s": 1.723661167,
+        "first_token": 3681,
+        "first_steps": [
+          29889,
+          13,
+          13,
+          29906,
+          29889,
+          350,
+          29889,
+          29907
+        ]
+      },
+      "runs": [
+        {
+          "aggregate_tok_s": 176.7,
+          "per_stream_tok_s": 44.2,
+          "wall_s": 1.723661167,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        },
+        {
+          "aggregate_tok_s": 172.4,
+          "per_stream_tok_s": 43.1,
+          "wall_s": 1.7591405410000003,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        }
+      ]
+    },
+    {
+      "B": 8,
+      "best": {
+        "aggregate_tok_s": 178.9,
+        "per_stream_tok_s": 22.4,
+        "wall_s": 3.282191415999999,
+        "first_token": 3681,
+        "first_steps": [
+          29889,
+          13,
+          13,
+          29906,
+          29889,
+          350,
+          29889,
+          29907
+        ]
+      },
+      "runs": [
+        {
+          "aggregate_tok_s": 178.9,
+          "per_stream_tok_s": 22.4,
+          "wall_s": 3.282191415999999,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        },
+        {
+          "aggregate_tok_s": 172.1,
+          "per_stream_tok_s": 21.5,
+          "wall_s": 3.4217270410000005,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        }
+      ]
+    },
+    {
+      "B": 16,
+      "best": {
+        "aggregate_tok_s": 146.5,
+        "per_stream_tok_s": 9.2,
+        "wall_s": 7.76942575,
+        "first_token": 3681,
+        "first_steps": [
+          29889,
+          13,
+          13,
+          29906,
+          29889,
+          350,
+          29889,
+          29907
+        ]
+      },
+      "runs": [
+        {
+          "aggregate_tok_s": 144.8,
+          "per_stream_tok_s": 9.1,
+          "wall_s": 7.865603707999998,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        },
+        {
+          "aggregate_tok_s": 146.5,
+          "per_stream_tok_s": 9.2,
+          "wall_s": 7.76942575,
+          "first_token": 3681,
+          "first_steps": [
+            29889,
+            13,
+            13,
+            29906,
+            29889,
+            350,
+            29889,
+            29907
+          ]
+        }
+      ]
+    }
+  ],
+  "ts": 1780929419.330194
+}

@@ -1,0 +1,182 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "repeats": 2,
+  "variants": [
+    "default_q4g2",
+    "disable_q4g2"
+  ],
+  "results": [
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 340.4,
+      "per_stream_tok_s": 21.3,
+      "wall_s": 3.646568083
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 307.9,
+      "per_stream_tok_s": 19.2,
+      "wall_s": 3.7753224999999997
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 307.9,
+      "per_stream_tok_s": 19.2,
+      "wall_s": 3.7748420829999993
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 343.1,
+      "per_stream_tok_s": 21.4,
+      "wall_s": 3.4049848750000002
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 313.9,
+      "per_stream_tok_s": 13.1,
+      "wall_s": 5.502946332999999
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 294.2,
+      "per_stream_tok_s": 12.3,
+      "wall_s": 5.862287833
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 296.3,
+      "per_stream_tok_s": 12.3,
+      "wall_s": 5.8251472500000006
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 313.6,
+      "per_stream_tok_s": 13.1,
+      "wall_s": 5.504181707999997
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 306.1,
+      "per_stream_tok_s": 9.6,
+      "wall_s": 7.4584975420000035
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 295.8,
+      "per_stream_tok_s": 9.2,
+      "wall_s": 7.715006041999999
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "disable_q4g2",
+      "aggregate_tok_s": 296.5,
+      "per_stream_tok_s": 9.3,
+      "wall_s": 7.701559334000002
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "default_q4g2",
+      "aggregate_tok_s": 252.1,
+      "per_stream_tok_s": 7.9,
+      "wall_s": 8.903645000000004
+    }
+  ],
+  "summary": [
+    {
+      "B": 16,
+      "default_q4g2": {
+        "best": 343.1,
+        "median": 341.75,
+        "mean": 341.75,
+        "runs": [
+          340.4,
+          343.1
+        ]
+      },
+      "disable_q4g2": {
+        "best": 307.9,
+        "median": 307.9,
+        "mean": 307.9,
+        "runs": [
+          307.9,
+          307.9
+        ]
+      },
+      "default_over_disable_best_pct": 11.432283208834049,
+      "default_over_disable_median_pct": 10.993829165313418,
+      "default_over_disable_mean_pct": 10.993829165313418
+    },
+    {
+      "B": 24,
+      "default_q4g2": {
+        "best": 313.9,
+        "median": 313.75,
+        "mean": 313.75,
+        "runs": [
+          313.9,
+          313.6
+        ]
+      },
+      "disable_q4g2": {
+        "best": 296.3,
+        "median": 295.25,
+        "mean": 295.25,
+        "runs": [
+          294.2,
+          296.3
+        ]
+      },
+      "default_over_disable_best_pct": 5.939925750928099,
+      "default_over_disable_median_pct": 6.265876375952573,
+      "default_over_disable_mean_pct": 6.265876375952573
+    },
+    {
+      "B": 32,
+      "default_q4g2": {
+        "best": 306.1,
+        "median": 279.1,
+        "mean": 279.1,
+        "runs": [
+          306.1,
+          252.1
+        ]
+      },
+      "disable_q4g2": {
+        "best": 296.5,
+        "median": 296.15,
+        "mean": 296.15,
+        "runs": [
+          295.8,
+          296.5
+        ]
+      },
+      "default_over_disable_best_pct": 3.237774030354146,
+      "default_over_disable_median_pct": -5.757217626202927,
+      "default_over_disable_mean_pct": -5.757217626202927
+    }
+  ],
+  "ts": 1780982703.287543
+}

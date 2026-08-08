@@ -1,0 +1,362 @@
+{
+  "0": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 743,
+    "r90_byteratio": 0.933,
+    "r95": 846,
+    "r95_byteratio": 1.062,
+    "r99": 970,
+    "r99_byteratio": 1.218,
+    "energy@halfbytes": 0.6248,
+    "energy@quarterbytes": 0.3747
+  },
+  "1": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 706,
+    "r90_byteratio": 0.886,
+    "r95": 813,
+    "r95_byteratio": 1.021,
+    "r99": 951,
+    "r99_byteratio": 1.194,
+    "energy@halfbytes": 0.6578,
+    "energy@quarterbytes": 0.4031
+  },
+  "2": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 697,
+    "r90_byteratio": 0.875,
+    "r95": 797,
+    "r95_byteratio": 1.001,
+    "r99": 934,
+    "r99_byteratio": 1.173,
+    "energy@halfbytes": 0.6529,
+    "energy@quarterbytes": 0.3946
+  },
+  "3": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 677,
+    "r90_byteratio": 0.85,
+    "r95": 778,
+    "r95_byteratio": 0.977,
+    "r99": 913,
+    "r99_byteratio": 1.146,
+    "energy@halfbytes": 0.6725,
+    "energy@quarterbytes": 0.4118
+  },
+  "4": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 690,
+    "r90_byteratio": 0.866,
+    "r95": 790,
+    "r95_byteratio": 0.992,
+    "r99": 921,
+    "r99_byteratio": 1.156,
+    "energy@halfbytes": 0.6617,
+    "energy@quarterbytes": 0.403
+  },
+  "5": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 668,
+    "r90_byteratio": 0.839,
+    "r95": 769,
+    "r95_byteratio": 0.966,
+    "r99": 903,
+    "r99_byteratio": 1.134,
+    "energy@halfbytes": 0.6829,
+    "energy@quarterbytes": 0.4246
+  },
+  "6": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 637,
+    "r90_byteratio": 0.8,
+    "r95": 747,
+    "r95_byteratio": 0.938,
+    "r99": 905,
+    "r99_byteratio": 1.136,
+    "energy@halfbytes": 0.7193,
+    "energy@quarterbytes": 0.4666
+  },
+  "7": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 647,
+    "r90_byteratio": 0.812,
+    "r95": 749,
+    "r95_byteratio": 0.94,
+    "r99": 888,
+    "r99_byteratio": 1.115,
+    "energy@halfbytes": 0.7058,
+    "energy@quarterbytes": 0.4524
+  },
+  "8": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 637,
+    "r90_byteratio": 0.8,
+    "r95": 742,
+    "r95_byteratio": 0.932,
+    "r99": 885,
+    "r99_byteratio": 1.111,
+    "energy@halfbytes": 0.7158,
+    "energy@quarterbytes": 0.4637
+  },
+  "9": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 628,
+    "r90_byteratio": 0.789,
+    "r95": 740,
+    "r95_byteratio": 0.929,
+    "r99": 890,
+    "r99_byteratio": 1.117,
+    "energy@halfbytes": 0.7356,
+    "energy@quarterbytes": 0.4935
+  },
+  "10": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 622,
+    "r90_byteratio": 0.781,
+    "r95": 728,
+    "r95_byteratio": 0.914,
+    "r99": 879,
+    "r99_byteratio": 1.104,
+    "energy@halfbytes": 0.729,
+    "energy@quarterbytes": 0.4757
+  },
+  "11": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 624,
+    "r90_byteratio": 0.783,
+    "r95": 737,
+    "r95_byteratio": 0.925,
+    "r99": 889,
+    "r99_byteratio": 1.116,
+    "energy@halfbytes": 0.7372,
+    "energy@quarterbytes": 0.4929
+  },
+  "12": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 620,
+    "r90_byteratio": 0.778,
+    "r95": 733,
+    "r95_byteratio": 0.92,
+    "r99": 890,
+    "r99_byteratio": 1.117,
+    "energy@halfbytes": 0.7374,
+    "energy@quarterbytes": 0.4874
+  },
+  "13": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 613,
+    "r90_byteratio": 0.77,
+    "r95": 728,
+    "r95_byteratio": 0.914,
+    "r99": 891,
+    "r99_byteratio": 1.119,
+    "energy@halfbytes": 0.7452,
+    "energy@quarterbytes": 0.4944
+  },
+  "14": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 659,
+    "r90_byteratio": 0.827,
+    "r95": 773,
+    "r95_byteratio": 0.971,
+    "r99": 922,
+    "r99_byteratio": 1.158,
+    "energy@halfbytes": 0.7089,
+    "energy@quarterbytes": 0.455
+  },
+  "15": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 673,
+    "r90_byteratio": 0.845,
+    "r95": 793,
+    "r95_byteratio": 0.996,
+    "r99": 947,
+    "r99_byteratio": 1.189,
+    "energy@halfbytes": 0.7032,
+    "energy@quarterbytes": 0.4488
+  },
+  "16": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 654,
+    "r90_byteratio": 0.821,
+    "r95": 766,
+    "r95_byteratio": 0.962,
+    "r99": 923,
+    "r99_byteratio": 1.159,
+    "energy@halfbytes": 0.7024,
+    "energy@quarterbytes": 0.4371
+  },
+  "17": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 640,
+    "r90_byteratio": 0.804,
+    "r95": 751,
+    "r95_byteratio": 0.943,
+    "r99": 911,
+    "r99_byteratio": 1.144,
+    "energy@halfbytes": 0.7122,
+    "energy@quarterbytes": 0.4453
+  },
+  "18": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 633,
+    "r90_byteratio": 0.795,
+    "r95": 745,
+    "r95_byteratio": 0.935,
+    "r99": 908,
+    "r99_byteratio": 1.14,
+    "energy@halfbytes": 0.719,
+    "energy@quarterbytes": 0.4527
+  },
+  "19": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 686,
+    "r90_byteratio": 0.861,
+    "r95": 800,
+    "r95_byteratio": 1.004,
+    "r99": 944,
+    "r99_byteratio": 1.185,
+    "energy@halfbytes": 0.6847,
+    "energy@quarterbytes": 0.4299
+  },
+  "20": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 680,
+    "r90_byteratio": 0.854,
+    "r95": 793,
+    "r95_byteratio": 0.996,
+    "r99": 938,
+    "r99_byteratio": 1.178,
+    "energy@halfbytes": 0.6861,
+    "energy@quarterbytes": 0.4262
+  },
+  "21": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 681,
+    "r90_byteratio": 0.855,
+    "r95": 795,
+    "r95_byteratio": 0.998,
+    "r99": 941,
+    "r99_byteratio": 1.182,
+    "energy@halfbytes": 0.6883,
+    "energy@quarterbytes": 0.4295
+  },
+  "22": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 683,
+    "r90_byteratio": 0.858,
+    "r95": 798,
+    "r95_byteratio": 1.002,
+    "r99": 943,
+    "r99_byteratio": 1.184,
+    "energy@halfbytes": 0.6896,
+    "energy@quarterbytes": 0.4343
+  },
+  "23": {
+    "shape": [
+      1024,
+      3584
+    ],
+    "full_rank": 1024,
+    "r90": 680,
+    "r90_byteratio": 0.854,
+    "r95": 798,
+    "r95_byteratio": 1.002,
+    "r99": 942,
+    "r99_byteratio": 1.183,
+    "energy@halfbytes": 0.6986,
+    "energy@quarterbytes": 0.4494
+  }
+}

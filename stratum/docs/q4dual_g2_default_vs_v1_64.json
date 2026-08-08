@@ -1,0 +1,182 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "repeats": 2,
+  "variants": [
+    "default_g2",
+    "force_v1"
+  ],
+  "results": [
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "default_g2",
+      "aggregate_tok_s": 307.9,
+      "per_stream_tok_s": 19.2,
+      "wall_s": 3.7886513330000002
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "force_v1",
+      "aggregate_tok_s": 260.6,
+      "per_stream_tok_s": 16.3,
+      "wall_s": 4.433041584
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "force_v1",
+      "aggregate_tok_s": 260.7,
+      "per_stream_tok_s": 16.3,
+      "wall_s": 4.4352933750000005
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "default_g2",
+      "aggregate_tok_s": 302.9,
+      "per_stream_tok_s": 18.9,
+      "wall_s": 3.8449121660000003
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "default_g2",
+      "aggregate_tok_s": 301.1,
+      "per_stream_tok_s": 12.5,
+      "wall_s": 5.723302042
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "force_v1",
+      "aggregate_tok_s": 261.5,
+      "per_stream_tok_s": 10.9,
+      "wall_s": 6.570854708999999
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "force_v1",
+      "aggregate_tok_s": 262.1,
+      "per_stream_tok_s": 10.9,
+      "wall_s": 6.542310292000003
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "default_g2",
+      "aggregate_tok_s": 305.2,
+      "per_stream_tok_s": 12.7,
+      "wall_s": 5.659251249999997
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "default_g2",
+      "aggregate_tok_s": 285.3,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 7.989631041999999
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "force_v1",
+      "aggregate_tok_s": 248.2,
+      "per_stream_tok_s": 7.8,
+      "wall_s": 9.170919541000004
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "force_v1",
+      "aggregate_tok_s": 249.6,
+      "per_stream_tok_s": 7.8,
+      "wall_s": 9.114807666999994
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "default_g2",
+      "aggregate_tok_s": 284.0,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 8.029863458000008
+    }
+  ],
+  "summary": [
+    {
+      "B": 16,
+      "default_g2": {
+        "best": 307.9,
+        "median": 305.4,
+        "mean": 305.4,
+        "runs": [
+          307.9,
+          302.9
+        ]
+      },
+      "force_v1": {
+        "best": 260.7,
+        "median": 260.65,
+        "mean": 260.65,
+        "runs": [
+          260.6,
+          260.7
+        ]
+      },
+      "default_over_v1_best_pct": 18.10510164940544,
+      "default_over_v1_median_pct": 17.168616919240364,
+      "default_over_v1_mean_pct": 17.168616919240364
+    },
+    {
+      "B": 24,
+      "default_g2": {
+        "best": 305.2,
+        "median": 303.15,
+        "mean": 303.15,
+        "runs": [
+          301.1,
+          305.2
+        ]
+      },
+      "force_v1": {
+        "best": 262.1,
+        "median": 261.8,
+        "mean": 261.8,
+        "runs": [
+          261.5,
+          262.1
+        ]
+      },
+      "default_over_v1_best_pct": 16.444105303319322,
+      "default_over_v1_median_pct": 15.794499618029011,
+      "default_over_v1_mean_pct": 15.794499618029011
+    },
+    {
+      "B": 32,
+      "default_g2": {
+        "best": 285.3,
+        "median": 284.65,
+        "mean": 284.65,
+        "runs": [
+          285.3,
+          284.0
+        ]
+      },
+      "force_v1": {
+        "best": 249.6,
+        "median": 248.89999999999998,
+        "mean": 248.89999999999998,
+        "runs": [
+          248.2,
+          249.6
+        ]
+      },
+      "default_over_v1_best_pct": 14.302884615384626,
+      "default_over_v1_median_pct": 14.36319807151467,
+      "default_over_v1_mean_pct": 14.36319807151467
+    }
+  ],
+  "ts": 1780939131.016692
+}

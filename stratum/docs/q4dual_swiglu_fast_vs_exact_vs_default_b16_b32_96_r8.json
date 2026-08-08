@@ -1,0 +1,2513 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 96,
+  "rounds": 8,
+  "shuffle": true,
+  "seed": 260621,
+  "cooldown": 1.0,
+  "variants": [
+    {
+      "name": "default",
+      "env": {}
+    },
+    {
+      "name": "exact",
+      "env": {
+        "STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED": "1"
+      }
+    },
+    {
+      "name": "fast",
+      "env": {
+        "STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED": "1",
+        "STRATUM_GPU_BATCH_FFN_SWIGLU_FAST": "1"
+      }
+    }
+  ],
+  "golden_first_steps": [
+    29889,
+    13,
+    13,
+    29906,
+    29889,
+    350,
+    29889,
+    29907
+  ],
+  "summary": {
+    "16": {
+      "default": {
+        "n": 8,
+        "median": 301.04999999999995,
+        "mean": 300.4875,
+        "best": 335.9,
+        "worst": 235.1,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 320.5,
+            "per_stream_tok_s": 20.0,
+            "wall_s": 5.268980625000005,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 329.2,
+            "per_stream_tok_s": 20.6,
+            "wall_s": 5.172396082999995,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 335.9,
+            "per_stream_tok_s": 21.0,
+            "wall_s": 5.033711917000005,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 299.7,
+            "per_stream_tok_s": 18.7,
+            "wall_s": 5.600608332999997,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 293.7,
+            "per_stream_tok_s": 18.4,
+            "wall_s": 5.778241667000003,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 287.4,
+            "per_stream_tok_s": 18.0,
+            "wall_s": 5.940104541999972,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 302.4,
+            "per_stream_tok_s": 18.9,
+            "wall_s": 5.592204041999992,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "default",
+            "B": 16,
+            "aggregate_tok_s": 235.1,
+            "per_stream_tok_s": 14.7,
+            "wall_s": 7.114471333999973,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      },
+      "exact": {
+        "n": 8,
+        "median": 304.75,
+        "mean": 305.9125,
+        "best": 333.3,
+        "worst": 240.3,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 332.7,
+            "per_stream_tok_s": 20.8,
+            "wall_s": 5.140905042,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 330.8,
+            "per_stream_tok_s": 20.7,
+            "wall_s": 5.146339374999997,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 333.3,
+            "per_stream_tok_s": 20.8,
+            "wall_s": 5.063354000000004,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 307.3,
+            "per_stream_tok_s": 19.2,
+            "wall_s": 5.487080375000005,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 302.2,
+            "per_stream_tok_s": 18.9,
+            "wall_s": 5.606274084000006,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 299.6,
+            "per_stream_tok_s": 18.7,
+            "wall_s": 5.646031665999999,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 301.1,
+            "per_stream_tok_s": 18.8,
+            "wall_s": 5.821036917000015,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "exact",
+            "B": 16,
+            "aggregate_tok_s": 240.3,
+            "per_stream_tok_s": 15.0,
+            "wall_s": 6.994170999999994,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "median": 307.15,
+        "mean": 304.35,
+        "best": 336.1,
+        "worst": 238.8,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 311.6,
+            "per_stream_tok_s": 19.5,
+            "wall_s": 5.418377959000004,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 334.4,
+            "per_stream_tok_s": 20.9,
+            "wall_s": 5.171274208,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 336.1,
+            "per_stream_tok_s": 21.0,
+            "wall_s": 5.050601125,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 295.6,
+            "per_stream_tok_s": 18.5,
+            "wall_s": 5.818416000000013,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 304.0,
+            "per_stream_tok_s": 19.0,
+            "wall_s": 5.535099500000001,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 305.5,
+            "per_stream_tok_s": 19.1,
+            "wall_s": 5.587243833000002,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 308.8,
+            "per_stream_tok_s": 19.3,
+            "wall_s": 5.467704875000038,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "fast",
+            "B": 16,
+            "aggregate_tok_s": 238.8,
+            "per_stream_tok_s": 14.9,
+            "wall_s": 7.006175417000009,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      }
+    },
+    "32": {
+      "default": {
+        "n": 8,
+        "median": 288.5,
+        "mean": 289.425,
+        "best": 324.3,
+        "worst": 229.2,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 320.5,
+            "per_stream_tok_s": 10.0,
+            "wall_s": 10.812701959000002,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 324.3,
+            "per_stream_tok_s": 10.1,
+            "wall_s": 10.242563167,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 290.3,
+            "per_stream_tok_s": 9.1,
+            "wall_s": 11.420515000000023,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 286.1,
+            "per_stream_tok_s": 8.9,
+            "wall_s": 11.5254525,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 279.4,
+            "per_stream_tok_s": 8.7,
+            "wall_s": 11.957663666999991,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 286.7,
+            "per_stream_tok_s": 9.0,
+            "wall_s": 11.514254208000011,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 298.9,
+            "per_stream_tok_s": 9.3,
+            "wall_s": 11.083632582999996,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "default",
+            "B": 32,
+            "aggregate_tok_s": 229.2,
+            "per_stream_tok_s": 7.2,
+            "wall_s": 14.385661500000026,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      },
+      "exact": {
+        "n": 8,
+        "median": 287.7,
+        "mean": 284.575,
+        "best": 324.4,
+        "worst": 230.1,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 315.8,
+            "per_stream_tok_s": 9.9,
+            "wall_s": 11.2856685,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 324.4,
+            "per_stream_tok_s": 10.1,
+            "wall_s": 10.275330791999991,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 288.5,
+            "per_stream_tok_s": 9.0,
+            "wall_s": 11.485051542000008,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 285.0,
+            "per_stream_tok_s": 8.9,
+            "wall_s": 11.671704834000025,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 292.0,
+            "per_stream_tok_s": 9.1,
+            "wall_s": 11.438677291000033,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 286.9,
+            "per_stream_tok_s": 9.0,
+            "wall_s": 11.554706124999996,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 253.9,
+            "per_stream_tok_s": 7.9,
+            "wall_s": 12.905661124999995,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "exact",
+            "B": 32,
+            "aggregate_tok_s": 230.1,
+            "per_stream_tok_s": 7.2,
+            "wall_s": 14.433120290999966,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "median": 292.79999999999995,
+        "mean": 292.25,
+        "best": 327.6,
+        "worst": 226.8,
+        "low_outliers": [],
+        "runs": [
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 320.3,
+            "per_stream_tok_s": 10.0,
+            "wall_s": 10.466626999999999,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 0
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 327.6,
+            "per_stream_tok_s": 10.2,
+            "wall_s": 10.181581457999997,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 1
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 313.6,
+            "per_stream_tok_s": 9.8,
+            "wall_s": 10.627006999999992,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 2
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 278.6,
+            "per_stream_tok_s": 8.7,
+            "wall_s": 11.877846917,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 3
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 285.5,
+            "per_stream_tok_s": 8.9,
+            "wall_s": 11.674652209000016,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 4
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 286.7,
+            "per_stream_tok_s": 9.0,
+            "wall_s": 11.545939957999963,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 5
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 298.9,
+            "per_stream_tok_s": 9.3,
+            "wall_s": 11.124485875000005,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 6
+          },
+          {
+            "variant": "fast",
+            "B": 32,
+            "aggregate_tok_s": 226.8,
+            "per_stream_tok_s": 7.1,
+            "wall_s": 14.576790667000012,
+            "first_token": 3681,
+            "first_steps": [
+              29889,
+              13,
+              13,
+              29906,
+              29889,
+              350,
+              29889,
+              29907
+            ],
+            "prefix_ok": true,
+            "round": 7
+          }
+        ]
+      }
+    }
+  },
+  "comparisons_vs_first_variant": {
+    "16": {
+      "exact": 0.012290317223052849,
+      "fast": 0.020262414881249136
+    },
+    "32": {
+      "exact": -0.002772963604852685,
+      "fast": 0.014904679376082974
+    }
+  },
+  "paired_comparisons_vs_first_variant": {
+    "16": {
+      "exact": {
+        "n": 8,
+        "wins": 6,
+        "median": 0.023738469789795547,
+        "mean": 0.018719254101698182,
+        "best": 0.04244954766875453,
+        "worst": -0.007740398928252401,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "exact": 332.7,
+            "ratio": 0.03806552262090479
+          },
+          {
+            "round": 1,
+            "default": 329.2,
+            "exact": 330.8,
+            "ratio": 0.00486026731470246
+          },
+          {
+            "round": 2,
+            "default": 335.9,
+            "exact": 333.3,
+            "ratio": -0.007740398928252401
+          },
+          {
+            "round": 3,
+            "default": 299.7,
+            "exact": 307.3,
+            "ratio": 0.025358692025358787
+          },
+          {
+            "round": 4,
+            "default": 293.7,
+            "exact": 302.2,
+            "ratio": 0.028941096356826623
+          },
+          {
+            "round": 5,
+            "default": 287.4,
+            "exact": 299.6,
+            "ratio": 0.04244954766875453
+          },
+          {
+            "round": 6,
+            "default": 302.4,
+            "exact": 301.1,
+            "ratio": -0.004298941798941636
+          },
+          {
+            "round": 7,
+            "default": 235.1,
+            "exact": 240.3,
+            "ratio": 0.022118247554232306
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "wins": 6,
+        "median": 0.01576692630472387,
+        "mean": 0.01373650721141606,
+        "best": 0.06297842727905367,
+        "worst": -0.02776911076443056,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "fast": 311.6,
+            "ratio": -0.02776911076443056
+          },
+          {
+            "round": 1,
+            "default": 329.2,
+            "fast": 334.4,
+            "ratio": 0.015795868772782384
+          },
+          {
+            "round": 2,
+            "default": 335.9,
+            "fast": 336.1,
+            "ratio": 0.000595415302173441
+          },
+          {
+            "round": 3,
+            "default": 299.7,
+            "fast": 295.6,
+            "ratio": -0.01368034701368026
+          },
+          {
+            "round": 4,
+            "default": 293.7,
+            "fast": 304.0,
+            "ratio": 0.03506979911474306
+          },
+          {
+            "round": 5,
+            "default": 287.4,
+            "fast": 305.5,
+            "ratio": 0.06297842727905367
+          },
+          {
+            "round": 6,
+            "default": 302.4,
+            "fast": 308.8,
+            "ratio": 0.021164021164021385
+          },
+          {
+            "round": 7,
+            "default": 235.1,
+            "fast": 238.8,
+            "ratio": 0.01573798383666536
+          }
+        ]
+      }
+    },
+    "32": {
+      "exact": {
+        "n": 8,
+        "wins": 4,
+        "median": -0.0017682265235488548,
+        "mean": -0.015654076932126795,
+        "best": 0.04509663564781685,
+        "worst": -0.1505520240883238,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "exact": 315.8,
+            "ratio": -0.014664586583463257
+          },
+          {
+            "round": 1,
+            "default": 324.3,
+            "exact": 324.4,
+            "ratio": 0.00030835646006766027
+          },
+          {
+            "round": 2,
+            "default": 290.3,
+            "exact": 288.5,
+            "ratio": -0.006200482259731355
+          },
+          {
+            "round": 3,
+            "default": 286.1,
+            "exact": 285.0,
+            "ratio": -0.00384480950716537
+          },
+          {
+            "round": 4,
+            "default": 279.4,
+            "exact": 292.0,
+            "ratio": 0.04509663564781685
+          },
+          {
+            "round": 5,
+            "default": 286.7,
+            "exact": 286.9,
+            "ratio": 0.0006975933031041492
+          },
+          {
+            "round": 6,
+            "default": 298.9,
+            "exact": 253.9,
+            "ratio": -0.1505520240883238
+          },
+          {
+            "round": 7,
+            "default": 229.2,
+            "exact": 230.1,
+            "ratio": 0.003926701570680757
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "wins": 3,
+        "median": 0.0,
+        "mean": 0.00937002751336724,
+        "best": 0.08026179813985546,
+        "worst": -0.02621461027612726,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "fast": 320.3,
+            "ratio": -0.0006240249609984483
+          },
+          {
+            "round": 1,
+            "default": 324.3,
+            "fast": 327.6,
+            "ratio": 0.010175763182238784
+          },
+          {
+            "round": 2,
+            "default": 290.3,
+            "fast": 313.6,
+            "ratio": 0.08026179813985546
+          },
+          {
+            "round": 3,
+            "default": 286.1,
+            "fast": 278.6,
+            "ratio": -0.02621461027612726
+          },
+          {
+            "round": 4,
+            "default": 279.4,
+            "fast": 285.5,
+            "ratio": 0.021832498210450968
+          },
+          {
+            "round": 5,
+            "default": 286.7,
+            "fast": 286.7,
+            "ratio": 0.0
+          },
+          {
+            "round": 6,
+            "default": 298.9,
+            "fast": 298.9,
+            "ratio": 0.0
+          },
+          {
+            "round": 7,
+            "default": 229.2,
+            "fast": 226.8,
+            "ratio": -0.010471204188481575
+          }
+        ]
+      }
+    }
+  },
+  "paired_comparisons_filtered_low_outliers_vs_first_variant": {
+    "16": {
+      "exact": {
+        "n": 8,
+        "wins": 6,
+        "median": 0.023738469789795547,
+        "mean": 0.018719254101698182,
+        "best": 0.04244954766875453,
+        "worst": -0.007740398928252401,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "exact": 332.7,
+            "ratio": 0.03806552262090479
+          },
+          {
+            "round": 1,
+            "default": 329.2,
+            "exact": 330.8,
+            "ratio": 0.00486026731470246
+          },
+          {
+            "round": 2,
+            "default": 335.9,
+            "exact": 333.3,
+            "ratio": -0.007740398928252401
+          },
+          {
+            "round": 3,
+            "default": 299.7,
+            "exact": 307.3,
+            "ratio": 0.025358692025358787
+          },
+          {
+            "round": 4,
+            "default": 293.7,
+            "exact": 302.2,
+            "ratio": 0.028941096356826623
+          },
+          {
+            "round": 5,
+            "default": 287.4,
+            "exact": 299.6,
+            "ratio": 0.04244954766875453
+          },
+          {
+            "round": 6,
+            "default": 302.4,
+            "exact": 301.1,
+            "ratio": -0.004298941798941636
+          },
+          {
+            "round": 7,
+            "default": 235.1,
+            "exact": 240.3,
+            "ratio": 0.022118247554232306
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "wins": 6,
+        "median": 0.01576692630472387,
+        "mean": 0.01373650721141606,
+        "best": 0.06297842727905367,
+        "worst": -0.02776911076443056,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "fast": 311.6,
+            "ratio": -0.02776911076443056
+          },
+          {
+            "round": 1,
+            "default": 329.2,
+            "fast": 334.4,
+            "ratio": 0.015795868772782384
+          },
+          {
+            "round": 2,
+            "default": 335.9,
+            "fast": 336.1,
+            "ratio": 0.000595415302173441
+          },
+          {
+            "round": 3,
+            "default": 299.7,
+            "fast": 295.6,
+            "ratio": -0.01368034701368026
+          },
+          {
+            "round": 4,
+            "default": 293.7,
+            "fast": 304.0,
+            "ratio": 0.03506979911474306
+          },
+          {
+            "round": 5,
+            "default": 287.4,
+            "fast": 305.5,
+            "ratio": 0.06297842727905367
+          },
+          {
+            "round": 6,
+            "default": 302.4,
+            "fast": 308.8,
+            "ratio": 0.021164021164021385
+          },
+          {
+            "round": 7,
+            "default": 235.1,
+            "fast": 238.8,
+            "ratio": 0.01573798383666536
+          }
+        ]
+      }
+    },
+    "32": {
+      "exact": {
+        "n": 8,
+        "wins": 4,
+        "median": -0.0017682265235488548,
+        "mean": -0.015654076932126795,
+        "best": 0.04509663564781685,
+        "worst": -0.1505520240883238,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "exact": 315.8,
+            "ratio": -0.014664586583463257
+          },
+          {
+            "round": 1,
+            "default": 324.3,
+            "exact": 324.4,
+            "ratio": 0.00030835646006766027
+          },
+          {
+            "round": 2,
+            "default": 290.3,
+            "exact": 288.5,
+            "ratio": -0.006200482259731355
+          },
+          {
+            "round": 3,
+            "default": 286.1,
+            "exact": 285.0,
+            "ratio": -0.00384480950716537
+          },
+          {
+            "round": 4,
+            "default": 279.4,
+            "exact": 292.0,
+            "ratio": 0.04509663564781685
+          },
+          {
+            "round": 5,
+            "default": 286.7,
+            "exact": 286.9,
+            "ratio": 0.0006975933031041492
+          },
+          {
+            "round": 6,
+            "default": 298.9,
+            "exact": 253.9,
+            "ratio": -0.1505520240883238
+          },
+          {
+            "round": 7,
+            "default": 229.2,
+            "exact": 230.1,
+            "ratio": 0.003926701570680757
+          }
+        ]
+      },
+      "fast": {
+        "n": 8,
+        "wins": 3,
+        "median": 0.0,
+        "mean": 0.00937002751336724,
+        "best": 0.08026179813985546,
+        "worst": -0.02621461027612726,
+        "pairs": [
+          {
+            "round": 0,
+            "default": 320.5,
+            "fast": 320.3,
+            "ratio": -0.0006240249609984483
+          },
+          {
+            "round": 1,
+            "default": 324.3,
+            "fast": 327.6,
+            "ratio": 0.010175763182238784
+          },
+          {
+            "round": 2,
+            "default": 290.3,
+            "fast": 313.6,
+            "ratio": 0.08026179813985546
+          },
+          {
+            "round": 3,
+            "default": 286.1,
+            "fast": 278.6,
+            "ratio": -0.02621461027612726
+          },
+          {
+            "round": 4,
+            "default": 279.4,
+            "fast": 285.5,
+            "ratio": 0.021832498210450968
+          },
+          {
+            "round": 5,
+            "default": 286.7,
+            "fast": 286.7,
+            "ratio": 0.0
+          },
+          {
+            "round": 6,
+            "default": 298.9,
+            "fast": 298.9,
+            "ratio": 0.0
+          },
+          {
+            "round": 7,
+            "default": 229.2,
+            "fast": 226.8,
+            "ratio": -0.010471204188481575
+          }
+        ]
+      }
+    }
+  },
+  "low_outlier_count": 0,
+  "runs": [
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 315.8,
+      "per_stream_tok_s": 9.9,
+      "wall_s": 11.2856685,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 320.3,
+      "per_stream_tok_s": 10.0,
+      "wall_s": 10.466626999999999,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 320.5,
+      "per_stream_tok_s": 10.0,
+      "wall_s": 10.812701959000002,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 320.5,
+      "per_stream_tok_s": 20.0,
+      "wall_s": 5.268980625000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 332.7,
+      "per_stream_tok_s": 20.8,
+      "wall_s": 5.140905042,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 311.6,
+      "per_stream_tok_s": 19.5,
+      "wall_s": 5.418377959000004,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 0
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 330.8,
+      "per_stream_tok_s": 20.7,
+      "wall_s": 5.146339374999997,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 329.2,
+      "per_stream_tok_s": 20.6,
+      "wall_s": 5.172396082999995,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 334.4,
+      "per_stream_tok_s": 20.9,
+      "wall_s": 5.171274208,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 324.4,
+      "per_stream_tok_s": 10.1,
+      "wall_s": 10.275330791999991,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 324.3,
+      "per_stream_tok_s": 10.1,
+      "wall_s": 10.242563167,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 327.6,
+      "per_stream_tok_s": 10.2,
+      "wall_s": 10.181581457999997,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 1
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 336.1,
+      "per_stream_tok_s": 21.0,
+      "wall_s": 5.050601125,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 333.3,
+      "per_stream_tok_s": 20.8,
+      "wall_s": 5.063354000000004,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 335.9,
+      "per_stream_tok_s": 21.0,
+      "wall_s": 5.033711917000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 313.6,
+      "per_stream_tok_s": 9.8,
+      "wall_s": 10.627006999999992,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 288.5,
+      "per_stream_tok_s": 9.0,
+      "wall_s": 11.485051542000008,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 290.3,
+      "per_stream_tok_s": 9.1,
+      "wall_s": 11.420515000000023,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 2
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 307.3,
+      "per_stream_tok_s": 19.2,
+      "wall_s": 5.487080375000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 295.6,
+      "per_stream_tok_s": 18.5,
+      "wall_s": 5.818416000000013,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 299.7,
+      "per_stream_tok_s": 18.7,
+      "wall_s": 5.600608332999997,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 285.0,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 11.671704834000025,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 278.6,
+      "per_stream_tok_s": 8.7,
+      "wall_s": 11.877846917,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 286.1,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 11.5254525,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 3
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 302.2,
+      "per_stream_tok_s": 18.9,
+      "wall_s": 5.606274084000006,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 304.0,
+      "per_stream_tok_s": 19.0,
+      "wall_s": 5.535099500000001,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 293.7,
+      "per_stream_tok_s": 18.4,
+      "wall_s": 5.778241667000003,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 279.4,
+      "per_stream_tok_s": 8.7,
+      "wall_s": 11.957663666999991,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 285.5,
+      "per_stream_tok_s": 8.9,
+      "wall_s": 11.674652209000016,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 292.0,
+      "per_stream_tok_s": 9.1,
+      "wall_s": 11.438677291000033,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 4
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 305.5,
+      "per_stream_tok_s": 19.1,
+      "wall_s": 5.587243833000002,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 287.4,
+      "per_stream_tok_s": 18.0,
+      "wall_s": 5.940104541999972,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 299.6,
+      "per_stream_tok_s": 18.7,
+      "wall_s": 5.646031665999999,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 286.7,
+      "per_stream_tok_s": 9.0,
+      "wall_s": 11.545939957999963,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 286.9,
+      "per_stream_tok_s": 9.0,
+      "wall_s": 11.554706124999996,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 286.7,
+      "per_stream_tok_s": 9.0,
+      "wall_s": 11.514254208000011,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 5
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 308.8,
+      "per_stream_tok_s": 19.3,
+      "wall_s": 5.467704875000038,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 302.4,
+      "per_stream_tok_s": 18.9,
+      "wall_s": 5.592204041999992,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 301.1,
+      "per_stream_tok_s": 18.8,
+      "wall_s": 5.821036917000015,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 298.9,
+      "per_stream_tok_s": 9.3,
+      "wall_s": 11.124485875000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 298.9,
+      "per_stream_tok_s": 9.3,
+      "wall_s": 11.083632582999996,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 253.9,
+      "per_stream_tok_s": 7.9,
+      "wall_s": 12.905661124999995,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 6
+    },
+    {
+      "variant": "default",
+      "B": 16,
+      "aggregate_tok_s": 235.1,
+      "per_stream_tok_s": 14.7,
+      "wall_s": 7.114471333999973,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    },
+    {
+      "variant": "exact",
+      "B": 16,
+      "aggregate_tok_s": 240.3,
+      "per_stream_tok_s": 15.0,
+      "wall_s": 6.994170999999994,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    },
+    {
+      "variant": "fast",
+      "B": 16,
+      "aggregate_tok_s": 238.8,
+      "per_stream_tok_s": 14.9,
+      "wall_s": 7.006175417000009,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    },
+    {
+      "variant": "exact",
+      "B": 32,
+      "aggregate_tok_s": 230.1,
+      "per_stream_tok_s": 7.2,
+      "wall_s": 14.433120290999966,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    },
+    {
+      "variant": "default",
+      "B": 32,
+      "aggregate_tok_s": 229.2,
+      "per_stream_tok_s": 7.2,
+      "wall_s": 14.385661500000026,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    },
+    {
+      "variant": "fast",
+      "B": 32,
+      "aggregate_tok_s": 226.8,
+      "per_stream_tok_s": 7.1,
+      "wall_s": 14.576790667000012,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ],
+      "prefix_ok": true,
+      "round": 7
+    }
+  ],
+  "ts": 1781019360.198417
+}

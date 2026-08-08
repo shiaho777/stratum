@@ -1,0 +1,562 @@
+{
+  "model": "/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf",
+  "n_gen": 64,
+  "repeats": 3,
+  "variants": [
+    "v4_default",
+    "v5"
+  ],
+  "results": [
+    {
+      "B": 8,
+      "repeat": 0,
+      "variant": "v4_default",
+      "aggregate_tok_s": 210.3,
+      "per_stream_tok_s": 26.3,
+      "wall_s": 2.803266917,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 8,
+      "repeat": 0,
+      "variant": "v5",
+      "aggregate_tok_s": 197.7,
+      "per_stream_tok_s": 24.7,
+      "wall_s": 2.981321834,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 8,
+      "repeat": 1,
+      "variant": "v5",
+      "aggregate_tok_s": 202.1,
+      "per_stream_tok_s": 25.3,
+      "wall_s": 2.8995985410000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 8,
+      "repeat": 1,
+      "variant": "v4_default",
+      "aggregate_tok_s": 206.5,
+      "per_stream_tok_s": 25.8,
+      "wall_s": 2.8613019160000004,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 8,
+      "repeat": 2,
+      "variant": "v4_default",
+      "aggregate_tok_s": 215.1,
+      "per_stream_tok_s": 26.9,
+      "wall_s": 2.772097916,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 8,
+      "repeat": 2,
+      "variant": "v5",
+      "aggregate_tok_s": 197.5,
+      "per_stream_tok_s": 24.7,
+      "wall_s": 2.970295042000002,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "v4_default",
+      "aggregate_tok_s": 192.0,
+      "per_stream_tok_s": 12.0,
+      "wall_s": 5.963250624999997,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 0,
+      "variant": "v5",
+      "aggregate_tok_s": 198.8,
+      "per_stream_tok_s": 12.4,
+      "wall_s": 5.8182753330000025,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "v5",
+      "aggregate_tok_s": 201.2,
+      "per_stream_tok_s": 12.6,
+      "wall_s": 5.740569041999997,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 1,
+      "variant": "v4_default",
+      "aggregate_tok_s": 195.8,
+      "per_stream_tok_s": 12.2,
+      "wall_s": 5.901603459,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 2,
+      "variant": "v4_default",
+      "aggregate_tok_s": 190.8,
+      "per_stream_tok_s": 11.9,
+      "wall_s": 6.041014500000003,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 16,
+      "repeat": 2,
+      "variant": "v5",
+      "aggregate_tok_s": 205.5,
+      "per_stream_tok_s": 12.8,
+      "wall_s": 5.631759000000002,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "v4_default",
+      "aggregate_tok_s": 189.5,
+      "per_stream_tok_s": 7.9,
+      "wall_s": 8.961245874999996,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 0,
+      "variant": "v5",
+      "aggregate_tok_s": 196.1,
+      "per_stream_tok_s": 8.2,
+      "wall_s": 8.724002582999994,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "v5",
+      "aggregate_tok_s": 198.1,
+      "per_stream_tok_s": 8.3,
+      "wall_s": 8.689363208000003,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 1,
+      "variant": "v4_default",
+      "aggregate_tok_s": 190.2,
+      "per_stream_tok_s": 7.9,
+      "wall_s": 9.026567874999998,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 2,
+      "variant": "v4_default",
+      "aggregate_tok_s": 183.5,
+      "per_stream_tok_s": 7.6,
+      "wall_s": 9.221502333000004,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 24,
+      "repeat": 2,
+      "variant": "v5",
+      "aggregate_tok_s": 208.7,
+      "per_stream_tok_s": 8.7,
+      "wall_s": 8.193348665999991,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "v4_default",
+      "aggregate_tok_s": 199.4,
+      "per_stream_tok_s": 6.2,
+      "wall_s": 11.361677375,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 0,
+      "variant": "v5",
+      "aggregate_tok_s": 210.4,
+      "per_stream_tok_s": 6.6,
+      "wall_s": 10.777227208,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "v5",
+      "aggregate_tok_s": 200.1,
+      "per_stream_tok_s": 6.3,
+      "wall_s": 11.283534708000005,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 1,
+      "variant": "v4_default",
+      "aggregate_tok_s": 201.0,
+      "per_stream_tok_s": 6.3,
+      "wall_s": 11.40017791699998,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 2,
+      "variant": "v4_default",
+      "aggregate_tok_s": 223.5,
+      "per_stream_tok_s": 7.0,
+      "wall_s": 10.089901709000003,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    },
+    {
+      "B": 32,
+      "repeat": 2,
+      "variant": "v5",
+      "aggregate_tok_s": 228.5,
+      "per_stream_tok_s": 7.1,
+      "wall_s": 9.95169150000001,
+      "first_token": 3681,
+      "first_steps": [
+        29889,
+        13,
+        13,
+        29906,
+        29889,
+        350,
+        29889,
+        29907
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "B": 8,
+      "v4_default": {
+        "best": 215.1,
+        "median": 210.3,
+        "runs": [
+          210.3,
+          206.5,
+          215.1
+        ]
+      },
+      "v5": {
+        "best": 202.1,
+        "median": 197.7,
+        "runs": [
+          197.7,
+          202.1,
+          197.5
+        ]
+      },
+      "v5_over_v4_best_pct": -6.043700604370061,
+      "v5_over_v4_median_pct": -5.991440798858783
+    },
+    {
+      "B": 16,
+      "v4_default": {
+        "best": 195.8,
+        "median": 192.0,
+        "runs": [
+          192.0,
+          195.8,
+          190.8
+        ]
+      },
+      "v5": {
+        "best": 205.5,
+        "median": 201.2,
+        "runs": [
+          198.8,
+          201.2,
+          205.5
+        ]
+      },
+      "v5_over_v4_best_pct": 4.954034729315615,
+      "v5_over_v4_median_pct": 4.791666666666661
+    },
+    {
+      "B": 24,
+      "v4_default": {
+        "best": 190.2,
+        "median": 189.5,
+        "runs": [
+          189.5,
+          190.2,
+          183.5
+        ]
+      },
+      "v5": {
+        "best": 208.7,
+        "median": 198.1,
+        "runs": [
+          196.1,
+          198.1,
+          208.7
+        ]
+      },
+      "v5_over_v4_best_pct": 9.726603575184022,
+      "v5_over_v4_median_pct": 4.538258575197895
+    },
+    {
+      "B": 32,
+      "v4_default": {
+        "best": 223.5,
+        "median": 201.0,
+        "runs": [
+          199.4,
+          201.0,
+          223.5
+        ]
+      },
+      "v5": {
+        "best": 228.5,
+        "median": 210.4,
+        "runs": [
+          210.4,
+          200.1,
+          228.5
+        ]
+      },
+      "v5_over_v4_best_pct": 2.237136465324374,
+      "v5_over_v4_median_pct": 4.676616915422893
+    }
+  ],
+  "ts": 1780937526.9057438
+}
