@@ -26,7 +26,7 @@ The binding constraint is disk and bandwidth, not RAM: a model runs to completio
 |---|---|
 | CPU | **Apple Silicon (ARM64) required.** The hot path is hand-written NEON SIMD, which exists only on Apple Silicon. Intel Macs (x86_64) are not supported. Any M1/M2/M3/M4 chip works, including base/Pro/Max/Ultra. |
 | GPU | None to buy. The GPU is integrated into the SoC and exposed through Metal; the engine runs fully on CPU and uses it only for optional acceleration. |
-| RAM | 8 GB minimum. Unified memory (CPU+GPU share one pool) is what makes a 27B model run on a 24 GB machine. |
+| RAM | **No practical minimum — any modern device runs it.** The engine's anonymous need is ~7 MB (small models) / ~77 MB (27B, incl. KV/SSM state); weights live in reclaimable page cache, so RAM does not decide whether a model runs, only how fast. 1 GB is the modern-device baseline; every Apple Silicon Mac ships with ≥8 GB. |
 | Disk | ≥ model file size, NVMe SSD recommended. Cold weights stream from disk; ~3 GB/s sequential read keeps the cold path usable. |
 
 Memory bandwidth is the dominant performance lever, not core count. Apple Silicon bandwidth grows with chip tier:
@@ -38,6 +38,17 @@ Memory bandwidth is the dominant performance lever, not core count. Apple Silico
 | M4 / M4 Pro | ~120 / 273 GB/s |
 | M3 Max / M4 Max | ~400 / 546 GB/s |
 | Ultra (dual Max) | ~800+ GB/s |
+
+### Minimum hardware for 5 tok/s
+
+"Runs" and "runs fast" are different questions. Minimum **5 tokens/s** per model tier, derived from the per-token time formula `W × (f_hot / BW_hot + f_cold / BW_cold)` and anchored to measured hardware:
+
+| Model | Minimum for 5 tok/s | Why |
+|---|---|---|
+| 1B (Q4_K, ~688 MB) | **Any Apple Silicon (M1 base or newer) + ≥1 GB RAM + SSD** | 5 tok/s = 200 ms/token = 688 MB / 0.2 s ≈ **3.4 GB/s** effective bandwidth. Every M-chip (~70 GB/s+) and every SSD (~3 GB/s+) clears this by an order of magnitude — measured 68 tok/s on M4 Pro, i.e. ~20× headroom at 1B scale. |
+| 27B (Q2_K/Q4_K/Q6_K, 11.98 GB) | **M4 Pro-class (~250 GB/s) + ≥16 GB RAM (model mostly hot) + NVMe SSD** | 5 tok/s = 200 ms/token = 11.98 GB / 0.2 s ≈ **60 GB/s** effective bandwidth. Decode uses ~25–30% of nominal bandwidth, so the chip needs ~250 GB/s nominal — the M4 Pro tier (273 GB/s). Below M4 Pro, even fully hot, M2 Pro (~200 GB/s) tops out near 4 tok/s. RAM ≥16 GB keeps the model mostly resident in page cache (measured anchor: M4 Pro + 24 GB = 5.73 tok/s hot short-run). |
+
+A model *runs* on far less than this: on the same machine, the 27B streams fully cold at ~0.2–0.3 tok/s from an M1 base with 8 GB. The table above is the threshold where throughput stops being a waiting game.
 
 ### Quick start
 
