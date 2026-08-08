@@ -1,136 +1,148 @@
-# AGENTS.md — Stratum 推理引擎开发指南
+# AGENTS.md — Stratum Inference Engine Development Guide
 
-## 项目身份
+## Project Identity
 
-Stratum 是一个在 Apple Silicon 上以极致低绑定内存运行 Transformer 模型的推理引擎。核心优势是 **mmap 流式架构**——绑定内存与模型大小解耦，7MB 匿名内存可运行任意大小模型。速度是次要目标，内存优势是命脉。
+Stratum is an inference engine for Transformer models on Apple Silicon that runs with an extremely low wired-memory footprint. Its core advantage is the **mmap streaming architecture** — wired memory is decoupled from model size: ~7 MB anonymous memory runs a 27B dense model. Speed is a secondary goal; the memory advantage is the lifeblood.
 
-## 三条硬边界
+The engine is a **native C/Metal codebase** (`stratum/native/`). An early Python reference implementation existed but was removed (2026-08) — the native engine is the only maintained line. Python scripts under `stratum/tools/` are standalone GGUF utilities, not part of the engine.
 
-以下三条边界不可违反，不可为了速度而妥协，不可在"测试"或"实验"中绕过：
+## Three Hard Boundaries
 
-### 1. 不得影响模型智商
+The following boundaries must not be violated, must not be traded away for speed, and must not be bypassed "for testing" or "for an experiment":
 
-- 禁止使用低于 Q4_K 的量化格式（Q2_K、Q3_K）来"提速"大模型
-- 禁止重新量化已有权重（如 Q4_K → Q4_0 重编码）——这会引入精度损失
-- 禁止跳过层计算（layer skip）来省 IO——这改变模型输出
-- 禁止近似计算（如降低 softmax 精度、截断 attention）
-- 唯一允许的"近似"是已有的 int8 dotprod（Q4_K SDOT），因为它已被验证为 greedy bit-exact
+### 1. Never harm model quality
 
-### 2. 不得增加绑定内存
+- Never requantize existing weights (e.g. re-encoding Q4_K → Q4_0) — that introduces precision loss
+- Never skip layer computation to save I/O — that changes model output
+- Never approximate compute (e.g. lowering softmax precision, truncating attention)
+- Quantization formats (Q2_K/Q4_K/Q6_K) in a model file are the model's own choice; the engine consumes them as-is and never degrades them
+- The only allowed "approximation" is int8 dotprod (Q4_K SDOT), verified greedy bit-exact
+- **The type-42 Q2_K nibble layout is a byte re-arrangement, not requantization**: the 0–3 weight values are unchanged; it only changes how bytes are unpacked. It is allowed.
 
-- 绑定内存（anonymous, non-reclaimable）必须保持在 ~7MB 级别
-- 禁止 mlock 整个模型或大块权重到物理 RAM
-- 禁止预分配大 buffer 缓存权重（GPU staging buffer 除外，必须受控）
-- 权重必须通过 mmap 从 OS page cache 流式读取，page cache 是可回收的
-- 激活、KV cache、SSM state 的匿名分配是允许的（这些是模型本身需要的）
+### 2. Never increase wired memory
 
-### 2a. Metal GPU 零拷贝陷阱（致命边界）
+- Wired (anonymous, non-reclaimable) memory must stay at the ~7 MB level
+- Never mlock the whole model or large weight blocks into physical RAM
+- Never pre-allocate large buffers to cache weights (GPU staging buffers excepted, must be bounded)
+- Weights must be streamed via mmap from the OS page cache; page cache is reclaimable
+- Anonymous allocation for activations, KV cache, and SSM state is allowed (the model needs it)
 
-**`newBufferWithBytesNoCopy` 对 mmap 页面的 GPU 访问会 wire（锁定）物理页，使其变为 non-reclaimable。** 这等同于变相 mlock 整个模型：
+### 2a. Metal GPU access — measured, not assumed
 
-- 对 16GB 模型使用 `newBufferWithBytesNoCopy` → 16GB 物理页被 wire → 内存干爆
-- 即使代码不显式 mlock，GPU 首次访问 mmap 页时内核会自动 wire
-- **禁止对大模型（>1GB）使用 `newBufferWithBytesNoCopy` 注册整个 mmap**
-- **禁止 `keep_resident` 自动模式**（V13 引入的 auto-detect 会在模型 <75% RAM 时锁定 page cache）
-- 允许的 GPU 模式：**受控 staging buffer** — 每次只拷贝当前层权重到 GPU（<100MB），计算完释放
-- 允许的 GPU 模式：**逐 tensor dispatch** — 单个 tensor（<50MB）临时注册为 GPU buffer，用完释放
+**History**: V54 observed wired-memory blowup with `newBufferWithBytesNoCopy` over a whole-model mmap and this boundary was written as "NoCopy is forbidden". That conclusion was **overturned by controlled measurement** (2026-08): sequentially GPU-reading the whole 11.98 GB model through per-tensor NoCopy windows added only +0.04 GB wired (hold=0) / +0.2 GB (hold=1). The V54 blowup was a compound of *whole-model single-chunk registration* + a system already near OOM — not an inherent property of NoCopy.
 
-### 3. 测试时不得占用超过 1GB 常驻内存
+Current rules:
 
-- 测试任何推理引擎时，进程的常驻物理内存不得超过 1GB
-- 大模型（27B）测试只允许 1-2 token 生成，不得长时间运行
-- 禁止在 24GB 机器上同时运行模型 + 大量后台进程
-- 测试前必须检查 `memory_pressure`，如果 free pages 不足则不得启动大模型测试
-- 小模型（<1GB GGUF）是主要的测试对象
+- **Allowed**: per-tensor NoCopy direct-read (`STRATUM_GPU_NC=1`) — each matmul wraps only its own tensor (<100 MB) in a NoCopy buffer, dispatches, and releases. Measured safe and bit-exact on the 27B model.
+- **Allowed**: batched NC submission (`stratum_metal_nc_batch_*`) — multiple independent matmuls share one command buffer (17.3× vs per-matmul waits).
+- **Forbidden**: registering the whole model (or chunks > ~1 GB) as one NoCopy buffer — this is the V54 failure mode.
+- **Forbidden**: `keep_resident` auto mode (locks page cache = implicit mlock). `STRATUM_HOT_FAST` is the sanctioned replacement: it reuses the resident fast path for scheduling but does **not** lock page cache.
+- GPU2 (staging) remains the cold-weight path; measured slower than CPU for hot weights — do not route hot weights to staging.
 
-## 开发优先级
+### 3. Testing must not exhaust the machine
 
-1. **正确性** — greedy decoding 必须与参考实现 bit-exact（token 序列一致）
-2. **内存** — 绑定内存不随模型大小增长
-3. **速度** — 在不违反 1 和 2 的前提下追求极致性能
+- Before any big-model test, check memory state (`vm_stat` free pages, `sysctl vm.swapusage`); do not start if the system is under pressure
+- 27B tests: prefer 1–2 tokens for correctness checks; a full 8-token speed run is acceptable **only** when the model is already hot in page cache and free memory allows
+- Kernel-level experiments must use the lightweight micro-benchmarks (`bench_*.c`, tens of MB) — not the 27B end-to-end
+- Never run the model plus heavy background processes simultaneously on the 24 GB machine
+- Small models (0.5B–1B GGUF) are the primary test objects
 
-## 速度优化方向（符合边界的）
+## Development Priorities
 
-### 允许的优化
+1. **Correctness** — greedy decoding must stay bit-exact (token sequence identical) with the reference implementation
+2. **Memory** — wired memory must not grow with model size
+3. **Speed** — pursue performance only within boundaries 1 and 2
 
-- GPU kernel 效率优化（Q4_K 解包、SIMD、fused ops）
-- 多序列批处理（batched decode，权重复用）
-- 推测解码（n-gram spec、MTP）——不改变输出，只加速
-- 后台 pread 预取（零额外绑定内存，page cache 可回收）
-- SSM group dispatch（多 matmul 合并到一个 command buffer）
-- Metal GPU **受控 staging**（逐层/tensor 拷贝权重到 GPU，<100MB/tensor，用完释放）
-- Metal GPU 逐 tensor 临时 buffer（单 tensor <50MB，dispatch 后立即释放）
+## Speed Optimization Directions (within boundaries)
 
-### 禁止的优化
+### Allowed
 
-- ❌ 降低量化精度（Q2_K、Q3_K、INT4 重编码）
-- ❌ mlock 整模型或大块权重
-- ❌ 预分配 GPU buffer 缓存所有权重（如 F16 预解码存 GPU）
-- ❌ 层跳过、块跳过（改变模型输出）
-- ❌ 降低 attention 精度、截断 KV cache
-- ❌ `newBufferWithBytesNoCopy` 注册整个大模型 mmap（GPU 会 wire 所有物理页）
-- ❌ `keep_resident` 自动模式（锁定 page cache = 变相 mlock）
-- ❌ 任何在 GPU 上保留 >200MB 权重 buffer 的方案
+- GPU kernel efficiency (Q4_K unpack, SIMD, fused ops)
+- Multi-stream batching (batched decode, weight reuse) — `STRATUM_MULTISEQ=N` measured: aggregate throughput scales ~linearly with N (130 tok/s @ 64 streams on 27B)
+- Speculative decoding (n-gram spec, MTP tree) — changes nothing about output, only speed. MTP tree: 8 tokens/forward at full acceptance
+- Background pread prefetch (zero extra wired memory, page cache is reclaimable)
+- SSM group dispatch (merge multiple matmuls into one command buffer)
+- Metal per-tensor NoCopy direct-read + batched NC submission (see 2a)
+- Q2K nibble layout (type-42): byte re-arrangement that halves unpack instructions (measured 2.2×) — allowed because values are unchanged
 
-## 架构概要
+### Forbidden
 
-### 第四条硬边界：通用性
+- ❌ Requantizing to lower precision (Q4_K → Q4_0 re-encoding)
+- ❌ mlock of the whole model or large weight blocks
+- ❌ Pre-allocating GPU buffers to cache all weights
+- ❌ Layer/block skipping (changes output)
+- ❌ Lowering attention precision, truncating KV cache
+- ❌ `newBufferWithBytesNoCopy` over whole-model/chunk >1 GB mmap (V54 failure mode)
+- ❌ `keep_resident` auto mode (page-cache lock = implicit mlock)
+- ❌ Any scheme keeping >200 MB of weight buffers on the GPU
 
-Stratum 针对的是**任意模型**，不是某个特定模型。以下原则不可违反：
+## Architecture Overview
 
-- **禁止在 `stratum.c` 中硬编码任何模型名称或架构名称**——分发逻辑必须通过注册表 (`stratum_arch.h`) 完成
-- **禁止在配置加载中使用特定模型假设**——如用 `blk.3` 而非 `blk.0` 探测张量存在性；SSM 默认值不能假设是某个模型的参数
-- **新增架构只需**：创建 `stratum_arch_<name>.inc.c`，实现 `StratumArch` 接口，调用 `STRATUM_REGISTER_ARCH()` 注册，在 `stratum.c` 末尾 `#include`——**不修改任何现有文件**
-- **通用基础设施（量化线性层、CPU/GPU 初始化、madvise、KV cache、spec decode）必须放在 `stratum_linear.h` / `stratum_engine.h` 中共享**，不得在各架构文件中复制粘贴
-- **环境变量必须是通用的**——不得有 `STRATUM_QWEN35_XXX` 这样的模型特定变量
+### Fourth hard boundary: generality
 
-### C 原生引擎（`native/`）
+Stratum targets **any model**, not a specific one. These rules must not be violated:
 
-- `stratum.c` — 主入口，通过注册表分发（**无任何硬编码架构名称**）
-- `stratum_arch.h` — 通用架构注册表接口 + 通用配置加载器 (`StratumConfig`)
-- `stratum_linear.h` — 通用量化线性层（Q4_K/Q5_K/Q6_K/Q3_K/Q2_K/Q8_0/F16/F32 dispatch，消除 `la_`/`q35_` 重复）
-- `stratum_engine.h` — 通用引擎基础设施（CPU检测/GPU初始化/madvise/keep_resident/滑动窗口KV/spec decode/内存报告）
-- `stratum_arch_qwen35.inc.c` — Qwen3.5 混合架构（Gated DeltaNet + full attention），通过注册表自注册
-- `stratum_arch_llama.inc.c` — Llama 架构，通过注册表自注册
-- `stratum_metal.m/.h` — Metal GPU 加速层
-- `stratum_q4k.metal` — Q4_K/Q5_K/Q6_K + 自定义 kernel 的 Metal 着色器
-- `stratum_q4k.h` 等 — 量化内核（NEON + scalar）
+- **Never hardcode a model or architecture name in `stratum.c`** — dispatch must go through the registry (`stratum_arch.h`)
+- **Never assume specific-model properties in config loading** (e.g. probing tensor existence via `blk.3` instead of `blk.0`; SSM defaults must not assume one model's parameters)
+- **Adding an architecture = create `stratum_arch_<name>.inc.c`, implement the `StratumArch` interface, call `STRATUM_REGISTER_ARCH()`, `#include` at the end of `stratum.c`** — no existing file modified
+- **Shared infrastructure** (quantized linear layers, CPU/GPU init, madvise, KV cache, spec decode) lives in `stratum_linear.h` / `stratum_engine.h` — never copy-pasted per architecture
+- **Env vars must be generic** — no model-specific `STRATUM_QWEN35_*` variables
 
-### Python 参考实现（`stratum/`）
+### Native C engine (`native/`)
 
-- `adapters/qwen3_5.py` — meta device 模型构建 + mmap 权重注入
-- `sparse/` — StreamingLLM KV cache、稀疏 attention、快速递归步
-- `research/` — 稀疏性分析、低秩谱、预测器
-- `backends/` — mmap、HTTP Range、量化后端
+- `stratum.c` — entry point, dispatch through registry (no hardcoded architecture names)
+- `stratum_arch.h` — generic registry interface + generic config loader
+- `stratum_linear.h` — generic quantized linear layers (Q4_K/Q5_K/Q6_K/Q3_K/Q2_K/Q8_0/F16/F32 dispatch)
+- `stratum_engine.h` — generic engine infrastructure (CPU detect/GPU init/madvise/spec decode/memory reporting)
+- `stratum_arch_qwen35.inc.c` — Qwen3.5 hybrid architecture (Gated DeltaNet + full attention), self-registers (~24k lines, the main engine)
+- `stratum_arch_llama.inc.c` — Llama/Qwen2/Qwen3 dense architecture, self-registers
+- `stratum_metal.m/.h` — Metal GPU acceleration layer (GEMV kernels, batched-B, group dispatch, NC zero-copy)
+- `stratum_q2k/q3k/q4k/q5k/q6k.{h,neon.h,metal}` — quantized kernels (NEON + scalar + Metal shaders)
+- `v199~v217_gate.sh` — bit-exact regression gates (see Testing)
+- `Makefile` — builds `stratum`; also `tools_gguf_nib_convert.c` (Q2K nibble converter)
 
-### 环境变量
+### Standalone tools (`stratum/tools/`)
 
-| 变量 | 作用 | 边界状态 |
+Python GGUF utilities independent of the engine: `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
+
+### Experiment evidence (`stratum/docs/`)
+
+159 JSON files recording every kernel/scheduling decision (see `docs/README.md`). These are historical evidence — treat as records, not necessarily reproducible against today's code.
+
+## Environment Variables
+
+The engine has 200+ env vars (mostly GPU kernel variant toggles from experiments). Key ones:
+
+| Variable | Purpose | Boundary status |
 |---|---|---|
-| `STRATUM_GPU=1` | 启用 GPU matmul（零拷贝 mmap） | ⚠️ 仅小模型；大模型会 wire 内存 |
-| `STRATUM_GPU_FULL=1` | 整层 GPU 前向（Llama 架构） | ⚠️ 仅小模型 |
-| `STRATUM_GPU_FULL=2` | Qwen3.5 GPU full-attn + SSM GPU dispatch | ⚠️ 仅小模型 |
-| `STRATUM_GPU_BATCH_FULL=1` | 批量多序列 GPU 前向 | ⚠️ 仅小模型 |
-| `STRATUM_MULTISEQ=N` | N 个独立序列并行 | ✅ 允许 |
-| `STRATUM_NGRAM_SPEC=K` | n-gram 推测解码 | ✅ 允许 |
-| `STRATUM_ASYNC_PREFETCH=1` | 后台线程 pread 预取 | ✅ 允许 |
-| `STRATUM_SPARSE=0.001` | FFN down_proj 块跳过 | ⚠️ 需验证 bit-exact |
-| `STRATUM_PREDECODE=1` | Q4_K→F16 预解码存 GPU | ❌ 违反内存边界 |
-| `STRATUM_Q4_0=1` | Q4_K→Q4_0 重编码 | ❌ 违反智商边界 |
-| `STRATUM_MLOCK_ALL=1` | mlock 整模型 | ❌ 违反内存边界 |
-| `STRATUM_HOT_GB=N` | pin 前 N GB 权重 | ❌ 违反内存边界 |
-| `STRATUM_KEEP_RESIDENT=1` | 锁定 page cache | ❌ 违反内存边界（V15 移除自动模式） |
+| `STRATUM_NO_GPU=1` | Force CPU-only (the default benchmark config) | ✅ allowed |
+| `STRATUM_GPU_NC=1` | Per-tensor NoCopy direct-read (zero-copy) | ✅ allowed, bit-exact (2a) |
+| `STRATUM_GPU2=1` | Cold-weight staging pipeline | ✅ allowed; measured slower than CPU for hot weights |
+| `STRATUM_GPU=1` / `STRATUM_GPU_FULL` | Legacy GPU paths | ⚠️ small models only |
+| `STRATUM_MULTISEQ=N` | N parallel sequences sharing one weight stream | ✅ allowed (130 tok/s @ 64) |
+| `STRATUM_NGRAM_SPEC` / `STRATUM_TREE_*` / `STRATUM_MTP` | Speculative decoding / MTP tree | ✅ allowed |
+| `STRATUM_ASYNC_PREFETCH=1` | Background pread prefetch | ✅ allowed |
+| `STRATUM_HOT_FAST=1` | Hot-cache pure-compute mode (no page-cache lock) | ✅ allowed (replaces keep_resident) |
+| `STRATUM_STREAM_DET=1` | Deterministic streaming (skip mincore detection) | ✅ allowed (measured: no gain, kept as option) |
+| `STRATUM_Q2K_NIB=<path>` | Q2K nibble-layout model | ✅ allowed (byte re-arrangement) |
+| `STRATUM_Q2K_NIB_OFF=1` | Disable nibble path | ✅ allowed |
+| `STRATUM_TREE_EXTEND_K=N` | Tree chain depth (cap 12, default 4) | ✅ allowed |
+| `STRATUM_Q2K_SDOT=1` | int8 SDOT for Q2K (opt-in) | ⚠️ measured no gain at 14 cores |
+| `STRATUM_PREDECODE=1` | Q4_K→F16 predecode to GPU | ❌ violates memory boundary |
+| `STRATUM_Q4_0=1` | Q4_K→Q4_0 re-encode | ❌ violates quality boundary |
+| `STRATUM_MLOCK_ALL=1` / `STRATUM_HOT_GB=N` / `STRATUM_KEEP_RESIDENT=1` | Lock/pin weights | ❌ violates memory boundary |
 
-## 测试规范
+## Testing
 
-1. **默认用 TinyLlama 1.1B（638MB）或 Llama 3.2 3B（1.9GB）测试**
-2. **27B 模型测试只跑 1 token，不得连续运行**
-3. **测试前检查内存状态**：`memory_pressure` 或 `vm.swapusage`
-4. **bit-exact 验证**：CPU 和 GPU 路径的 token 输出必须完全一致
-5. **性能报告**：必须同时报告绑定内存（anon）和权重 cache（mapped）用量
+1. **Default test objects**: small models (0.5B–1B Q4_K GGUF, e.g. Qwen2.5-Coder-0.5B, Qwen3-0.6B); the 27B model only for specific streaming/wired-memory validation
+2. **Kernel experiments**: use `bench_*.c` micro-benchmarks (tens of MB), never the 27B end-to-end
+3. **Check memory before big tests**: `vm_stat` free pages and `sysctl vm.swapusage`; abort if the system is under pressure
+4. **bit-exact validation**: run `v217_gate.sh` (or the relevant `v*_gate.sh`) — asserts greedy argmax sequence `[2, 220, 16, 13]` and `tok/main >= 8.0`. Any engine change must keep these gates passing
+5. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s
 
-## Git 规范
+## Git
 
-- 每个 Phase（V1-V11...）一个提交
-- 提交信息包含：做了什么、为什么、bit-exact 验证结果、性能数据
-- 禁止提交二进制文件（GGUF、safetensors、metallib）
+- The repository was rebuilt (2026-08) as a clean two-commit history: initial engine + path cleanup. Keep it clean.
+- Commit in logical units with a message covering: what, why, bit-exact gate result, perf data when relevant
+- Never commit: model weights (GGUF/safetensors), binaries, `*.metallib`, `.venv`, `__pycache__` — all covered by `.gitignore`
+- Never commit machine-specific absolute paths (`/Users/...`); use relative paths or placeholders
