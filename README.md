@@ -313,16 +313,17 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
     └── benchmarks/    ← benchmark scripts (headtohead, manifesto, GPU sweeps)
 ```
 
-### Acknowledgements
+### References
 
-This project stands on the shoulders of:
+Projects consulted and where their ideas surface in Stratum:
 
-- **[AirLLM](https://github.com/lyogavin/airllm)** — working set should scale with layer size, not model size. We pushed the same idea to tensor granularity.
-- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** — narrow specialist engines, decode-graph capture, expert LRU, "exactness where it matters".
-- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** — 2.78T on 8 GB; O_DIRECT, packed-data direct consumption, bit-level determinism contract. Our nibble layout questions the format itself, as k3 questions every byte.
-- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** — pure C/Metal MoE on Apple Silicon; SSD expert streaming, FMA-fused dequant, "trust the OS page cache".
-- **[HuggingFace transformers](https://github.com/huggingface/transformers)** — the reference framework.
-- Also consulted: **[tessera](https://github.com/geoph9/tessera)** (NoCopy + `MADV_DONTNEED` page eviction) and ggml/llama.cpp (quant formats + toolchain).
+- **[AirLLM](https://github.com/lyogavin/airllm)** — working set should scale with layer size rather than model size; Stratum applies the same idea at tensor granularity.
+- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** — narrow specialist engines, decode-graph capture, expert LRU, exactness where it matters.
+- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** — 2.78T on 8 GB; O_DIRECT reads, direct consumption of packed data, a bit-level determinism contract; the nibble layout questions the weight format itself.
+- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** — pure C/Metal MoE on Apple Silicon; SSD expert streaming, FMA-fused dequant kernels, trusting the OS page cache.
+- **[tessera](https://github.com/geoph9/tessera)** — NoCopy GPU buffers with `MADV_DONTNEED` page eviction; informed the per-tensor NoCopy boundary.
+- **[HuggingFace transformers](https://github.com/huggingface/transformers)** — the reference framework used for output comparison.
+- **[ggml / llama.cpp](https://github.com/ggerganov/llama.cpp)** — GGUF quantization formats and the model conversion toolchain.
 
 ### License
 

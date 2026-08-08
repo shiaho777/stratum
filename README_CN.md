@@ -313,16 +313,17 @@ stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地�
     └── benchmarks/    ← 基准脚本（headtohead、manifesto、GPU 扫描）
 ```
 
-### 致谢
+### 参考
 
-本项目站在这些项目的肩膀上：
+本项目参考过的项目，以及它们的思路在 Stratum 中的体现：
 
-- **[AirLLM](https://github.com/lyogavin/airllm)** —— 工作集应随层大小而非模型大小缩放。我们把同样的想法推到了 tensor 粒度。
-- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** —— 窄专业引擎、decode 图捕获、专家 LRU、"在关键处保持精确"。
-- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** —— 8 GB 跑 2.78T；O_DIRECT、打包数据直读、位级确定性契约。我们的 nibble 布局质疑格式本身，正如 k3 质疑每一个字节。
-- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** —— Apple Silicon 上的纯 C/Metal MoE；SSD 专家流式、FMA 融合反量化、"信任 OS 页缓存"。
-- **[HuggingFace transformers](https://github.com/huggingface/transformers)** —— 参考框架。
-- 另参考：**[tessera](https://github.com/geoph9/tessera)**（NoCopy + `MADV_DONTNEED` 页驱逐）与 ggml/llama.cpp（量化格式 + 工具链）。
+- **[AirLLM](https://github.com/lyogavin/airllm)** —— 工作集应随层大小而非模型大小缩放；Stratum 将同一思路应用到 tensor 粒度。
+- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** —— 窄专业引擎、decode 图捕获、专家 LRU、在关键处保持精确。
+- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** —— 8 GB 跑 2.78T；O_DIRECT 读取、打包数据直读、位级确定性契约；nibble 布局本身就在质疑权重格式。
+- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** —— Apple Silicon 上的纯 C/Metal MoE；SSD 专家流式、FMA 融合反量化 kernel、信任 OS 页缓存。
+- **[tessera](https://github.com/geoph9/tessera)** —— NoCopy GPU 缓冲 + `MADV_DONTNEED` 页驱逐；为逐 tensor NoCopy 边界提供了依据。
+- **[HuggingFace transformers](https://github.com/huggingface/transformers)** —— 用于输出对比的参考框架。
+- **[ggml / llama.cpp](https://github.com/ggerganov/llama.cpp)** —— GGUF 量化格式与模型转换工具链。
 
 ### 许可证
 
