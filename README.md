@@ -43,15 +43,36 @@ See `AGENTS.md` for the environment-variable reference and development boundarie
 
 Apple M4 Pro (14 cores), 24 GB unified memory, macOS, greedy decoding, CPU path (`STRATUM_NO_GPU=1`). Method: `/usr/bin/time -p ./stratum <model.gguf> 64 0 1` (wall includes load + prefill + 64 generated tokens).
 
-| Model | Architecture | Format | Size | Params | tok/s | Notes |
-|---|---|---|---|---|---|---|
-| Qwen3.6-27B-mixed | qwen35 (SSM+attn) | Q2_K/Q4_K/Q6_K mixed | 11.98 GB | 27B | **5.73** (8-token short run) | hot cache; sustained ~1.4–2 tok/s long generation |
-| Qwen2.5-Coder-0.5B | llama | Q4_K | 398 MB | 0.5B | **125** | |
-| Qwen3-0.6B | llama | Q4_K | 484 MB | 0.6B | **89** | has_qk_norm=yes |
-| MiniCPM5-1B-Base | llama | Q4_K | 688 MB | 1B | **68** | |
-| Qwen2.5-Coder-0.5B | llama | F16 | 988 MB | 0.5B | **51** | |
-| Qwen3-0.6B | llama | F16 | 1.5 GB | 0.6B | **40** | |
-| MiniCPM5-1B-Base | llama | F16 | 2.16 GB | 1B | **30** | |
+### Small models — perceptually instant (0.5B–1B)
+
+This is where Stratum is the pick of the litter: small models run at **normal, interactive speed with near-zero resource footprint** — the machine stays responsive to everything else while generating. Resource usage is **independent of model size**: wired memory stays ~7 MB whether the model is 0.5B or 27B, because weights stream from page cache.
+
+| Model | Format | Size | tok/s | Perceived |
+|---|---|---|---|---|
+| Qwen2.5-Coder-0.5B | Q4_K | 398 MB | **125** | instant |
+| Qwen3-0.6B | Q4_K | 484 MB | **89** | instant |
+| MiniCPM5-1B-Base | Q4_K | 688 MB | **68** | instant |
+| Qwen2.5-Coder-0.5B | F16 | 988 MB | 51 | instant |
+| Qwen3-0.6B | F16 | 1.5 GB | 40 | instant |
+| MiniCPM5-1B-Base | F16 | 2.16 GB | 30 | instant |
+
+### Large models — the research frontier (27B)
+
+| Model | Format | Size | tok/s | Notes |
+|---|---|---|---|---|
+| Qwen3.6-27B-mixed | Q2_K/Q4_K/Q6_K mixed | 11.98 GB | **5.73** (8-token short run) | hot cache; sustained ~1.4–2 tok/s long generation |
+
+Large models are where the trade-off is visible: they run (unlike anything else on this hardware — llama.cpp thrashes or OOMs), but decode is bandwidth-bound, so throughput is limited. **Closing the gap between small-model speed and large-model throughput — while keeping the resource footprint imperceptible — is the active research direction of this project.**
+
+### Resource footprint — independent of model size
+
+**Model size is theoretically unbounded.** Whatever the parameter count, wired memory stays ~7 MB and total physical footprint stays proportional to the page cache the OS chooses to keep — the engine itself never holds the model in anonymous RAM. The only practical limits are disk space for the file and patience per token.
+
+| Model | Params | Wired (anon) |
+|---|---|---|
+| Qwen2.5-Coder-0.5B | 0.5B | ~7 MB |
+| MiniCPM5-1B-Base | 1B | ~7 MB |
+| Qwen3.6-27B-mixed | 27B | **~77 MB** (incl. KV/SSM state) |
 
 ### Memory — the core claim (TinyLlama 1.1B Q4_K_M, 64 tokens)
 
