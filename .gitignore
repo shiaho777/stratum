@@ -55,3 +55,6 @@ stratum/native/*_probe
 stratum/native/gguf_nib_convert
 stratum/native/q2k_nibble_convert
 stratum/native/*.bak.*
+
+# Model directories (configs/weights are not part of the engine repo)
+model*/
