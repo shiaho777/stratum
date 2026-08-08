@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 cd "$(dirname "$0")"
-MODEL="${1:-./qwen3.6-27b-mixed.gguf}"
+MODEL="${1:?usage: $0 <model.gguf>  (no default — pass your model path)}"
 BIN=./stratum
 if [[ ! -x $BIN ]]; then make stratum; fi
 export STRATUM_KEEP_RESIDENT=0 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1 STRATUM_NO_GPU=1

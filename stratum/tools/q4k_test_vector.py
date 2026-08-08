@@ -121,8 +121,9 @@ def find_q4k_tensor(gguf_path):
 
 
 def main():
-    gguf_path = sys.argv[1] if len(sys.argv) > 1 else \
-        str(Path.home() / "Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf")
+    if len(sys.argv) < 2:
+        print("usage: q4k_test_vector.py <model.gguf>"); sys.exit(1)
+    gguf_path = sys.argv[1]
     out_dir = Path("/tmp/q4k_test")
     out_dir.mkdir(exist_ok=True)
 

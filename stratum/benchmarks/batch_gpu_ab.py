@@ -143,7 +143,7 @@ def paired_summary(raw_runs: list[dict], b: int, baseline: str, variant: str,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default=str(ROOT.parent / "gguf-test" / "tinyllama-1.1b-chat-q4km.gguf"))
+    parser.add_argument("--model", required=True, help="path to a GGUF model (no default)")
     parser.add_argument("--out", required=True)
     parser.add_argument("--n-gen", type=int, default=64)
     parser.add_argument("--rounds", type=int, default=3)

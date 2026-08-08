@@ -93,9 +93,9 @@ check: stratum quant_test spec_sample_test
 	@echo "=== Leviathan-Chen rejection-sampling exactness ==="
 	./spec_sample_test
 	@echo ""
-	@echo "=== TinyLlama 1.1B Q4_K_M (llama arch, NEON) ==="
-	./stratum ~/Desktop/Qwen3.5-0.8B-hf/gguf-test/tinyllama-1.1b-chat-q4km.gguf \
-		2 1 450 7483 310 3444 338 2>&1 | tail -3
+	@echo "=== smoke: llama arch (NEON) — pass MODEL=<path-to-gguf> ==="
+	@test -n "$(MODEL)" || { echo "make test MODEL=<model.gguf>  (no default model)"; exit 1; }
+	./stratum "$(MODEL)" 2 1 450 7483 310 3444 338 2>&1 | tail -3
 
 tests: quant_test spec_sample_test
 	./quant_test

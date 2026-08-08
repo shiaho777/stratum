@@ -63,8 +63,8 @@ def run_one(model: Path, n_gen: int, b: int, repeats: int, extra_env: dict[str, 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=str(ROOT.parent / "gguf-test" / "tinyllama-1.1b-chat-q4km.gguf"))
-    ap.add_argument("--out", default=str(ROOT / "docs" / "batch_gpu_sweep_tinyllama.json"))
+    ap.add_argument("--model", required=True, help="path to a GGUF model (no default)")
+    ap.add_argument("--out", default=str(ROOT / "docs" / "batch_gpu_sweep.json"))
     ap.add_argument("--n-gen", type=int, default=128)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--b", default="1,2,4,8,16,24,32")
