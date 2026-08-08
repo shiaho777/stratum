@@ -1,16 +1,16 @@
-# V15-V25 版本迭代对比报告 — 27B 模型
+# V15-V25 Version Iteration Comparison Report — 27B Model
 
-## 测试环境
-- 模型: Qwen3.6-27B Q4_K_M (16GB GGUF)
-- 机器: Apple M4 Pro, 24GB RAM
-- 测试: 8 token 生成, prompt [1, 12968]
+## Test Environment
+- Model: Qwen3.6-27B Q4_K_M (16GB GGUF)
+- Machine: Apple M4 Pro, 24GB RAM
+- Test: 8-token generation, prompt [1, 12968]
 
-## 版本对比总表
+## Version Comparison Summary
 
-| 版本 | 8 token | tok/s | 加速比 | peak 内存 | bit-exact |
+| Version | 8 tokens | tok/s | speedup | peak memory | bit-exact |
 |---|---|---|---|---|---|
-| V14 (违规) | 37.9s | 0.21 | 1.1x | ~6.7GB ❌ | ✅ |
-| V15 (基线) | 41.0s | 0.19 | 1.0x | 102MB ✅ | ✅ |
+| V14 (violation) | 37.9s | 0.21 | 1.1x | ~6.7GB ❌ | ✅ |
+| V15 (baseline) | 41.0s | 0.19 | 1.0x | 102MB ✅ | ✅ |
 | V17 | 26.1s | 0.31 | 1.6x | ~600MB ✅ | ✅ |
 | V18 | 23.3s | 0.34 | 1.8x | 697MB ✅ | ✅ |
 | V19 | 22.8s | 0.35 | 1.8x | 356MB ✅ | ✅ |
@@ -28,42 +28,42 @@ I/O page fault: 63% (SSD 3GB/s bottleneck)
 Total compute: 2.57s (was 3.57s in V24, 28% faster)
 ```
 
-## 逐版核心改动
+## Per-Version Core Changes
 
-| 版本 | 改动 | 速度 | 内存 |
+| Version | Change | speed | memory |
 |---|---|---|---|
-| V15 | 移除内存炸弹 (keep_resident + NoCopy) | 基线 | 6.7GB→102MB |
-| V16 | 修复 GPU KV cache 越界 | — | — |
+| V15 | removed memory bombs (keep_resident + NoCopy) | baseline | 6.7GB→102MB |
+| V16 | fixed GPU KV-cache out-of-bounds | — | — |
 | V17 | n-gram spec + MTP spec decode | +63% | +498MB |
-| V18 | page cache 优化 (RELEASE_BEHIND=0) | +10% | +101MB |
+| V18 | page-cache optimization (RELEASE_BEHIND=0) | +10% | +101MB |
 | V19 | B_MAX 8→4 | +3% | -341MB |
 | V20 | PREFETCH_AHEAD 1→2 | +9% | 0 |
-| V21 | lm_head madvise + batched madvise fix | +5% | 0 |
+| V21 | lm_head madvise + batched-madvise fix | +5% | 0 |
 | V22 | conv1d dispatch chunking | +3% | 0 |
 | V23 | B_MAX=5 K=4 (100% accept step 1) | +22% | +85MB |
 | V24 | MTP head + lm_head prefetch | +4% | 0 |
 | **V25** | **SDOT multix (int8 dotprod)** | **+10%** | **0** |
 
-## 修复的 Bug (6个)
-1. GPU KV cache 硬编码 8 slab → 27B 16层越界 NaN
-2. keep_resident 自动模式锁 16GB page cache
-3. newBufferWithBytesNoCopy 注册整个 mmap → GPU wire 所有页
-4. SSM group dispatch 不处理 F32 type
-5. batched forward 独立 PREFETCH_AHEAD/RELEASE_BEHIND 参数
-6. n-gram spec 每次 malloc 52MB
+## Bugs Fixed (6)
+1. GPU KV cache hardcoded to 8 slabs → 27B 16 layers out-of-bounds NaN
+2. keep_resident auto mode locks 16GB page cache
+3. newBufferWithBytesNoCopy registering the whole mmap → GPU wires all pages
+4. SSM group dispatch does not handle F32 type
+5. batched forward had its own PREFETCH_AHEAD/RELEASE_BEHIND parameters
+6. n-gram spec malloc'd 52MB every time
 
-## 失败实验 (7个)
-| 实验 | 结果 |
+## Failed Experiments (7)
+| Experiment | Result |
 |---|---|
-| 合并 2 层 madvise | 8x 慢 |
-| 半量 madvise | 2x 慢 |
-| F_RDADVISE 替代 madvise | 3x 慢 |
-| 跳过 odd 层 madvise | 2x 慢 |
-| B_MAX=6 K=5 | 同速 +85MB |
-| GPU ephemeral for 27B | 比 CPU 慢 |
-| n-gram spec creative text | 无匹配 |
+| merge 2 layers' madvise | 8x slower |
+| half madvise | 2x slower |
+| F_RDADVISE instead of madvise | 3x slower |
+| skip odd-layer madvise | 2x slower |
+| B_MAX=6 K=5 | same speed +85MB |
+| GPU ephemeral for 27B | slower than CPU |
+| n-gram spec on creative text | no match |
 
-## 性能进展图
+## Performance Progress Chart
 ```
 tok/s
  0.57 |                                                        ★ V25

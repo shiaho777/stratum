@@ -1,59 +1,59 @@
-# V15 对比报告 — 27B 模型低内存 GPU 安全模式
+# V15 Comparison Report — 27B Model Low-Memory GPU-Safe Mode
 
-## 核心问题
+## Core Problem
 
-V13 引入的 `keep_resident` 自动模式和 `newBufferWithBytesNoCopy` 整模型注册，会在 GPU 访问 mmap 页面时 **wire（锁定）所有物理页**，等同于变相 mlock 16GB 模型——直接干爆系统内存。
+The `keep_resident` auto mode introduced in V13, together with whole-model `newBufferWithBytesNoCopy` registration, causes the GPU to **wire (lock) all physical pages** when it touches mmap pages — effectively an implicit mlock of the 16GB model — which exhausts system memory.
 
-## V15 修复
+## V15 Fixes
 
-| 修复项 | 说明 |
+| Fix | Description |
 |---|---|
-| 移除 `keep_resident` 自动模式 | 不再在模型 <75% RAM 时锁定 page cache |
-| GPU init 不注册整个 mmap | 传 `NULL, 0`，只加载 kernel |
-| Ephemeral buffer (copy 语义) | `newBufferWithBytes` 逐 tensor 拷贝，不 wire mmap 页 |
-| 大 tensor 跳过 GPU | N>=50000（如 lm_head 1GB）走 CPU NEON |
-| full_attn GPU 默认禁用 | ephemeral copy 在 27B 上有精度问题，待修复 |
+| Removed `keep_resident` auto mode | No longer locks page cache when model < 75% RAM |
+| GPU init no longer registers the whole mmap | Passes `NULL, 0`, loads kernels only |
+| Ephemeral buffer (copy semantics) | `newBufferWithBytes` per-tensor copy; does not wire mmap pages |
+| Large tensors skip GPU | N >= 50000 (e.g. 1GB lm_head) goes through CPU NEON |
+| full_attn GPU disabled by default | Ephemeral copy has precision issues on 27B; to be fixed |
 
-## 27B Q4_K_M 测试结果（1 token 生成）
+## 27B Q4_K_M Test Results (1-token generation)
 
-| 版本 | 模式 | token 时间 | 绑定内存 (anon) | peak footprint | bit-exact | 内存安全 |
+| Version | Mode | token time | wired (anon) | peak footprint | bit-exact | memory-safe |
 |---|---|---|---|---|---|---|
-| V14 | CPU + keep_resident | **4.74s** | 87MB | ~6.7GB RSS | ✅ argmax=16 | ❌ 锁 16GB page cache |
-| V15 | CPU (无 GPU) | **5.13s** | 59MB | **102MB** | ✅ argmax=16 | ✅ |
+| V14 | CPU + keep_resident | **4.74s** | 87MB | ~6.7GB RSS | ✅ argmax=16 | ❌ locks 16GB page cache |
+| V15 | CPU (no GPU) | **5.13s** | 59MB | **102MB** | ✅ argmax=16 | ✅ |
 | V15 | SSM GPU only | 5.81s | 93MB | 353MB | ✅ argmax=16 | ✅ |
-| V15 | full_attn GPU | — | — | — | ❌ NaN | 精度问题 |
+| V15 | full_attn GPU | — | — | — | ❌ NaN | precision issue |
 
-## 对比分析
+## Comparison Analysis
 
-### V15 vs V14 速度
-- V15 CPU: 5.13s vs V14 CPU: 4.74s → **慢 8%**
-- 原因：移除 keep_resident 后 page cache 被 OS 回收，需重新从 SSD 读
-- 这是**正确代价**——V14 的速度是以 16GB 内存锁定换来的违规速度
+### V15 vs V14 speed
+- V15 CPU: 5.13s vs V14 CPU: 4.74s → **8% slower**
+- Cause: after removing keep_resident, the OS reclaims page cache and weights must be re-read from SSD
+- This is the **correct cost** — V14's speed was bought by locking 16GB of RAM
 
 ### V15 SSM GPU vs CPU
-- SSM GPU: 5.81s vs CPU: 5.13s → **GPU 反而慢 13%**
-- 原因：SSD I/O (3GB/s) 是瓶颈，不是计算。GPU ephemeral 拷贝增加开销但不减少 I/O
-- GPU 计算虽快（270GB/s），但权重仍需从 SSD 读到 page cache
+- SSM GPU: 5.81s vs CPU: 5.13s → **GPU 13% slower**
+- Cause: SSD I/O (3GB/s) is the bottleneck, not compute. GPU ephemeral copy adds overhead without reducing I/O
+- GPU compute is fast (270GB/s), but weights still must be read from SSD into page cache
 
-### 内存安全
-- V15 peak footprint = **102MB**（仅激活 + KV cache + SSM state）
-- V14 RSS = **6.7GB**（16GB 模型被 wire 在物理 RAM）
-- V15 完全合规：不 wire、不 mlock、不锁 page cache
+### Memory safety
+- V15 peak footprint = **102MB** (activations + KV cache + SSM state only)
+- V14 RSS = **6.7GB** (16GB model wired in physical RAM)
+- V15 fully compliant: no wire, no mlock, no page-cache lock
 
-## 瓶颈分析
+## Bottleneck Analysis
 
-27B 模型 5.13s/token 的时间分解：
-- matmul: 1.78s (35%) — CPU NEON 从 mmap 读权重计算
-- other: 3.44s (67%) — **主要是 SSD I/O page fault 等待**
-- attn: 0.15s (3%) — 16 层 full attention
-- ssm: 0.53s (10%) — 48 层 SSM 递归
-- lm_head: 1.01s (20%) — 248320×5120 大矩阵
+27B model 5.13s/token time breakdown:
+- matmul: 1.78s (35%) — CPU NEON reads weights from mmap
+- other: 3.44s (67%) — **mostly SSD I/O page-fault waiting**
+- attn: 0.15s (3%) — 16 full-attention layers
+- ssm: 0.53s (10%) — 48-layer SSM recursion
+- lm_head: 1.01s (20%) — 248320×5120 large matrix
 
-**核心瓶颈是 SSD I/O（3GB/s），16GB 模型每 token 需读全部权重。**
+**The core bottleneck is SSD I/O (3GB/s): the 16GB model must be read in full every token.**
 
-## 下一版方向（V16）
+## Next-Version Direction (V16)
 
-1. **后台 pread 预取**：在计算当前层时，后台线程 pread 下一层权重到 page cache
-2. **层间权重复用**：如果 page cache 未被回收，第二个 token 可跳过 SSD 读
-3. **修复 full_attn GPU 精度**：排查 ephemeral copy 在 full_attn 层的精度问题
-4. **GPU 计算重叠 I/O**：GPU 计算当前 tensor 时，CPU 预读下一个 tensor
+1. **Background pread prefetch**: while computing the current layer, a background thread preads the next layer's weights into page cache
+2. **Inter-layer weight reuse**: if page cache is not reclaimed, the second token can skip SSD reads
+3. **Fix full_attn GPU precision**: investigate the ephemeral-copy precision issue in full-attn layers
+4. **Overlap GPU compute with I/O**: while the GPU computes the current tensor, the CPU preads the next
