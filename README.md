@@ -327,4 +327,4 @@ Projects consulted and where their ideas surface in Stratum:
 
 ### License
 
-Apache-2.0 (placeholder — finalize before v0.1).
+Apache-2.0.

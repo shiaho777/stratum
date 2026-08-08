@@ -327,4 +327,4 @@ stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地�
 
 ### 许可证
 
-Apache-2.0（占位——v0.1 发布前定稿）。
+Apache-2.0。
