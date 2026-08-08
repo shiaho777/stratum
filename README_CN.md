@@ -6,7 +6,7 @@
 
 | 指标 | 数值 |
 |---|---|
-| 已运行的最大模型 | 27B dense（Qwen3.6，11.98 GB GGUF） |
+| 实测模型 | 27B dense（Qwen3.6，11.98 GB GGUF），小至 0.5B |
 | 27B 的匿名（wired）内存 | **~77 MB**（含 KV/SSM 状态） |
 | 0.5–1B 模型的匿名内存 | ~7 MB |
 | 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |

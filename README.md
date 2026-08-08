@@ -6,7 +6,7 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 
 | Metric | Value |
 |---|---|
-| Largest model run | 27B dense (Qwen3.6, 11.98 GB GGUF) |
+| Models measured | 27B dense (Qwen3.6, 11.98 GB GGUF), down to 0.5B |
 | Anonymous (wired) RAM for 27B | **~77 MB** (incl. KV/SSM state) |
 | Anonymous RAM for 0.5–1B | ~7 MB |
 | vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
