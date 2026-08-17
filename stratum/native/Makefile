@@ -14,16 +14,39 @@ CFLAGS  := -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations 
            -fblocks -mcpu=apple-m1
 LDFLAGS := -framework Accelerate -lpthread
 
-# MemX compressed-memory runtime — OPTIONAL, off by default. The engine's
-# mmap + page-cache path is self-contained; MemX only changes where some
-# anonymous buffers live. Enable explicitly with:
-#   make USE_MEMX=1 MEMX_HOME=/path/to/memx
-USE_MEMX ?= 0
+.PHONY: all clean check tests verify deps
+
+all: stratum $(METAL_LIB)
+
+# MemX compressed-memory runtime — OPTIONAL external dependency
+# (github.com/shiaho777/memx, MIT). Backs staging buffers and KV/SSM state.
+# It is DOWNLOADED, never vendored: fetch_memx.sh clones/pulls the upstream
+# repo into $(MEMX_HOME) (gitignored), and upstream updates flow in via
+# `make deps`. The engine builds and runs without it:  make USE_MEMX=0
+USE_MEMX ?= 1
+MEMX_HOME ?= memx
+MEMX_SRC   := $(MEMX_HOME)/libmemx3.m
+MEMX_INC   := $(MEMX_HOME)/include/memx_runtime.h
+MEMX_DYLIB := $(MEMX_HOME)/build/libmemx_runtime.dylib
 ifeq ($(USE_MEMX),1)
-  MEMX_HOME ?= $(HOME)/Desktop/memx
   CFLAGS  += -DSTRATUM_USE_MEMX -I$(MEMX_HOME)/include
-  LDFLAGS += -L$(MEMX_HOME)/build -lmemx_runtime -Wl,-rpath,$(MEMX_HOME)/build
+  LDFLAGS += -L$(MEMX_HOME)/build -lmemx_runtime -Wl,-rpath,$(abspath $(MEMX_HOME))/build
+  MEMX_OBJ := $(MEMX_DYLIB)
+else
+  MEMX_OBJ :=
 endif
+
+# Fetch the dependency source (clone or pull upstream).
+$(MEMX_SRC) $(MEMX_INC):
+	@./fetch_memx.sh $(MEMX_HOME) || { \
+	    echo "memx: fetch failed (offline?). Build without it:  make USE_MEMX=0" >&2; \
+	    exit 1; \
+	}
+
+$(MEMX_DYLIB): $(MEMX_SRC) $(MEMX_INC)
+	@mkdir -p $(dir $@)
+	$(CC) -dynamiclib -O2 -I$(MEMX_HOME)/include -framework Metal -framework Foundation -lz \
+	      -install_name @rpath/libmemx_runtime.dylib -o $@ $(MEMX_SRC)
 
 # Metal GPU support (set USE_METAL=0 to disable)
 USE_METAL ?= 1
@@ -37,10 +60,6 @@ else
   METAL_LIB :=
 endif
 
-.PHONY: all clean check tests verify
-
-all: stratum $(METAL_LIB)
-
 # Architecture implementations are auto-collected: drop a new
 # stratum_arch_*.inc.c into this directory and rebuild — stratum.c
 # never needs to be edited to register an architecture.
@@ -49,7 +68,7 @@ ARCH_INCS := $(wildcard stratum_arch_*.inc.c)
 stratum_archs.gen.h: $(ARCH_INCS)
 	@rm -f $@; for f in $(ARCH_INCS); do echo "#include \"$$f\""; done > $@
 
-stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) \
+stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) $(MEMX_OBJ) \
          stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
          stratum_metal.h \
          stratum_memx.h \
@@ -62,9 +81,6 @@ stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) \
          stratum_bf16.h \
          stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h
 	$(CC) $(CFLAGS) -o $@ stratum.c $(METAL_OBJ) $(LDFLAGS)
-ifeq ($(USE_MEMX),1)
-	@install_name_tool -change build/libmemx_runtime.dylib $(MEMX_HOME)/build/libmemx_runtime.dylib $@ 2>/dev/null || true
-endif
 
 stratum_metal.o: stratum_metal.m stratum_metal.h
 	$(CC) -ObjC -O3 -fobjc-arc -c stratum_metal.m -o stratum_metal.o
@@ -118,6 +134,12 @@ tests: quant_test spec_sample_test
 	./quant_test
 	./spec_sample_test
 
+# Fetch + build the optional MemX dependency (clone/pull upstream, then
+# compile the dylib). Re-run to pull upstream updates.
+deps: $(MEMX_DYLIB)
+	@echo "memx dependency ready: $(MEMX_DYLIB)"
+
 clean:
 	rm -f stratum quant_test metal_test spec_sample_test stratum_metal.o \
 	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h
+	rm -rf $(MEMX_HOME)/build

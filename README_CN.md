@@ -63,7 +63,7 @@ make tests            # 量化 kernel 交叉验证 + 采样器精确性
 
 仓库不附带、不内置、不假设任何模型：引擎和所有脚本都要求把模型路径作为显式参数传入。二进制从 GGUF 元数据读取 `general.architecture` 并分发到已注册的处理器——没有任何模型名被硬编码。
 
-构建选项（均为可选）：`make USE_MEMX=1 MEMX_HOME=/path/to/memx` 启用外部 MemX 压缩内存 runtime——**默认关闭**，mmap + 页缓存路径自包含。`make USE_METAL=0` 构建纯 CPU 版（不含 Metal shader 库）。
+构建选项：MemX（`github.com/shiaho777/memx`，MIT）是可选的内存压缩运行时，承载暂存缓冲与 KV/SSM 状态——**首次使用时自动拉取**（`make deps` 克隆/更新；直接 `make` 会在需要时自动拉取），可用 `make USE_MEMX=0` 禁用。`make USE_METAL=0` 构建纯 CPU 版（不含 Metal shader 库）。
 
 ### 用法
 

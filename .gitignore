@@ -33,6 +33,9 @@ stratum/native/*.o
 # Generated architecture include list (rebuilt by make from stratum_arch_*.inc.c)
 stratum/native/stratum_archs.gen.h
 
+# Optional MemX runtime dependency (fetched by fetch_memx.sh, never vendored)
+stratum/native/memx/
+
 # Python
 __pycache__/
 *.pyc

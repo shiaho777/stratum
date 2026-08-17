@@ -63,7 +63,7 @@ make tests            # quant-kernel cross-validation + sampler exactness
 
 No model is shipped, bundled, or assumed: the engine and every script require a model path as an explicit argument. The binary reads `general.architecture` from the GGUF metadata and dispatches to a registered handler — no model names are hardcoded.
 
-Build options (all optional): `make USE_MEMX=1 MEMX_HOME=/path/to/memx` enables the external MemX compressed-memory runtime — **off by default**, the mmap + page-cache path is self-contained. `make USE_METAL=0` builds CPU-only without the Metal shader library.
+Build options: MemX (`github.com/shiaho777/memx`, MIT) is an optional compressed-memory runtime backing staging buffers and KV/SSM state — it is **fetched automatically** on first use (`make deps` clones/pulls it; a plain `make` does so when needed) and can be disabled with `make USE_MEMX=0`. `make USE_METAL=0` builds CPU-only without the Metal shader library.
 
 ### Usage
 

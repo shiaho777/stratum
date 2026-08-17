@@ -101,6 +101,16 @@ Stratum targets **any model**, not a specific one. These rules must not be viola
 - `v199~v217_gate.sh` — bit-exact regression gates (see Testing)
 - `Makefile` — builds `stratum`; also `tools_gguf_nib_convert.c` (Q2K nibble converter)
 
+### Optional runtime dependency (MemX)
+
+The engine's staging buffers and KV/SSM state can live in the MemX
+compressed-memory plane (`github.com/shiaho777/memx`, MIT). It is an
+**external downloaded dependency, never vendored**: `fetch_memx.sh` clones
+or pulls the upstream repo into `stratum/native/memx/` (gitignored), and
+upstream updates flow in via `make deps` — do not copy its code into this
+repository. The engine builds and runs without it (`make USE_MEMX=0`); the
+README's ~77 MB 27B wired-memory figure is measured with MemX enabled.
+
 ### Standalone tools (`stratum/tools/`)
 
 Python GGUF utilities independent of the engine: `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
@@ -169,5 +179,5 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 
 - The repository was rebuilt (2026-08) as a clean two-commit history: initial engine + path cleanup. Keep it clean.
 - Commit in logical units with a message covering: what, why, bit-exact gate result, perf data when relevant
-- Never commit: model weights (GGUF/safetensors), binaries, `*.metallib`, `.venv`, `__pycache__` — all covered by `.gitignore`
+- Never commit: model weights (GGUF/safetensors), binaries, `*.metallib`, `.venv`, `__pycache__`, the fetched MemX dependency dir (`stratum/native/memx/`) — all covered by `.gitignore`
 - Never commit machine-specific absolute paths (`/Users/...`); use relative paths or placeholders
