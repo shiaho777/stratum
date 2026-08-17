@@ -59,7 +59,6 @@ static id<MTLComputePipelineState> g_rope = nil;
 static id<MTLComputePipelineState> g_rope_b = nil;
 static id<MTLComputePipelineState> g_attn = nil;
 static id<MTLComputePipelineState> g_attn_b = nil;
-static id<MTLComputePipelineState> g_q4_0_sgemv = nil;  /* V9 */
 static id<MTLComputePipelineState> g_q4k_coalesced = nil;  /* V12 */
 static id<MTLComputePipelineState> g_kv_scatter = nil;
 static id<MTLComputePipelineState> g_kv_rope_scatter = nil;
@@ -366,12 +365,6 @@ int stratum_metal_init(const char* metallib_path,
         LOAD_PSO(g_argmax_b,    "argmax_f32_batched");
         #undef LOAD_PSO
 
-        /* V9: Q4_0 pipeline */
-        { id<MTLFunction> fn = [g_lib newFunctionWithName:@"q4_0_sgemv_row"];
-          if (fn) { g_q4_0_sgemv = [g_device newComputePipelineStateWithFunction:fn error:&err];
-            if (g_q4_0_sgemv) fprintf(stderr, "  Metal: loaded q4_0_sgemv_row\n");
-          }
-        }
         /* V12: coalesced Q4_K pipeline */
         { id<MTLFunction> fn = [g_lib newFunctionWithName:@"q4k_sgemv_row_coalesced"];
           if (fn) { g_q4k_coalesced = [g_device newComputePipelineStateWithFunction:fn error:&err];
@@ -750,91 +743,12 @@ static inline uint16_t float_to_fp16(float v) {
 #endif
 }
 
-#define V6_MAX_PREDECODE 256
-static struct {
-    uint64_t q4k_offset;     /* original offset in mmap */
-    id<MTLBuffer> f16_buf;   /* decoded F16 weights [N][K] */
-    int N, K;
-} g_predecode[V6_MAX_PREDECODE];
-static int g_n_predecode = 0;
-static id<MTLComputePipelineState> g_f16_sgemv = nil;
-
-int stratum_metal_predecode_q4k(uint64_t weight_offset, size_t weight_bytes,
-                                 int N, int K) {
-    if (!g_device) return -1;
-    if (g_n_predecode >= V6_MAX_PREDECODE) return -1;
-
-    /* Check if already decoded */
-    for (int i = 0; i < g_n_predecode; i++) {
-        if (g_predecode[i].q4k_offset == weight_offset) return i;
-    }
-
-    /* Find the Q4_K weight data in mmap chunks */
-    id<MTLBuffer> wbuf; uint64_t woff;
-    if (find_chunk(weight_offset, weight_bytes, &wbuf, &woff) != 0) return -1;
-
-    const block_q4_K* blocks = (const block_q4_K*)(
-        (const uint8_t*)[wbuf contents] + woff);
-
-    /* Allocate F16 buffer: N*K*2 bytes */
-    size_t f16_bytes = (size_t)N * K * sizeof(uint16_t);
-    id<MTLBuffer> f16_buf = [g_device newBufferWithLength:f16_bytes
-                                options:MTLResourceStorageModeShared];
-    if (!f16_buf) return -1;
-    uint16_t* dst = (uint16_t*)[f16_buf contents];
-
-    /* Decode each row: Q4_K -> float -> half */
-    int blocks_per_row = K / 256;
-    float* tmp = (float*)malloc(K * sizeof(float));
-    if (!tmp) return -1;
-
-    for (int r = 0; r < N; r++) {
-        const block_q4_K* row_blocks = blocks + (size_t)r * blocks_per_row;
-        q4k_dequant_row_scalar(row_blocks, K, tmp);
-        for (int c = 0; c < K; c++) {
-            dst[(size_t)r * K + c] = float_to_fp16(tmp[c]);
-        }
-    }
-    free(tmp);
-
-    /* Load F16 sgemv pipeline if not done */
-    if (!g_f16_sgemv) {
-        id<MTLFunction> fn = [g_lib newFunctionWithName:@"f16_sgemv_row"];
-        if (!fn) { fprintf(stderr, "  V6: f16_sgemv_row not found\n"); return -1; }
-        NSError* err = nil;
-        g_f16_sgemv = [g_device newComputePipelineStateWithFunction:fn error:&err];
-        if (!g_f16_sgemv) {
-            fprintf(stderr, "  V6: f16 pipeline failed: %s\n",
-                    [[err localizedDescription] UTF8String]);
-            return -1;
-        }
-    }
-
-    int slot = g_n_predecode++;
-    g_predecode[slot].q4k_offset = weight_offset;
-    g_predecode[slot].f16_buf = f16_buf;
-    g_predecode[slot].N = N;
-    g_predecode[slot].K = K;
-    return slot;
-}
-
-int stratum_metal_is_predecoded(uint64_t weight_offset) {
-    for (int i = 0; i < g_n_predecode; i++) {
-        if (g_predecode[i].q4k_offset == weight_offset) return i;
-    }
-    return -1;
-}
-
-/* g_flog_ptr points to the real g_flog once it is allocated */
-/* V9: Q4_0 pipeline + Q4_K→Q4_0 converted weights */
+/* g_flog_ref points to the real g_flog once it is allocated */
+/* (V6 pre-decode / V9 Q4_0 conversion machinery removed — forbidden by
+ * project boundary: pre-decoding pins GPU weight buffers and Q4_K→Q4_0
+ * re-encoding loses precision.) */
 
 static __unsafe_unretained id<MTLBuffer> g_flog_ref = nil;
-
-typedef struct {
-    uint16_t d;        /* fp16 scale */
-    uint8_t  qs[16];   /* 32 packed 4-bit values */
-} block_q4_0;
-_Static_assert(sizeof(block_q4_0) == 18, "block_q4_0 must be 18 bytes");
 
 int stratum_metal_get_last_token(void) {
     if (!g_flog_ref) return -1;
@@ -842,63 +756,6 @@ int stratum_metal_get_last_token(void) {
     return (int)p[0];
 }
 
-/* V9: Q4_K -> Q4_0 conversion + dispatch */
-int stratum_metal_convert_q4k_to_q4_0(uint64_t weight_offset, size_t weight_bytes,
-                                       int N, int K) {
-    if (!g_device || !g_q4_0_sgemv) return -1;
-    /* Check if already converted */
-    for (int i = 0; i < g_n_predecode; i++) {
-        if (g_predecode[i].q4k_offset == weight_offset) return i;
-    }
-    if (g_n_predecode >= V6_MAX_PREDECODE) return -1;
-
-    id<MTLBuffer> wbuf; uint64_t woff;
-    if (find_chunk(weight_offset, weight_bytes, &wbuf, &woff) != 0) return -1;
-    const block_q4_K* blocks = (const block_q4_K*)((const uint8_t*)[wbuf contents] + woff);
-
-    int blocks_per_row = K / 256;
-    int q4_0_blocks_per_row = K / 32;
-    size_t q4_0_bytes = (size_t)N * q4_0_blocks_per_row * sizeof(block_q4_0);
-    id<MTLBuffer> q4_0_buf = [g_device newBufferWithLength:q4_0_bytes
-                                  options:MTLResourceStorageModeShared];
-    if (!q4_0_buf) return -1;
-    block_q4_0* dst = (block_q4_0*)[q4_0_buf contents];
-
-    /* Decode Q4_K -> float -> re-quantize to Q4_0 */
-    float* tmp = (float*)malloc(K * sizeof(float));
-    if (!tmp) return -1;
-
-    for (int r = 0; r < N; r++) {
-        const block_q4_K* row_blocks = blocks + (size_t)r * blocks_per_row;
-        q4k_dequant_row_scalar(row_blocks, K, tmp);
-        /* Re-quantize to Q4_0: per-32-block, scale = max|x|/7, v = round(x/scale)+8 */
-        for (int b = 0; b < q4_0_blocks_per_row; b++) {
-            float* block_vals = tmp + b * 32;
-            float maxv = 0.0f;
-            for (int i = 0; i < 32; i++) { float v = fabsf(block_vals[i]); if (v > maxv) maxv = v; }
-            float scale = maxv / 7.0f;
-            if (scale < 1e-10f) scale = 1e-10f;
-            float inv_scale = 1.0f / scale;
-            block_q4_0* dst_block = dst + (size_t)r * q4_0_blocks_per_row + b;
-            dst_block->d = float_to_fp16(scale);
-            for (int i = 0; i < 16; i++) {
-                int v0 = (int)roundf(block_vals[i*2]   * inv_scale) + 8;
-                int v1 = (int)roundf(block_vals[i*2+1] * inv_scale) + 8;
-                if (v0 < 0) v0 = 0; if (v0 > 15) v0 = 15;
-                if (v1 < 0) v1 = 0; if (v1 > 15) v1 = 15;
-                dst_block->qs[i] = (uint8_t)(v0 | (v1 << 4));
-            }
-        }
-    }
-    free(tmp);
-
-    int slot = g_n_predecode++;
-    g_predecode[slot].q4k_offset = weight_offset;
-    g_predecode[slot].f16_buf = q4_0_buf;  /* reuse f16_buf field for Q4_0 */
-    g_predecode[slot].N = N;
-    g_predecode[slot].K = K;
-    return slot;
-}
 static id<MTLBuffer> g_fx=nil, g_fxn=nil, g_fq=nil, g_fk=nil, g_fv=nil,
                      g_fattn=nil, g_ftmp=nil, g_fg=nil, g_fu=nil, g_fa=nil, g_flog=nil;
 static size_t g_fcap_h=0, g_fcap_ff=0, g_fcap_v=0, g_fcap_qh=0, g_fcap_kh=0;
@@ -969,36 +826,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
 
         #define PSO_TY(ty) ((ty)==14 ? g_q6k_sgemv : (ty)==13 ? g_q5k_sgemv : g_q4k_sgemv)
         #define MM(ty, woff, wtb, xbuf, ybuf, Nrows, Kdim) do { \
-            int _pd = (g_f16_sgemv && (ty)==12) ? stratum_metal_is_predecoded(woff) : -1; \
-            if (_pd >= 0 && getenv("STRATUM_PREDECODE")) { \
-                id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-                [_e setComputePipelineState:g_f16_sgemv]; \
-                [_e setBuffer:g_predecode[_pd].f16_buf offset:0 atIndex:0]; \
-                [_e setBuffer:(xbuf) offset:0 atIndex:1]; [_e setBuffer:(ybuf) offset:0 atIndex:2]; \
-                uint32_t _K=(uint32_t)(Kdim); [_e setBytes:&_K length:4 atIndex:3]; \
-                [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
-                [_e endEncoding]; \
-            } else if (g_q4_0_sgemv && (ty)==12 && getenv("STRATUM_Q4_0")) { \
-                int _q4 = stratum_metal_is_predecoded(woff); \
-                if (_q4 >= 0) { \
-                    id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-                    [_e setComputePipelineState:g_q4_0_sgemv]; \
-                    [_e setBuffer:g_predecode[_q4].f16_buf offset:0 atIndex:0]; \
-                    [_e setBuffer:(xbuf) offset:0 atIndex:1]; [_e setBuffer:(ybuf) offset:0 atIndex:2]; \
-                    uint32_t _K=(uint32_t)(Kdim); [_e setBytes:&_K length:4 atIndex:3]; \
-                    [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
-                    [_e endEncoding]; \
-                } else { \
-                    id<MTLBuffer> _wb; uint64_t _wo; \
-                    if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
-                    id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-                    [_e setComputePipelineState:PSO_TY(ty)]; \
-                    [_e setBuffer:_wb offset:_wo atIndex:0]; [_e setBuffer:(xbuf) offset:0 atIndex:1]; \
-                    [_e setBuffer:(ybuf) offset:0 atIndex:2]; uint32_t _K=(uint32_t)(Kdim); [_e setBytes:&_K length:4 atIndex:3]; \
-                    [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
-                    [_e endEncoding]; \
-                } \
-            } else if (g_q4k_coalesced && (ty)==12 && getenv("STRATUM_COALESCE") && (Nrows) >= 8) { \
+            if (g_q4k_coalesced && (ty)==12 && getenv("STRATUM_COALESCE") && (Nrows) >= 8) { \
                 id<MTLBuffer> _wb; uint64_t _wo; \
                 if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
                 id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
@@ -1112,8 +940,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 }
             }
 
-            if (s_sparse_sgemv && s_blockmax && ly->down_ty == 12
-                && stratum_metal_is_predecoded(ly->down_off) < 0) {
+            if (s_sparse_sgemv && s_blockmax && ly->down_ty == 12) {
                 /* Compute block max of fa */
                 size_t bm_bytes = (size_t)(Ff / 32) * sizeof(float);
                 if (bm_bytes > s_blockmax_cap) {

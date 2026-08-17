@@ -3,7 +3,8 @@
  *
  * Contains all the shared engine logic that was previously duplicated
  * between run_llama_arch and run_qwen35_arch:
- *   - RAM detection & smart keep_resident
+ *   - Hard-boundary enforcement (forbidden env vars refuse to run)
+ *   - RAM detection
  *   - madvise layer prefetch
  *   - GPU initialization
  *   - Sliding window KV cache with attention sink
@@ -28,6 +29,35 @@
 #include <mach/mach.h>
 #include <time.h>
 #include <errno.h>
+
+/* ------------------------------------------------------------------ */
+/*  Hard boundary enforcement                                          */
+/* ------------------------------------------------------------------ */
+/* The project's three boundaries (quality, wired memory, machine load)
+ * are enforced in code, not by convention: setting any forbidden
+ * variable aborts with an explicit message before any work is done.
+ * Both architecture run() entries call this first. */
+
+static inline void stratum_enforce_boundaries(void) {
+    static const char* forbidden[] = {
+        /* quality boundary — re-encoding weights */
+        "STRATUM_Q4_0",
+        "STRATUM_PREDECODE",
+        /* memory boundary — locking / pinning weights */
+        "STRATUM_MLOCK_ALL",
+        "STRATUM_HOT_GB",
+        "STRATUM_KEEP_RESIDENT",
+    };
+    for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
+        const char* v = getenv(forbidden[i]);
+        if (v && atoi(v) != 0) {
+            fprintf(stderr, "stratum: ERROR: %s is forbidden by project boundary"
+                            " (quality / wired-memory) — refusing to run.\n",
+                    forbidden[i]);
+            exit(1);
+        }
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Engine configuration (runtime-tunable, not model-specific)         */
@@ -80,35 +110,6 @@ static inline void stratum_engine_init(size_t mmap_size) {
     if ((e = getenv("STRATUM_B_MAX")))       g_eng.spec_b = atoi(e);
     if ((e = getenv("STRATUM_PREFETCH")))    g_eng.prefetch_ahead = atoi(e);
     if ((e = getenv("STRATUM_RELEASE")))     g_eng.release_behind = atoi(e);
-}
-
-/* ------------------------------------------------------------------ */
-/*  Smart keep_resident — auto-detect based on RAM vs model size       */
-/*  This is a RUNTIME policy, not model-specific. Works for any model. */
-/* ------------------------------------------------------------------ */
-
-static inline void stratum_detect_keep_resident(void) {
-    size_t free_reclaim = 0;
-    size_t pgsz = 16384;
-    {
-        long ps = 0; size_t pl = sizeof(ps);
-        sysctlbyname("hw.pagesize", &ps, &pl, NULL, 0);
-        if (ps > 0) pgsz = (size_t)ps;
-        vm_statistics64_data_t vm; mach_msg_type_number_t cnt = HOST_VM_INFO64_COUNT;
-        if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
-                          (host_info64_t)&vm, &cnt) == KERN_SUCCESS) {
-            free_reclaim = ((size_t)vm.free_count + (size_t)vm.inactive_count
-                          + (size_t)vm.purgeable_count
-                          + (size_t)vm.speculative_count) * pgsz;
-        }
-    }
-    g_st.keep_resident = 0;
-
-    fprintf(stderr, "  RAM: %.1f GB total, free+reclaimable: %.1f GB, model: %.1f GB "
-                    "-> keep-resident: no (boundary-disabled)\n",
-            g_eng.total_ram / (1024.0*1024.0*1024.0),
-            free_reclaim / (1024.0*1024.0*1024.0),
-            g_eng.model_size / (1024.0*1024.0*1024.0));
 }
 
 /* ------------------------------------------------------------------ */

@@ -68,25 +68,9 @@ int stratum_metal_q6k_sgemv(uint64_t weight_offset,
                             const float* x, float* y,
                             int N, int K);
 
-/* V6: Pre-decode Q4_K weights to F16 for faster GPU matmul.
- * Decodes the specified weight tensor from Q4_K to half (F16) and stores
- * it in a GPU buffer. Returns a handle for use with f16_sgemv.
- * Returns -1 on failure. */
-int stratum_metal_predecode_q4k(uint64_t weight_offset, size_t weight_bytes,
-                                 int N, int K);
-/* Check if a weight tensor (by offset) has been pre-decoded. */
-int stratum_metal_is_predecoded(uint64_t weight_offset);
-
 /* V-opt: Get last token id from fused argmax (after stratum_metal_forward
  * with logits_out=NULL). Returns -1 if not available. */
 int stratum_metal_get_last_token(void);
-
-/* V9: Convert Q4_K weights to Q4_0 format for faster GPU decode.
- * Q4_0 has simpler unpacking (1 multiply vs scale-unpack+multiply+subtract).
- * Same 4.5 bits/elem density. Returns 0 on success.
- * The converted weights replace Q4_K in GPU dispatch when STRATUM_Q4_0=1. */
-int stratum_metal_convert_q4k_to_q4_0(uint64_t weight_offset, size_t weight_bytes,
-                                       int N, int K);
 
 /* V2: Multi-type group dispatch — multiple matmuls with different quant
  * types sharing the same input x, ONE command buffer, ONE wait.

@@ -32,6 +32,15 @@
 #include <errno.h>
 #include <limits.h>
 
+/* ======================================================================
+ * §1 — Config & tensor discovery
+ * ----------------------------------------------------------------------
+ * File-scope state for the qwen35 hybrid architecture: GGUF handle,
+ * StratumConfig, per-layer tensor pointers, KV/SSM buffers, I/O fds,
+ * and the streaming/GPU/staging switches. Everything is per-process
+ * global (single model per process — not reentrant).
+ * ====================================================================== */
+
 static Gguf          q35_g_gguf;
 static StratumConfig  q35_g_cfg;
 
@@ -152,6 +161,14 @@ static inline const block_q2_K* q35_q2k_row_ptr(const GgufTensor* t, int K, int 
     return (const block_q2_K*)q35_tensor_data(t)
          + (size_t)r * blocks_per_row;
 }
+
+/* ======================================================================
+ * §2 — Q2K nibble layout (V55)
+ * ----------------------------------------------------------------------
+ * Byte re-arrangement of the Q2_K weight stream (values unchanged, type 42)
+ * that halves NEON unpack instructions. Loaded from a sidecar file or an
+ * embedded type-42 GGUF; verified against the original layout before use.
+ * ====================================================================== */
 
 /* V55: Q2K nibble-layout sidecar (offline converter, values unchanged).
  * 148B/block = scales[16]+qs[128]+d+dmin; qs = 每 32 权重 16B (低4bit=前16, 高=后16). */
@@ -446,6 +463,14 @@ static StratumSoftIo q35_g_soft;
 #define q35_g_last_main_s      (q35_g_soft.last_main_s)
 #define q35_g_main_scans       (q35_g_soft.main_scans)
 
+/* ======================================================================
+ * §3 — Hot/cold detection & page-cache policy
+ * ----------------------------------------------------------------------
+ * mincore sampling decides whether a layer's weight pages are resident
+ * (hot → pure compute) or cold (→ prefetch/stage). Also: reclaimable
+ * soft-warm, partial warm, and the soft-IO state the schedulers read.
+ * ====================================================================== */
+
 static int q35_range_pages_hot(size_t start, size_t len, int samples);
 static int q35_tensor_pages_hot(const GgufTensor* w, int samples);
 static size_t q35_free_reclaim_bytes(void);
@@ -594,6 +619,15 @@ static int q35_tensor_pages_hot(const GgufTensor* w, int samples) {
 #if defined(__ARM_FEATURE_DOTPROD)
 static long   q35_g_preq_hits = 0;
 static long   q35_g_preq_miss = 0;
+/* ======================================================================
+ * §4 — Quantized linear dispatch (CPU / GPU2 / NC)
+ * ----------------------------------------------------------------------
+ * Single-input and batched (multix) quantized matmuls for all supported
+ * GGML types, with x-quantization pooling and the GPU2 staging /
+ * per-tensor NoCopy direct-read paths. All reads go through the mmap'd
+ * weight stream; GPU paths are strictly bounded (see §1 switches).
+ * ====================================================================== */
+
 static int8_t* q35_g_xq_pool[q35_B_MAX] = {0};
 static float*  q35_g_xsc_pool[q35_B_MAX] = {0};
 static int     q35_g_xq_cap = 0;
@@ -5284,6 +5318,13 @@ static int    q35_g_n_ssm_layers   = 0;
 
 static void q35_embed_lookup(int token_id, float* out);
 static int  q35_forward_mtp(const float* main_hidden, int prev_token, int position);
+
+/* ======================================================================
+ * §5 — SSM & attention forward (CPU + GPU layer paths)
+ * ----------------------------------------------------------------------
+ * Full-attention (batched, GPU, ring-buffer KV) and Gated-DeltaNet SSM
+ * (state update, group dispatch) forwards, plus the MTP head forward.
+ * ====================================================================== */
 
 static void q35_forward_full_attn_batched(int li, int B, const int* positions);
 static void q35_forward_ssm_batched(int li, int B, const int* positions);
@@ -12159,6 +12200,14 @@ static int q35_allocate_state(void) {
     return 0;
 }
 
+/* ======================================================================
+ * §6 — Speculative decode: tree / MTP / ngram / PTM
+ * ----------------------------------------------------------------------
+ * Self-speculative shallow forward, MTP tree proposal/verification,
+ * n-gram & bigram draft candidates, PTM cache, and the acceptance
+ * policy. Output is identical to greedy when drafts are rejected.
+ * ====================================================================== */
+
 static int q35_forward_one_token(int token_id, int position) {
     int H = q35_g_cfg.n_embed;
     int V = q35_g_cfg.vocab_size;
@@ -13632,7 +13681,16 @@ static void q35_selftest_q2k_gpu(void) {
     free(cpu_out); free(gpu_out);
 }
 
+/* ======================================================================
+ * §7 — run_qwen35_arch: init & env policy
+ * ----------------------------------------------------------------------
+ * Entry point. Reads every STRATUM_* switch into policy state, initializes
+ * KV/SSM/tree/GPU/streaming, then drives the decode loop. The remaining
+ * §8/§9 markers below are inside this function.
+ * ====================================================================== */
+
 int run_qwen35_arch(int argc, char** argv) {
+    stratum_enforce_boundaries();
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s <model.gguf> [N_GENERATE] [PROMPT_TOKEN_ID...]\n",
@@ -13807,44 +13865,6 @@ int run_qwen35_arch(int argc, char** argv) {
 
     if (getenv("STRATUM_MLOCK_ALL"))
         fprintf(stderr, "  MLOCK_ALL: disabled by boundary\n");
-    if (0 && getenv("STRATUM_MLOCK_ALL")) {
-        size_t model_size = g_st.mmap_size;
-        size_t free_ram = 0;
-        {
-            uint64_t memsize = 0; size_t l = sizeof(memsize);
-            sysctlbyname("hw.memsize", &memsize, &l, NULL, 0);
-            vm_statistics_data_t vm_stat; mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
-            host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&vm_stat, &count);
-            size_t pgsz = 0; size_t pl = sizeof(pgsz);
-            sysctlbyname("hw.pagesize", (void*)&pgsz, &pl, NULL, 0);
-            if (pgsz == 0) pgsz = 4096;
-            free_ram = (size_t)vm_stat.free_count * pgsz;
-            size_t active = (size_t)vm_stat.active_count * pgsz;
-            size_t inactive = (size_t)vm_stat.inactive_count * pgsz;
-            /* "available" = free + inactive (can be reclaimed) */
-            free_ram += inactive;
-            fprintf(stderr, "  MLOCK_ALL: model=%.1f GB, free+inactive=%.1f GB, total=%.1f GB\n",
-                    (double)model_size / (1024*1024*1024),
-                    (double)free_ram / (1024*1024*1024),
-                    (double)memsize / (1024*1024*1024));
-        }
-        /* Touch all pages to bring them into page cache first */
-        const volatile uint8_t* p = (const volatile uint8_t*)g_st.mmap_base;
-        volatile uint8_t sink = 0;
-        size_t pgsz = 4096;
-        { long ps = 0; size_t pl = sizeof(ps); sysctlbyname("hw.pagesize", &ps, &pl, NULL, 0); if (ps > 0) pgsz = (size_t)ps; }
-        fprintf(stderr, "  MLOCK_ALL: warming page cache (%zu MB)...\n", model_size / (1024*1024));
-        for (size_t o = 0; o < model_size; o += pgsz) sink += p[o];
-        (void)sink;
-        /* Now mlock */
-        if (mlock(g_st.mmap_base, model_size) == 0) {
-            fprintf(stderr, "  MLOCK_ALL: SUCCESS — %.1f GB pinned in physical RAM\n",
-                    (double)model_size / (1024*1024*1024));
-        } else {
-            fprintf(stderr, "  MLOCK_ALL: mlock failed (%s) — page cache warmed as fallback\n",
-                    strerror(errno));
-        }
-    }
 
     /* Soft-warm: touch mmap into reclaimable page cache when free RAM can
      * hold the model with headroom. No mlock — OS may reclaim under pressure.
@@ -14308,6 +14328,13 @@ server_request:
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt && i < 32; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);
+
+    /* ==================================================================
+     * §8 — MULTISEQ decode (inside run_qwen35_arch)
+     * ------------------------------------------------------------------
+     * N logical streams share one weight scan per step; KV/SSM state is
+     * per-stream, compute is batched on top of the shared tensor reads.
+     * ================================================================== */
 
     {
         int ms_B = 0;

@@ -451,57 +451,6 @@ static int la_forward_one_token_gpu(int token_id, int position) {
             la_g_lys[i].down_off=b->ffn_down->offset; la_g_lys[i].down_tb=b->ffn_down->nbytes; la_g_lys[i].down_ty=b->ffn_down->type;
         }
         la_g_lys_built = 1;
-
-        /* V6: Pre-decode Q4_K weights to F16 for faster GPU matmul */
-        if (getenv("STRATUM_PREDECODE")) {
-            int n_decoded = 0;
-            for (int i = 0; i < nL; i++) {
-                la_BlockTensors* b = &la_g_blocks[i];
-                int H = la_g_cfg.n_embed, Ff = la_g_cfg.n_ff;
-                int Nq = la_g_cfg.n_q_heads, Nk = la_g_cfg.n_kv_heads, Hd = la_g_cfg.head_dim;
-                /* Only pre-decode Q4_K weights (type 12) */
-                if (b->attn_q->type == 12) stratum_metal_predecode_q4k(
-                    b->attn_q->offset, b->attn_q->nbytes, Nq*Hd, H);
-                if (b->attn_k->type == 12) stratum_metal_predecode_q4k(
-                    b->attn_k->offset, b->attn_k->nbytes, Nk*Hd, H);
-                if (b->attn_v->type == 12) stratum_metal_predecode_q4k(
-                    b->attn_v->offset, b->attn_v->nbytes, Nk*Hd, H);
-                if (b->attn_output->type == 12) stratum_metal_predecode_q4k(
-                    b->attn_output->offset, b->attn_output->nbytes, H, Nq*Hd);
-                if (b->ffn_gate->type == 12) stratum_metal_predecode_q4k(
-                    b->ffn_gate->offset, b->ffn_gate->nbytes, Ff, H);
-                if (b->ffn_up->type == 12) stratum_metal_predecode_q4k(
-                    b->ffn_up->offset, b->ffn_up->nbytes, Ff, H);
-                if (b->ffn_down->type == 12) stratum_metal_predecode_q4k(
-                    b->ffn_down->offset, b->ffn_down->nbytes, H, Ff);
-                n_decoded += 7;
-            }
-            /* lm_head */
-            const GgufTensor* lm2 = la_g_output_w ? la_g_output_w : la_g_token_embd;
-            if (lm2->type == 12) stratum_metal_predecode_q4k(
-                lm2->offset, lm2->nbytes, la_g_cfg.vocab_size, H);
-            fprintf(stderr, "  V6: pre-decoded %d layer weights + lm_head to F16\n", n_decoded);
-        }
-        /* V9: Convert Q4_K weights to Q4_0 for faster GPU decode */
-        if (getenv("STRATUM_Q4_0")) {
-            int n_conv = 0;
-            for (int i = 0; i < nL; i++) {
-                la_BlockTensors* b = &la_g_blocks[i];
-                int H2 = la_g_cfg.n_embed, Ff2 = la_g_cfg.n_ff;
-                int Nq2 = la_g_cfg.n_q_heads, Nk2 = la_g_cfg.n_kv_heads, Hd2 = la_g_cfg.head_dim;
-                if (b->attn_q->type == 12) stratum_metal_convert_q4k_to_q4_0(b->attn_q->offset, b->attn_q->nbytes, Nq2*Hd2, H2);
-                if (b->attn_k->type == 12) stratum_metal_convert_q4k_to_q4_0(b->attn_k->offset, b->attn_k->nbytes, Nk2*Hd2, H2);
-                if (b->attn_v->type == 12) stratum_metal_convert_q4k_to_q4_0(b->attn_v->offset, b->attn_v->nbytes, Nk2*Hd2, H2);
-                if (b->attn_output->type == 12) stratum_metal_convert_q4k_to_q4_0(b->attn_output->offset, b->attn_output->nbytes, H2, Nq2*Hd2);
-                if (b->ffn_gate->type == 12) stratum_metal_convert_q4k_to_q4_0(b->ffn_gate->offset, b->ffn_gate->nbytes, Ff2, H2);
-                if (b->ffn_up->type == 12) stratum_metal_convert_q4k_to_q4_0(b->ffn_up->offset, b->ffn_up->nbytes, Ff2, H2);
-                if (b->ffn_down->type == 12) stratum_metal_convert_q4k_to_q4_0(b->ffn_down->offset, b->ffn_down->nbytes, H2, Ff2);
-                n_conv += 7;
-            }
-            const GgufTensor* lm3 = la_g_output_w ? la_g_output_w : la_g_token_embd;
-            if (lm3->type == 12) stratum_metal_convert_q4k_to_q4_0(lm3->offset, lm3->nbytes, la_g_cfg.vocab_size, H);
-            fprintf(stderr, "  V9: converted %d layer weights + lm_head to Q4_0\n", n_conv);
-        }
     }
     la_embed_lookup(token_id, la_g_x);
     const GgufTensor* lm = la_g_output_w ? la_g_output_w : la_g_token_embd;
@@ -803,6 +752,7 @@ static int la_forward_multiseq_gpu(const int* tokens, const int* pos,
 /* stratum_argmax is provided by stratum_engine.h */
 
 int run_llama_arch(int argc, char** argv) {
+    stratum_enforce_boundaries();
     if (argc < 2) {
         fprintf(stderr,
                 "usage: %s <model.gguf> [N_GENERATE] [PROMPT_TOKEN_ID...]\n"
