@@ -63,6 +63,8 @@ make tests            # 量化 kernel 交叉验证 + 采样器精确性
 
 仓库不附带、不内置、不假设任何模型：引擎和所有脚本都要求把模型路径作为显式参数传入。二进制从 GGUF 元数据读取 `general.architecture` 并分发到已注册的处理器——没有任何模型名被硬编码。
 
+构建选项（均为可选）：`make USE_MEMX=1 MEMX_HOME=/path/to/memx` 启用外部 MemX 压缩内存 runtime——**默认关闭**，mmap + 页缓存路径自包含。`make USE_METAL=0` 构建纯 CPU 版（不含 Metal shader 库）。
+
 ### 用法
 
 ```
@@ -99,6 +101,7 @@ Metal 库自动检测（当前目录，然后 `native/`）；Metal 设备自动�
 - **它会用我的 GPU 吗？** 只有设置了 `STRATUM_GPU` / `STRATUM_GPU_NC` 才会。默认纯 CPU。
 - **能跑比内存大的模型吗？** 能——这正是设计点。它需要的是磁盘空间和耐心，不是内存。
 - **为什么大模型解码慢？** 每个 token 都要读一遍完整权重流（11.98 GB @ ~27 GB/s 热 ≈ M4 Pro 上 0.44 s/token）。解码按构造就是带宽受限的；见 [Part IV — 机制极限](#机制极限)。
+- **一个进程能跑多个模型吗？** 不能——引擎按设计是单模型、单进程：状态是文件级全局变量，一个进程只能跑一个模型（见 AGENTS.md）。
 
 ---
 
@@ -189,7 +192,7 @@ stratum/native/
 └── Makefile                     ← 构建 ./stratum（+ metallib）
 ```
 
-新增架构 = 写 `stratum_arch_<name>.inc.c`，实现 `StratumArch` 接口，注册，在 `stratum.c` 里 `#include`。不需要改任何现有文件——对模型也是同理：没有任何逐模型硬编码。
+新增架构 = 写 `stratum_arch_<name>.inc.c`，实现 `StratumArch` 接口，注册——Makefile 会自动把 `*.inc.c` 收集进 `stratum_archs.gen.h`，因此不需要改任何现有文件。对模型也是同理：没有任何逐模型硬编码。
 
 ### 不变量
 

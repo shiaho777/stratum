@@ -63,6 +63,8 @@ make tests            # quant-kernel cross-validation + sampler exactness
 
 No model is shipped, bundled, or assumed: the engine and every script require a model path as an explicit argument. The binary reads `general.architecture` from the GGUF metadata and dispatches to a registered handler — no model names are hardcoded.
 
+Build options (all optional): `make USE_MEMX=1 MEMX_HOME=/path/to/memx` enables the external MemX compressed-memory runtime — **off by default**, the mmap + page-cache path is self-contained. `make USE_METAL=0` builds CPU-only without the Metal shader library.
+
 ### Usage
 
 ```
@@ -99,6 +101,7 @@ The engine prints a diagnostic log to stderr. The three numbers that matter:
 - **Does it use my GPU?** Only if `STRATUM_GPU` / `STRATUM_GPU_NC` is set. Default is CPU-only.
 - **Can it run a model bigger than RAM?** Yes — that is the design point. It needs disk space and patience, not RAM.
 - **Why is large-model decode slow?** Every token reads the whole weight stream once (11.98 GB @ ~27 GB/s hot ≈ 0.44 s/token on M4 Pro). Decode is bandwidth-bound by construction; see [Part IV — Mechanism limits](#mechanism-limits).
+- **Can one process run multiple models?** No — the engine is single-model, single-process by design: state is file-scope global, so one model per process (see AGENTS.md).
 
 ---
 
@@ -189,7 +192,7 @@ stratum/native/
 └── Makefile                     ← builds ./stratum (+ metallib)
 ```
 
-Adding an architecture = write `stratum_arch_<name>.inc.c`, implement the `StratumArch` interface, register it, `#include` it in `stratum.c`. No existing file changes — the same rule applies to models: nothing is hardcoded per-model.
+Adding an architecture = write `stratum_arch_<name>.inc.c`, implement the `StratumArch` interface, register it — the Makefile auto-collects `*.inc.c` into `stratum_archs.gen.h`, so no existing file changes. The same rule applies to models: nothing is hardcoded per-model.
 
 ### Invariants
 

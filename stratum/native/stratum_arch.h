@@ -8,7 +8,9 @@
  * To add a new architecture:
  *   1. Implement the StratumArch interface
  *   2. Call STRATUM_REGISTER_ARCH() with the GGUF arch names it handles
- *   3. Done — no changes to stratum.c or any other file needed
+ *   3. Drop the file into native/ — the Makefile auto-collects
+ *      `stratum_arch_*.inc.c` into `stratum_archs.gen.h`, which stratum.c
+ *      includes. No existing file is edited.
  */
 #ifndef STRATUM_ARCH_H
 #define STRATUM_ARCH_H
