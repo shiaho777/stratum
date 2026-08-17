@@ -14,8 +14,11 @@ CFLAGS  := -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations 
            -fblocks -mcpu=apple-m1
 LDFLAGS := -framework Accelerate -lpthread
 
-# MemX compressed-memory runtime (set USE_MEMX=0 to disable)
-USE_MEMX ?= 1
+# MemX compressed-memory runtime — OPTIONAL, off by default. The engine's
+# mmap + page-cache path is self-contained; MemX only changes where some
+# anonymous buffers live. Enable explicitly with:
+#   make USE_MEMX=1 MEMX_HOME=/path/to/memx
+USE_MEMX ?= 0
 ifeq ($(USE_MEMX),1)
   MEMX_HOME ?= $(HOME)/Desktop/memx
   CFLAGS  += -DSTRATUM_USE_MEMX -I$(MEMX_HOME)/include
@@ -34,11 +37,19 @@ else
   METAL_LIB :=
 endif
 
-.PHONY: all clean check tests
+.PHONY: all clean check tests verify
 
 all: stratum $(METAL_LIB)
 
-stratum: stratum.c stratum_arch_llama.inc.c stratum_arch_qwen35.inc.c $(METAL_OBJ) \
+# Architecture implementations are auto-collected: drop a new
+# stratum_arch_*.inc.c into this directory and rebuild — stratum.c
+# never needs to be edited to register an architecture.
+ARCH_INCS := $(wildcard stratum_arch_*.inc.c)
+
+stratum_archs.gen.h: $(ARCH_INCS)
+	@rm -f $@; for f in $(ARCH_INCS); do echo "#include \"$$f\""; done > $@
+
+stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) \
          stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
          stratum_metal.h \
          stratum_memx.h \
@@ -86,6 +97,8 @@ spec_sample_test: spec_sample_test.c
 # Quick correctness sanity:
 #   - Run all quant kernel cross-validation
 #   - Run TinyLlama generation and check the output starts as expected
+# Backend consistency (CPU vs GPU-NC vs GPU2) is separate — needs a small
+# model and the metallib:  make verify MODEL=</path/to/small.gguf>
 check: stratum quant_test spec_sample_test
 	@echo "=== quant kernel cross-validation ==="
 	./quant_test
@@ -94,8 +107,12 @@ check: stratum quant_test spec_sample_test
 	./spec_sample_test
 	@echo ""
 	@echo "=== smoke: llama arch (NEON) — pass MODEL=<path-to-gguf> ==="
-	@test -n "$(MODEL)" || { echo "make test MODEL=<model.gguf>  (no default model)"; exit 1; }
+	@test -n "$(MODEL)" || { echo "make check MODEL=<model.gguf>  (no default model)"; exit 1; }
 	./stratum "$(MODEL)" 2 1 450 7483 310 3444 338 2>&1 | tail -3
+
+verify: stratum
+	@test -n "$(MODEL)" || { echo "make verify MODEL=<small.gguf>  (no default model)"; exit 1; }
+	./verify_backends.sh "$(MODEL)"
 
 tests: quant_test spec_sample_test
 	./quant_test
@@ -103,4 +120,4 @@ tests: quant_test spec_sample_test
 
 clean:
 	rm -f stratum quant_test metal_test spec_sample_test stratum_metal.o \
-	      stratum_q4k.metallib stratum_q4k.air
+	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h

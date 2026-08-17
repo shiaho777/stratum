@@ -30,6 +30,9 @@ stratum/native/_f16_gemv_probe
 stratum/native/*.metallib
 stratum/native/*.o
 
+# Generated architecture include list (rebuilt by make from stratum_arch_*.inc.c)
+stratum/native/stratum_archs.gen.h
+
 # Python
 __pycache__/
 *.pyc
