@@ -78,6 +78,21 @@ jobs:
   # The CI build is CPU-only and MemX-free, which is byte-deterministic, so
   # the pinned greedy sequence is a true regression assertion. This is also
   # the only automated coverage for the llama architecture.
+  # Issue #22 probe: do GitHub macos-14 runners expose a working Metal
+  # device? Always exits 0 — the run log (PROBE: lines) is the answer, and
+  # decides whether verify_backends can become a CI gate.
+  metal-probe:
+    name: Metal device probe (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and run the Metal probe
+        working-directory: stratum/native
+        run: |
+          xcrun -sdk macosx clang -framework Metal -framework Foundation                 -fobjc-arc -o /tmp/metal_probe metal_device_probe.m
+          /tmp/metal_probe || true
+
   smoke-tiny-model:
     name: tiny-model inference smoke (macos-14 arm64)
     runs-on: macos-14
