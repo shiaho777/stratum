@@ -208,10 +208,14 @@ stratum/native/
 
 引擎把正确性当作契约而不是希望：
 
+- **每个 PR 都跑 CI（3 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在**两个架构**上驱动完整解码回路，贪心序列被钉定为硬回归断言。
 - **`quant_test`** —— 每个量化 kernel 与标量参考交叉验证。
 - **`spec_sample_test`** —— Leviathan-Chen 拒绝采样精确性。
 - **19 个 gate 脚本（`v199`–`v217`）** —— qwen35 架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
+- **分布级回归** —— `STRATUM_LOGITS_DUMP=<path>` 记录每步 logits；`logit_compare` 报告任意两次运行的 KL(base‖candidate)、top-1 一致率与 max |Δ|。gate 只钉住少数 token 的 argmax，这看到的是整个分布。（MemX 运行间方差正是用它发现的，见 AGENTS.md。）
 - **双路径纪律** —— CPU（NEON）与 GPU（Metal）路径都被覆盖；逐 tensor NoCopy 在 27B 上与 CPU 路径验证 bit-exact 后才被允许。
+
+"bit-exact" 的确切含义、豁免项（跨工具链的 `-ffast-math` 收缩、int8 SDOT、MemX 背板切换）与再验证规则：见 `AGENTS.md` 的确定性契约；完整覆盖矩阵见 `stratum/docs/VALIDATION.md`。
 
 ---
 

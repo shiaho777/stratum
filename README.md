@@ -208,10 +208,14 @@ Three hard boundaries the engine never crosses — they are the reason numbers s
 
 The engine treats correctness as a contract, not a hope:
 
+- **CI on every PR (3 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on **both architectures**, with the greedy sequences pinned as hard regression assertions.
 - **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
 - **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
 - **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the qwen35 architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
+- **Distribution-level regression** — `STRATUM_LOGITS_DUMP=<path>` records per-step logits; `logit_compare` reports KL(base‖candidate), top-1 agreement, and max |Δ| between any two runs. The gates pin argmax over a handful of tokens; this sees the whole distribution. (It is also how the MemX run-to-run variance documented in AGENTS.md was found.)
 - **Dual-path discipline** — CPU (NEON) and GPU (Metal) paths are both exercised; per-tensor NoCopy was verified bit-exact against the CPU path on the 27B before it was allowed.
+
+What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolchains, int8 SDOT, MemX backing flips), and what re-validates it: see the determinism contract in `AGENTS.md`, and `stratum/docs/VALIDATION.md` for the full coverage matrix.
 
 ---
 
