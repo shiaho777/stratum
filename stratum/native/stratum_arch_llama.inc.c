@@ -707,6 +707,10 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
 
 #ifdef STRATUM_USE_METAL
 static int la_g_gpu_batch_full = 0;
+#else
+static int la_g_gpu_batch_full = 0;   /* CPU-only build: GPU batch path never taken */
+#endif
+#ifdef STRATUM_USE_METAL
 /* Full-GPU multi-sequence forward: B independent streams, ENTIRE forward in
  * one Metal command buffer (one sync/sweep). KV cache lives on GPU inside the
  * Metal module. Per-stream logits land in la_gb_logits[s]. Bit-exact per

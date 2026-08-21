@@ -269,7 +269,9 @@ static int      q35_g_gpu2 = 0;
 static int      q35_g_gpu_nc = 0;   /* V54: zero-copy windowed direct-read (find_chunk NoCopy) */
 static int      q35_g_nc_batch = 0; /* V54.4: batched NC submission (attn_q/k/v one command buffer) */
 static void q35_nc_flush(void) {
+#ifdef STRATUM_USE_METAL
     if (q35_g_nc_batch) stratum_metal_nc_batch_flush();
+#endif
 }
 static int      q35_g_hot_fast = 0; /* V56: 热 cache 纯计算模式——复用 keep_resident 短路, 不锁 page cache */
 static int      q35_g_stream_det = 0; /* V56.1: 确定性流式——跳过 mincore 热冷检测税, 默认全冷走预取流水线 */
@@ -8753,6 +8755,7 @@ static int q35_linear_tiled(const GgufTensor* w, const float* x, float* y, int N
 
 static void q35_tensor_prefetch(const GgufTensor* t, size_t bytes, int active);
 
+#ifdef STRATUM_USE_METAL
 static int q35_gpu_full_attn_init(void) {
     if (q35_g_gpu_full_attn) return 0;
     const char* mlpath = getenv("STRATUM_METALLIB");
@@ -8811,6 +8814,7 @@ static int q35_forward_full_attn_gpu(int li, int position) {
         q35_g_x, 1  /* use internal buffers, x_gpu = q35_g_x */
     );
 }
+#endif /* STRATUM_USE_METAL */
 
 static void q35_forward_full_attn(int li, int position) {
     q35_BlockTensors* b = &q35_g_blocks[li];
@@ -8823,6 +8827,7 @@ static void q35_forward_full_attn(int li, int position) {
     /* GPU full-attn path: entire layer on GPU, one command buffer.
      * V16: fixed KV cache slab count (was 8, 27B needs 16 → NaN).
      * Now enabled by default with STRATUM_GPU_FULL=2. */
+#ifdef STRATUM_USE_METAL
     if (q35_g_gpu_full_attn) {
         int gpu_rc = q35_forward_full_attn_gpu(li, position);
         if (gpu_rc == 0) {
@@ -8839,6 +8844,7 @@ static void q35_forward_full_attn(int li, int position) {
             fprintf(stderr, "  [GPU_DEBUG] full_attn layer %d GPU failed (rc=%d), CPU fallback\n", li, gpu_rc);
         /* fallthrough to CPU on GPU failure */
     }
+#endif /* STRATUM_USE_METAL */
 
     memcpy(q35_g_x_resid, q35_g_x, sizeof(float) * H);
     q35_rmsnorm(q35_g_x, q35_f32_tensor_ptr(b->attn_norm), H, q35_g_cfg.rms_eps, q35_g_xn);
@@ -9069,7 +9075,9 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
 #endif
         /* V54.4: attn_q/k/v share the same input and are independent —
          * batch them into ONE command buffer (17.3x vs per-matmul wait). */
+#ifdef STRATUM_USE_METAL
         if (q35_g_nc_batch) stratum_metal_nc_batch_begin();
+#endif
         q35_linear_dispatch_multix_pipe(b->attn_q, xs, ys, B, 2 * Nq * Hd, H, b->attn_k);
         for (int s = 0; s < B; s++) ys[s] = q35_g_k_buf_b[s];
         q35_linear_dispatch_multix_pipe(b->attn_k, xs, ys, B, Nk * Hd, H, b->attn_v);
@@ -9597,6 +9605,7 @@ static void q35_forward_ssm(int li, int position) {
      * Collapses 4 dispatch+wait round-trips into 1.
      * V15: Only dispatch quantized tensors (Q4_K/Q5_K/Q6_K) to GPU.
      * F32 tensors (ssm_beta, ssm_alpha) are tiny (NV rows) — CPU handles them. */
+#ifdef STRATUM_USE_METAL
     if (q35_g_gpu_full_attn) {
         uint64_t offs[4]; size_t tbs[4]; int tys[4]; int Ns[4]; float* ys[4];
         int ng = 0;
@@ -9635,6 +9644,7 @@ static void q35_forward_ssm(int li, int position) {
         if (ng > 0 && getenv("STRATUM_GPU_DEBUG"))
             fprintf(stderr, "  [GPU_DEBUG] ssm layer %d group dispatch failed, CPU fallback\n", li);
     }
+#endif /* STRATUM_USE_METAL */
 
     {
         int did_g = 0;
@@ -9812,6 +9822,7 @@ ssm_projections_done:
         q35_layer_tail_hide(li, b);
 
     /* V2: FFN gate + up as group (one command buffer) */
+#ifdef STRATUM_USE_METAL
     if (q35_g_gpu_full_attn) {
         uint64_t offs[2]; size_t tbs[2]; int tys[2]; int Ns[2]; float* ys[2];
         int ng = 0;
@@ -9820,6 +9831,7 @@ ssm_projections_done:
         if (ng > 0 && stratum_metal_ssm_group(offs, tbs, tys, q35_g_xn, ys, Ns, ng, H) == 0)
             goto ffn_proj_done;
     }
+#endif /* STRATUM_USE_METAL */
     {
         int did_g = 0;
 #ifdef STRATUM_USE_METAL
@@ -13601,6 +13613,7 @@ static int q35_ngram_propose_multi(const int* seq, int len, int max_order,
 }
 
 
+#ifdef STRATUM_USE_METAL
 /* P1: Q2_K GPU kernel selftest — STRATUM_SELFTEST_Q2K=1 compares the Metal
  * q2k kernels (single + batched) against the validated CPU SDOT reference
  * on the model's first Q2_K tensor. */
@@ -13680,6 +13693,7 @@ static void q35_selftest_q2k_gpu(void) {
     for (int s = 0; s < B; s++) { free(xq[s]); free(xsc[s]); }
     free(cpu_out); free(gpu_out);
 }
+#endif /* STRATUM_USE_METAL */
 
 /* ======================================================================
  * §7 — run_qwen35_arch: init & env policy
@@ -14124,7 +14138,9 @@ int run_qwen35_arch(int argc, char** argv) {
     {
         const char* gf = getenv("STRATUM_GPU_FULL");
         if (gf && atoi(gf) >= 2) {
+#ifdef STRATUM_USE_METAL
             q35_gpu_full_attn_init();
+#endif
         }
     }
 
