@@ -65,12 +65,9 @@ typedef struct {
     int keep_resident;  /* hot mode: skip madvise, page cache stays warm */
     int hot_enabled;
 
-    /* Tensor live override (for streaming/staging) */
-    const uint8_t** tensor_live;  /* NULL = use mmap directly */
-
     /* Profiling */
-    double  typesecs[32];
-    long    typecalls[32];
+    double  typesecs[GGML_TYPE_COUNT];
+    long    typecalls[GGML_TYPE_COUNT];
 } StratumLinearState;
 
 /* Global state — accessible by all architectures */
@@ -114,7 +111,6 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
 
     g_st.keep_resident = 0;
     g_st.hot_enabled = 0;
-    g_st.tensor_live = NULL;
 
     memset(g_st.typesecs, 0, sizeof(g_st.typesecs));
     memset(g_st.typecalls, 0, sizeof(g_st.typecalls));
@@ -124,16 +120,9 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
 /*  Tensor data access                                                 */
 /* ------------------------------------------------------------------ */
 
-static inline const uint8_t* st_tensor_data(const GgufTensor* t) {
-    if (g_st.tensor_live) {
-        /* If streaming/staging is active, the architecture may have set
-         * tensor_live to override mmap base for specific tensors.
-         * The architecture manages this array. */
-    }
-    return g_st.mmap_base + t->offset;
-}
-
-/* Row pointer helpers — type-specific, shared by all architectures */
+/* Row pointer helpers — type-specific, shared by all architectures.
+ * (qwen35 keeps its own q35_g_tensor_live override for staging; these
+ * helpers always read the mmap directly.) */
 
 static inline const block_q4_K* st_q4k_row_ptr(const GgufTensor* t, int K, int r) {
     return (const block_q4_K*)(g_st.mmap_base + t->offset)
@@ -295,7 +284,7 @@ static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float*
     int _tm = (getenv("STRATUM_TYPETIME") != NULL);
     struct timespec _a, _b;
     if (_tm) clock_gettime(CLOCK_MONOTONIC, &_a);
-    int _t = (int)w->type & 31;
+    int _t = (int)w->type;
     int _rc = 0;
     switch ((GgmlType)w->type) {
         case GGML_TYPE_Q2_K: st_linear_q2k (w, x, y, N, K); break;
@@ -311,7 +300,7 @@ static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float*
                     gguf_type_name((GgmlType)w->type));
             _rc = -1;
     }
-    if (_tm && _rc == 0) {
+    if (_tm && _rc == 0 && _t >= 0 && _t < GGML_TYPE_COUNT) {
         clock_gettime(CLOCK_MONOTONIC, &_b);
         g_st.typesecs[_t] += (_b.tv_sec-_a.tv_sec)+(_b.tv_nsec-_a.tv_nsec)/1e9;
         g_st.typecalls[_t]++;

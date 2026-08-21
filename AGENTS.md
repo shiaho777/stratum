@@ -117,7 +117,7 @@ Python GGUF utilities independent of the engine: `decode_gguf_ids.py`, `encode_p
 
 ### Experiment evidence (`stratum/docs/`)
 
-159 JSON files recording every kernel/scheduling decision (see `docs/README.md`). These are historical evidence — treat as records, not necessarily reproducible against today's code.
+A small set of measured evidence files backing the README's claims (see `docs/README.md`): head-to-head memory comparisons, memory floor, pressure test. The ~150 per-kernel tuning JSONs from the development log were pruned in the 2026-08 cleanup and survive only in git history. These are historical evidence — treat as records, not necessarily reproducible against today's code.
 
 ### Runtime model & limitations
 

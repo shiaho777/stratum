@@ -24,9 +24,9 @@ int main(int argc, char** argv) {
     {
         const uint8_t* p = g.mmap_base;
         uint64_t pos = 4 + 4 + 8 + 8;          /* magic+version+n_tensors+n_kv */
-        fprintf(stderr, "DBG n_kv=%llu n_tensors=%llu body_off=%llu align=%u\n",
+        fprintf(stderr, "DBG n_kv=%llu n_tensors=%llu body_off=%llu align=%llu\n",
                 (unsigned long long)g.n_kv, (unsigned long long)g.n_tensors,
-                (unsigned long long)g.body_offset, g.alignment);
+                (unsigned long long)g.body_offset, (unsigned long long)g.alignment);
         for (uint64_t i = 0; i < g.n_kv && i < 5; i++) {
             uint64_t len; memcpy(&len, p + pos, 8);
             fprintf(stderr, "  DBG kv[%llu] pos=%llu keylen=%llu bytes_len=%zu\n",
@@ -71,8 +71,12 @@ int main(int argc, char** argv) {
     /* 3. 写新文件 */
     int fd = open(argv[2], O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { perror("open out"); return 1; }
-    if (ftruncate(fd, (off_t)total) != 0) { perror("ftruncate"); return 1; }
-    uint8_t* out = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    /* Output = header region (body bytes) + converted data. Sizing the file
+     * to `total` alone silently drops the last `body` bytes of tensor data
+     * (writes past EOF land in the mmap page rounding and never hit disk). */
+    uint64_t out_size = body + total;
+    if (ftruncate(fd, (off_t)out_size) != 0) { perror("ftruncate"); return 1; }
+    uint8_t* out = mmap(NULL, out_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (out == MAP_FAILED) { perror("mmap out"); return 1; }
 
     /* header: 复制原 header, 原位改 Q2K 的 type(42) 和 offset */
@@ -119,11 +123,11 @@ int main(int argc, char** argv) {
             wpos += (uint64_t)t->nbytes;
         }
     }
-    msync(out, total, MS_SYNC);
-    munmap(out, total);
+    msync(out, out_size, MS_SYNC);
+    munmap(out, out_size);
     close(fd);
     printf("wrote %s: %.2f GB (%llu Q2K->Q2K_NIB, total %llu tensors)\n",
-           argv[2], (double)total / 1e9, (unsigned long long)n_q2k,
+           argv[2], (double)out_size / 1e9, (unsigned long long)n_q2k,
            (unsigned long long)g.n_tensors);
     return bad ? 2 : 0;
 }

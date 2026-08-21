@@ -35,6 +35,10 @@ typedef enum {
     GGML_TYPE_IQ4_NL   = 20,
     GGML_TYPE_IQ4_XS   = 23,
     GGML_TYPE_BF16     = 30,
+    /* V55: nibble-layout Q2_K (byte re-arrangement, values unchanged).
+     * Must be a real enum member: bounds checks throughout this header
+     * test `t >= GGML_TYPE_COUNT`, and 42 lies beyond every other value. */
+    GGML_TYPE_Q2K_NIB  = 42,
     GGML_TYPE_COUNT,
 } GgmlType;
 
@@ -54,7 +58,7 @@ static const GgmlTypeInfo gguf_type_info[] = {
     [GGML_TYPE_Q8_0]   = { 32,  34,  "Q8_0"  },
     [GGML_TYPE_Q8_1]   = { 32,  40,  "Q8_1"  },
     [GGML_TYPE_Q2_K]   = { 256, 84,  "Q2_K"  },
-    [42]               = { 256, 148, "Q2K_NIB" },   /* V55: nibble 布局 Q2K (数值不变) */
+    [GGML_TYPE_Q2K_NIB] = { 256, 148, "Q2K_NIB" }, /* V55: nibble 布局 Q2K (数值不变) */
     [GGML_TYPE_Q3_K]   = { 256, 110, "Q3_K"  },
     [GGML_TYPE_Q4_K]   = { 256, 144, "Q4_K"  },
     [GGML_TYPE_Q5_K]   = { 256, 176, "Q5_K"  },
@@ -222,57 +226,60 @@ static int gguf_open(const char* path, Gguf* gguf) {
 
     if ((size_t)(c.end - c.p) < 4 || memcmp(c.p, "GGUF", 4) != 0) {
         fprintf(stderr, "gguf_open: bad magic\n");
-        munmap(p, gguf->mmap_size); close(gguf->fd);
-        return -1;
+        goto fail;
     }
     c.p += 4;
 
-    if (gguf_take_u32(&c, &gguf->version) != 0) return -1;
+    if (gguf_take_u32(&c, &gguf->version) != 0) goto fail;
     if (gguf->version != 3) {
         fprintf(stderr, "gguf_open: unsupported version %u (only v3)\n", gguf->version);
-        munmap(p, gguf->mmap_size); close(gguf->fd);
-        return -1;
+        goto fail;
     }
-    if (gguf_take_u64(&c, &gguf->n_tensors) != 0) return -1;
-    if (gguf_take_u64(&c, &gguf->n_kv) != 0) return -1;
+    if (gguf_take_u64(&c, &gguf->n_tensors) != 0) goto fail;
+    if (gguf_take_u64(&c, &gguf->n_kv) != 0) goto fail;
 
-    gguf->kv = (GgufKV*)calloc(gguf->n_kv, sizeof(GgufKV));
-    if (!gguf->kv) return -1;
+    /* :1 guards — a well-formed GGUF always has both sections, but a
+     * zero count must not be read as allocation failure. */
+    gguf->kv = (GgufKV*)calloc(gguf->n_kv ? gguf->n_kv : 1, sizeof(GgufKV));
+    if (!gguf->kv) goto fail;
     gguf->alignment = 32;
     for (uint64_t i = 0; i < gguf->n_kv; i++) {
         GgufKV* kv = &gguf->kv[i];
         kv->key = gguf_take_string_dup(&c);
-        if (!kv->key) return -1;
-        if (gguf_take_u32(&c, &kv->vtype) != 0) return -1;
+        if (!kv->key) goto fail;
+        if (gguf_take_u32(&c, &kv->vtype) != 0) goto fail;
         kv->bytes = c.p;
-        if (gguf_skip_value(&c, kv->vtype) != 0) return -1;
+        if (gguf_skip_value(&c, kv->vtype) != 0) goto fail;
         kv->bytes_len = (size_t)(c.p - kv->bytes);
 
         if (strcmp(kv->key, "general.alignment") == 0 && kv->vtype == GGUF_VAL_UINT32) {
             uint32_t a;
             memcpy(&a, kv->bytes, 4);
-            gguf->alignment = a;
+            /* GGUF requires a power of two; ignore corrupt values and keep
+             * the spec default rather than computing garbage offsets. */
+            if (a >= 16 && a <= 65536 && (a & (a - 1)) == 0) gguf->alignment = a;
         }
     }
 
-    gguf->tensors = (GgufTensor*)calloc(gguf->n_tensors, sizeof(GgufTensor));
-    if (!gguf->tensors) return -1;
+    gguf->tensors = (GgufTensor*)calloc(gguf->n_tensors ? gguf->n_tensors : 1,
+                                        sizeof(GgufTensor));
+    if (!gguf->tensors) goto fail;
     for (uint64_t i = 0; i < gguf->n_tensors; i++) {
         GgufTensor* t = &gguf->tensors[i];
         t->name = gguf_take_string_dup(&c);
-        if (!t->name) return -1;
-        if (gguf_take_u32(&c, &t->n_dims) != 0) return -1;
+        if (!t->name) goto fail;
+        if (gguf_take_u32(&c, &t->n_dims) != 0) goto fail;
         if (t->n_dims > 8) {
             fprintf(stderr, "gguf_open: tensor %s has %u dims (max 8)\n", t->name, t->n_dims);
-            return -1;
+            goto fail;
         }
         t->nelem = 1;
         for (uint32_t d = 0; d < t->n_dims; d++) {
-            if (gguf_take_u64(&c, &t->dims[d]) != 0) return -1;
+            if (gguf_take_u64(&c, &t->dims[d]) != 0) goto fail;
             t->nelem *= (int64_t)t->dims[d];
         }
-        if (gguf_take_u32(&c, &t->type) != 0) return -1;
-        if (gguf_take_u64(&c, &t->offset) != 0) return -1;
+        if (gguf_take_u32(&c, &t->type) != 0) goto fail;
+        if (gguf_take_u64(&c, &t->offset) != 0) goto fail;
         t->nbytes = gguf_tensor_bytes((GgmlType)t->type, t->nelem);
     }
 
@@ -281,10 +288,41 @@ static int gguf_open(const char* path, Gguf* gguf) {
     gguf->body_offset = aligned;
 
     for (uint64_t i = 0; i < gguf->n_tensors; i++) {
-        gguf->tensors[i].offset += gguf->body_offset;
+        GgufTensor* t = &gguf->tensors[i];
+        t->offset += gguf->body_offset;
+        /* Corrupt-file guard: every tensor with a computable size must lie
+         * inside the mapped file — fail here with a clear message instead
+         * of faulting mid-inference on an out-of-range address. */
+        if (t->nbytes >= 0 &&
+            (t->offset > gguf->mmap_size ||
+             (uint64_t)t->nbytes > gguf->mmap_size - t->offset)) {
+            fprintf(stderr,
+                    "gguf_open: tensor %s type=%s dims=[%llu,%llu] [%llu + %lld) "
+                    "exceeds file size %llu\n",
+                    t->name, gguf_type_name((GgmlType)t->type),
+                    (unsigned long long)t->dims[0],
+                    (unsigned long long)(t->n_dims > 1 ? t->dims[1] : 0),
+                    (unsigned long long)t->offset, (long long)t->nbytes,
+                    (unsigned long long)gguf->mmap_size);
+            goto fail;
+        }
     }
 
     return 0;
+
+fail:
+    if (gguf->kv) {
+        for (uint64_t i = 0; i < gguf->n_kv; i++) free(gguf->kv[i].key);
+        free(gguf->kv);
+    }
+    if (gguf->tensors) {
+        for (uint64_t i = 0; i < gguf->n_tensors; i++) free(gguf->tensors[i].name);
+        free(gguf->tensors);
+    }
+    if (gguf->mmap_base) munmap((void*)gguf->mmap_base, gguf->mmap_size);
+    close(gguf->fd);
+    memset(gguf, 0, sizeof(*gguf));
+    return -1;
 }
 
 static void gguf_close(Gguf* gguf) {
