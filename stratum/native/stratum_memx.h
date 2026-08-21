@@ -28,6 +28,17 @@ static long g_memx_donate_pages = 0;
 static long g_memx_donate_n = 0;
 static double g_memx_donate_s = 0.0;
 
+/* Quota override (MB) for safe repro of MemX pressure scenarios: shrinking a
+ * context's quota raises the pool pressure its adaptive paths react to,
+ * without stressing the host machine. 0 / unset = compiled default. */
+static inline size_t stratum_memx_quota_mb(const char* env, size_t def) {
+    const char* e = getenv(env);
+    if (!e || !e[0]) return def;
+    long mb = atol(e);
+    if (mb <= 0) return def;
+    return (size_t)mb * 1024 * 1024;
+}
+
 static inline int stratum_memx_init(void) {
     if (g_memx_active) return 0;
     {
@@ -46,7 +57,7 @@ static inline int stratum_memx_init(void) {
         memx_runtime_shutdown();
         return -1;
     }
-    memx_runtime_context_set_quota(g_memx_buf_ctx, 3ULL * 1024 * 1024 * 1024);
+    memx_runtime_context_set_quota(g_memx_buf_ctx, stratum_memx_quota_mb("STRATUM_MEMX_BUF_QUOTA_MB", 3ULL * 1024 * 1024 * 1024));
     if (memx_runtime_context_create("stratum-kv", &g_memx_kv_ctx) != 0) {
         fprintf(stderr, "  MEMX: kv context create failed\n");
         memx_runtime_context_destroy(g_memx_buf_ctx);
@@ -54,7 +65,7 @@ static inline int stratum_memx_init(void) {
         memx_runtime_shutdown();
         return -1;
     }
-    memx_runtime_context_set_quota(g_memx_kv_ctx, 2ULL * 1024 * 1024 * 1024);
+    memx_runtime_context_set_quota(g_memx_kv_ctx, stratum_memx_quota_mb("STRATUM_MEMX_KV_QUOTA_MB", 2ULL * 1024 * 1024 * 1024));
     g_memx_active = 1;
     fprintf(stderr,
         "  MEMX dual-plane: ON | weights=mmap | stage=MemX-pinned | KV=MemX-compress\n");
