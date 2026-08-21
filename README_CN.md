@@ -324,7 +324,7 @@ stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地�
 - **[ds4 / DwarfStar](https://github.com/antirez/ds4)** —— 窄专业引擎、decode 图捕获、专家 LRU、在关键处保持精确。
 - **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** —— 8 GB 跑 2.78T；O_DIRECT 读取、打包数据直读、位级确定性契约；nibble 布局本身就在质疑权重格式。
 - **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** —— Apple Silicon 上的纯 C/Metal MoE；SSD 专家流式、FMA 融合反量化 kernel、信任 OS 页缓存。
-- **[tessera](https://github.com/geoph9/tessera)** —— NoCopy GPU 缓冲 + `MADV_DONTNEED` 页驱逐；为逐 tensor NoCopy 边界提供了依据。
+- **[tessera](https://github.com/geoph9/tessera)** —— NoCopy GPU 缓冲 + `MADV_DONTNEED` 页驱逐；为逐 tensor NoCopy 边界提供了依据。（该仓库已不再公开。）
 - **[HuggingFace transformers](https://github.com/huggingface/transformers)** —— 用于输出对比的参考框架。
 - **[ggml / llama.cpp](https://github.com/ggerganov/llama.cpp)** —— GGUF 量化格式与模型转换工具链。
 

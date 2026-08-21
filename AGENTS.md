@@ -175,6 +175,27 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 5. **Backend consistency**: `verify_backends.sh <small.gguf>` asserts CPU / GPU-NC / GPU2 greedy sequences are identical (needs metallib). See `docs/VALIDATION.md` for the full matrix — what the gates cover, what they don't, and the per-kernel-change checklist.
 6. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s
 
+### Determinism & exactness contract
+
+What is guaranteed, what is exempt, and what re-validates it — stated explicitly so "bit-exact" has a defined meaning:
+
+**Guarantees**
+
+- Greedy decoding produces identical token sequences across sanctioned configurations: CPU (NEON and int8 SDOT) and GPU paths are pinned by the gate scripts (`v199`–`v217`) and `verify_backends.sh`.
+- Scheduling and cache knobs (`STRATUM_MULTISEQ`, prefetch policy, hot/cold detection, MemX placement) change throughput only, never output.
+- Speculative decoding accepts or rejects by exact comparison; rejected drafts roll back state, so output equals greedy by construction.
+
+**Exemptions / known drift sources**
+
+- The build uses `-ffast-math`: floating-point contraction is compiler-version dependent. Greedy argmax sequences are pinned by the gates, but full logit bit patterns may shift across Xcode/toolchain upgrades.
+- int8 SDOT x-prequantization (Q4_K/Q6_K) is an approved approximation, verified greedy-identical against the fp32 NEON path.
+- The Q2K nibble layout (type 42) is a byte permutation only; values are unchanged and verified at load.
+
+**Re-validation**
+
+- After any engine change: `run_all_gates.sh <model.gguf>`.
+- After any toolchain (Xcode/clang) upgrade: re-run `run_all_gates.sh` even with no code change — `-ffast-math` contraction may have moved.
+
 ## Git
 
 - The repository was rebuilt (2026-08) as a clean two-commit history: initial engine + path cleanup. Keep it clean.

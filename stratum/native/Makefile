@@ -10,6 +10,10 @@
 #   make clean
 
 CC      := clang
+# -ffast-math: FP contraction is toolchain-dependent. Greedy argmax is pinned
+# by the gate scripts, but logit bit patterns may shift across Xcode updates —
+# re-run run_all_gates.sh after toolchain upgrades (AGENTS.md, "Determinism &
+# exactness contract").
 CFLAGS  := -O3 -ffast-math -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations \
            -fblocks -mcpu=apple-m1
 LDFLAGS := -framework Accelerate -lpthread
