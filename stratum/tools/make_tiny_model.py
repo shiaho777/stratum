@@ -8,7 +8,8 @@ byte-identical across machines and CPython versions (random.Random is a
 documented stable API).
 
 Usage:
-    python3 make_tiny_model.py --out /tmp/tiny.gguf
+    python3 make_tiny_model.py --arch llama  --out /tmp/tiny.gguf
+    python3 make_tiny_model.py --arch qwen35 --out /tmp/tiny35.gguf
     STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8
 """
 import argparse
@@ -29,7 +30,7 @@ GGML_F32 = 0
 GGML_F16 = 1
 
 
-def build_entries(rng):
+def build_entries(arch, rng):
     def mat(k, n):
         scale = 1.0 / (k ** 0.5)
         return b''.join(struct.pack('<e', rng.gauss(0.0, scale)) for _ in range(k * n))
@@ -40,11 +41,23 @@ def build_entries(rng):
     entries = []  # (name, dims, ggml_type, data)
     for li in range(N_LAYERS):
         entries.append((f'blk.{li}.attn_norm.weight', (H,), GGML_F32, norm_vec(H)))
-        entries.append((f'blk.{li}.attn_q.weight', (H, NQ * HD), GGML_F16, mat(H, NQ * HD)))
+        if arch == 'qwen35':
+            # qwen35 gated attention: attn_q emits (q, gate) per head, and the
+            # layer norm before FFN is post_attention_norm (no ffn_norm).
+            entries.append((f'blk.{li}.attn_q.weight', (H, 2 * NQ * HD), GGML_F16, mat(H, 2 * NQ * HD)))
+            entries.append((f'blk.{li}.attn_q_norm.weight', (HD,), GGML_F32, norm_vec(HD)))
+            entries.append((f'blk.{li}.attn_k_norm.weight', (HD,), GGML_F32, norm_vec(HD)))
+            entries.append((f'blk.{li}.post_attention_norm.weight', (H,), GGML_F32, norm_vec(H)))
+        else:
+            entries.append((f'blk.{li}.attn_q.weight', (H, NQ * HD), GGML_F16, mat(H, NQ * HD)))
+        # keep the llama RNG consumption order identical to the original
+        # generator (PR #15 pinned its sequence): attn_norm, attn_q, attn_k,
+        # attn_v, attn_output, ffn_norm, ffn_gate, ffn_up, ffn_down
         entries.append((f'blk.{li}.attn_k.weight', (H, NK * HD), GGML_F16, mat(H, NK * HD)))
         entries.append((f'blk.{li}.attn_v.weight', (H, NK * HD), GGML_F16, mat(H, NK * HD)))
         entries.append((f'blk.{li}.attn_output.weight', (NQ * HD, H), GGML_F16, mat(NQ * HD, H)))
-        entries.append((f'blk.{li}.ffn_norm.weight', (H,), GGML_F32, norm_vec(H)))
+        if arch != 'qwen35':
+            entries.append((f'blk.{li}.ffn_norm.weight', (H,), GGML_F32, norm_vec(H)))
         entries.append((f'blk.{li}.ffn_gate.weight', (H, FF), GGML_F16, mat(H, FF)))
         entries.append((f'blk.{li}.ffn_up.weight', (H, FF), GGML_F16, mat(H, FF)))
         entries.append((f'blk.{li}.ffn_down.weight', (FF, H), GGML_F16, mat(FF, H)))
@@ -52,6 +65,26 @@ def build_entries(rng):
     entries.append(('output_norm.weight', (H,), GGML_F32, norm_vec(H)))
     entries.append(('output.weight', (H, V), GGML_F16, mat(H, V)))
     return entries
+
+
+def kv_pairs(arch):
+    p = arch
+    kvs = [kv_pair('general.architecture', p),
+           kv_pair(f'{p}.block_count', N_LAYERS),
+           kv_pair(f'{p}.embedding_length', H),
+           kv_pair(f'{p}.feed_forward_length', FF),
+           kv_pair(f'{p}.attention.head_count', NQ),
+           kv_pair(f'{p}.attention.head_count_kv', NK),
+           kv_pair(f'{p}.attention.key_length', HD),
+           kv_pair(f'{p}.attention.layer_norm_rms_epsilon',
+                   struct.unpack('<I', struct.pack('<f', 1e-5))[0]),
+           kv_pair(f'{p}.rope.freq_base', 10000),
+           kv_pair(f'{p}.rope.dimension_count', HD)]
+    if arch == 'qwen35':
+        # every layer full-attention: no SSM state, no MTP
+        kvs.append(kv_pair(f'{p}.full_attention_interval', 1))
+    kvs.append(kv_pair('general.alignment', 32))
+    return b''.join(kvs)
 
 
 def kv_pair(key, val):
@@ -66,33 +99,18 @@ def kv_pair(key, val):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--arch', default='llama', choices=['llama'])
+    ap.add_argument('--arch', default='llama', choices=['llama', 'qwen35'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
-    entries = build_entries(rng)
+    entries = build_entries(args.arch, rng)
+    kvs = kv_pairs(args.arch)
+    n_kv = 12 if args.arch == 'qwen35' else 11
 
-    kvs = b''.join([
-        kv_pair('general.architecture', 'llama'),
-        kv_pair('llama.block_count', N_LAYERS),
-        kv_pair('llama.embedding_length', H),
-        kv_pair('llama.feed_forward_length', FF),
-        kv_pair('llama.attention.head_count', NQ),
-        kv_pair('llama.attention.head_count_kv', NK),
-        kv_pair('llama.attention.key_length', HD),
-        kv_pair('llama.attention.layer_norm_rms_epsilon',
-                struct.unpack('<I', struct.pack('<f', 1e-5))[0]),
-        kv_pair('llama.rope.freq_base', 10000),
-        kv_pair('llama.rope.dimension_count', HD),
-        kv_pair('general.alignment', 32),
-    ])
+    header = b'GGUF' + struct.pack('<IQQ', 3, len(entries), n_kv)
 
-    header = b'GGUF' + struct.pack('<IQQ', 3, len(entries), 11)
-
-    # tensor index with placeholder offsets; sizes are fixed so the layout is
-    # computable before patching
     def record(name, dims, ty, off):
         r = struct.pack('<Q', len(name)) + name.encode()
         r += struct.pack('<I', len(dims)) + b''.join(struct.pack('<Q', d) for d in dims)
@@ -115,7 +133,7 @@ def main():
 
     with open(args.out, 'wb') as f:
         f.write(out)
-    print(f'wrote {args.out}: arch=llama layers={N_LAYERS} H={H} V={V} '
+    print(f'wrote {args.out}: arch={args.arch} layers={N_LAYERS} H={H} V={V} '
           f'size={len(out)} bytes')
 
 
