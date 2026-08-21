@@ -56,12 +56,9 @@ stratum/native/gguf_nib_convert
 stratum/native/q2k_nibble_convert
 stratum/native/*.bak.*
 
-# Native dev binaries (rebuildable from source)
-stratum/native/bench_*
-stratum/native/*_probe
-stratum/native/gguf_nib_convert
-stratum/native/q2k_nibble_convert
-stratum/native/*.bak.*
+# Agent session state (local tooling, not part of the project)
+.workbuddy/
+.zcode/
 
 # Model directories (configs/weights are not part of the engine repo)
 model*/

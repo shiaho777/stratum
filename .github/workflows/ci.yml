@@ -1,0 +1,43 @@
+name: CI
+
+# CI is the merge gate for PRs into main: required check must be green
+# before merge. It builds the engine and runs the model-free correctness
+# tests (quant kernel cross-validation, Leviathan-Chen sampler exactness).
+# Full-model greedy gates (v199-v217) need a local GGUF and remain a
+# maintainer step — see docs/VALIDATION.md for what automated validation
+# covers and what it does not. This workflow never closes Issues; Issues
+# close via "Fixes #N" when the PR merges.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-tests:
+    name: build + kernel tests (macos-14 arm64)
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Default dev path: Metal shaders compiled, MemX off so CI never
+      # fetches an external dependency from the network.
+      - name: Build engine (Metal, MemX off)
+        working-directory: stratum/native
+        run: make USE_MEMX=0 -j3
+
+      - name: Quant kernel cross-validation + sampler exactness
+        working-directory: stratum/native
+        run: make USE_MEMX=0 tests
+
+      # The CPU-only configuration has no other automated coverage;
+      # at least keep it compiling.
+      - name: Build CPU-only variant (no Metal)
+        working-directory: stratum/native
+        run: make clean && make USE_MEMX=0 USE_METAL=0 -j3
