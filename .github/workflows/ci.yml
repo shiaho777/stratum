@@ -137,8 +137,14 @@ jobs:
       - name: Greedy decode qwen35-hybrid (SSM+attn) and pin the argmax sequence
         working-directory: stratum/native
         run: |
-          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1)
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1 || true)
           echo "$OUT"
+          echo "$OUT" | tail -40 > /tmp/hybrid_tail.log
+          ls ~/Library/Logs/DiagnosticReports/ 2>/dev/null | tail -5 || true
+          for f in ~/Library/Logs/DiagnosticReports/stratum*; do
+            [ -f "$f" ] && { echo "=== CRASH REPORT: $f ==="; grep -A12 "Thread .* Crashed\|Exception Type" "$f" | head -30; }
+          done || true
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1) || true
           SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+$' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
           echo "pinned sequence: $SEQ"
           [ "$SEQ" = "89 90 216 77 134" ]
