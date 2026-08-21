@@ -29,6 +29,17 @@ V = 256           # vocab
 GGML_F32 = 0
 GGML_F16 = 1
 
+# Hybrid (Gated DeltaNet) SSM geometry — scaled-down from the real 27B
+# (HV=128, NK=16, NV=48, conv_dim=10240) by the same factor as H.
+SSM_HV = 16          # state_size
+SSM_NK = 4           # group_count
+SSM_NV = 8           # time_step_rank
+SSM_KEY_DIM = SSM_NK * SSM_HV          # 64
+SSM_INNER = SSM_NV * SSM_HV            # 128
+SSM_CONV_DIM = 2 * SSM_KEY_DIM + SSM_INNER   # 256
+SSM_CONV_K = 4
+FULL_ATTN_INTERVAL = 4   # layers where (i+1)%4==0 are full-attn, rest SSM
+
 
 def build_entries(arch, rng):
     def mat(k, n):
@@ -41,9 +52,27 @@ def build_entries(arch, rng):
     entries = []  # (name, dims, ggml_type, data)
     for li in range(N_LAYERS):
         entries.append((f'blk.{li}.attn_norm.weight', (H,), GGML_F32, norm_vec(H)))
-        if arch == 'qwen35':
-            # qwen35 gated attention: attn_q emits (q, gate) per head, and the
-            # layer norm before FFN is post_attention_norm (no ffn_norm).
+        if arch == 'qwen35-hybrid' and (li + 1) % FULL_ATTN_INTERVAL != 0:
+            entries.append((f'blk.{li}.post_attention_norm.weight', (H,), GGML_F32, norm_vec(H)))
+            # Gated DeltaNet SSM layer — tensor names/shapes mirror the real
+            # model's blk.0 (see issue #21): fused attn_qkv over conv_dim,
+            # gate over inner, decay/beta per time_step_rank, conv1d weight
+            # [kernel, conv_dim], out [inner, H].
+            entries.append((f'blk.{li}.attn_qkv.weight', (H, SSM_CONV_DIM), GGML_F16, mat(H, SSM_CONV_DIM)))
+            entries.append((f'blk.{li}.attn_gate.weight', (H, SSM_INNER), GGML_F16, mat(H, SSM_INNER)))
+            entries.append((f'blk.{li}.ssm_a', (SSM_NV,), GGML_F32,
+                            b''.join(struct.pack('<f', 0.5 + rng.random()) for _ in range(SSM_NV))))
+            entries.append((f'blk.{li}.ssm_alpha.weight', (H, SSM_NV), GGML_F16, mat(H, SSM_NV)))
+            entries.append((f'blk.{li}.ssm_beta.weight', (H, SSM_NV), GGML_F16, mat(H, SSM_NV)))
+            entries.append((f'blk.{li}.ssm_conv1d.weight', (SSM_CONV_K, SSM_CONV_DIM), GGML_F32,
+                            b''.join(struct.pack('<f', rng.gauss(0.0, 0.5)) for _ in range(SSM_CONV_K * SSM_CONV_DIM))))
+            entries.append((f'blk.{li}.ssm_dt.bias', (SSM_NV,), GGML_F32,
+                            b''.join(struct.pack('<f', rng.gauss(0.0, 0.25)) for _ in range(SSM_NV))))
+            entries.append((f'blk.{li}.ssm_norm.weight', (SSM_HV,), GGML_F32, norm_vec(SSM_HV)))
+            entries.append((f'blk.{li}.ssm_out.weight', (SSM_INNER, H), GGML_F16, mat(SSM_INNER, H)))
+        elif arch in ('qwen35', 'qwen35-hybrid'):
+            # full-attention layer (both qwen35 variants): gated attention,
+            # attn_q emits (q, gate) per head; FFN norm is post_attention_norm
             entries.append((f'blk.{li}.attn_q.weight', (H, 2 * NQ * HD), GGML_F16, mat(H, 2 * NQ * HD)))
             entries.append((f'blk.{li}.attn_q_norm.weight', (HD,), GGML_F32, norm_vec(HD)))
             entries.append((f'blk.{li}.attn_k_norm.weight', (HD,), GGML_F32, norm_vec(HD)))
@@ -68,7 +97,9 @@ def build_entries(arch, rng):
 
 
 def kv_pairs(arch):
-    p = arch
+    # both qwen35 variants share the registered arch string "qwen35";
+    # hybrid-ness comes from full_attention_interval + ssm.* metadata
+    p = 'llama' if arch == 'llama' else 'qwen35'
     kvs = [kv_pair('general.architecture', p),
            kv_pair(f'{p}.block_count', N_LAYERS),
            kv_pair(f'{p}.embedding_length', H),
@@ -83,6 +114,15 @@ def kv_pairs(arch):
     if arch == 'qwen35':
         # every layer full-attention: no SSM state, no MTP
         kvs.append(kv_pair(f'{p}.full_attention_interval', 1))
+    if arch == 'qwen35-hybrid':
+        kvs += [
+            kv_pair(f'{p}.full_attention_interval', FULL_ATTN_INTERVAL),
+            kv_pair(f'{p}.ssm.state_size', SSM_HV),
+            kv_pair(f'{p}.ssm.group_count', SSM_NK),
+            kv_pair(f'{p}.ssm.time_step_rank', SSM_NV),
+            kv_pair(f'{p}.ssm.inner_size', SSM_INNER),
+            kv_pair(f'{p}.ssm.conv_kernel', SSM_CONV_K),
+        ]
     kvs.append(kv_pair('general.alignment', 32))
     return b''.join(kvs)
 
@@ -99,7 +139,7 @@ def kv_pair(key, val):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--arch', default='llama', choices=['llama', 'qwen35'])
+    ap.add_argument('--arch', default='llama', choices=['llama', 'qwen35', 'qwen35-hybrid'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
     args = ap.parse_args()
@@ -107,7 +147,7 @@ def main():
     rng = random.Random(args.seed)
     entries = build_entries(args.arch, rng)
     kvs = kv_pairs(args.arch)
-    n_kv = 12 if args.arch == 'qwen35' else 11
+    n_kv = 17 if args.arch == 'qwen35-hybrid' else (12 if args.arch == 'qwen35' else 11)
 
     header = b'GGUF' + struct.pack('<IQQ', 3, len(entries), n_kv)
 

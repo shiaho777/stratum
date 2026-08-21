@@ -89,10 +89,11 @@ jobs:
         working-directory: stratum/native
         run: make USE_MEMX=0 USE_METAL=0 -j3
 
-      - name: Generate deterministic tiny models (llama + qwen35)
+      - name: Generate deterministic tiny models (llama + qwen35 + qwen35-hybrid)
         run: |
           python3 stratum/tools/make_tiny_model.py --arch llama --out /tmp/tiny.gguf
           python3 stratum/tools/make_tiny_model.py --arch qwen35 --out /tmp/tiny35.gguf
+          python3 stratum/tools/make_tiny_model.py --arch qwen35-hybrid --out /tmp/tinyh.gguf
 
       - name: Greedy decode llama and pin the argmax sequence
         working-directory: stratum/native
@@ -113,3 +114,15 @@ jobs:
           SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
           echo "pinned sequence: $SEQ"
           [ "$SEQ" = "92 15 89 134 237" ]
+
+      # Hybrid layout (full_attention_interval=4): 3 Gated DeltaNet SSM layers
+      # + 1 full-attention layer — this is the only automated execution of the
+      # SSM machinery (conv/rec state, delta rule) anywhere.
+      - name: Greedy decode qwen35-hybrid (SSM+attn) and pin the argmax sequence
+        working-directory: stratum/native
+        run: |
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1)
+          echo "$OUT"
+          SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
+          echo "pinned sequence: $SEQ"
+          [ "$SEQ" = "1 142 73 104 185" ]

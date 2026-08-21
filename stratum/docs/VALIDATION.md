@@ -31,10 +31,12 @@ decode settings. **Any engine change must keep every gate passing.**
 
 ## What the gates do NOT cover
 
-- the **llama** architecture at full scale: CI runs a generated deterministic
-  tiny model (`stratum/tools/make_tiny_model.py`, no weights in the repo) and
-  pins its greedy sequence — real end-to-end coverage, but at toy scale only;
-  a real llama-family GGUF still has no gate,
+- the **llama** architecture at full scale: CI runs generated deterministic
+  tiny models (`stratum/tools/make_tiny_model.py`, no weights in the repo) and
+  pins their greedy sequences — real end-to-end coverage for llama, qwen35
+  (pure full-attn), and the **qwen35 hybrid layout** (Gated DeltaNet SSM
+  layers + full attention), but at toy scale only; real-family GGUFs of these
+  still have no gate,
 - **small models** (gates target the 27B; small-model argmax identity is
   checked by `verify_backends.sh` on whatever small GGUF you have),
 - **GPU paths** (Metal, GPU2 staging, GPU-NC) — gates are CPU-only,
