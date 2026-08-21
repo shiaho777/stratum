@@ -12,6 +12,8 @@ make check MODEL=/path/to/model.gguf        # tests + one llama-arch smoke
 ./run_all_gates.sh /path/to/qwen35.gguf     # every v*_gate.sh in sequence
 ./verify_backends.sh /path/to/small.gguf    # CPU vs GPU-NC vs GPU2 argmax identity
 python3 stratum/tools/env_census.py         # regenerate docs/ENVVARS.md
+python3 stratum/tools/make_tiny_model.py --out /tmp/tiny.gguf
+STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8   # llama smoke
 ```
 
 ## What the gates cover (v199–v217)
@@ -29,8 +31,10 @@ decode settings. **Any engine change must keep every gate passing.**
 
 ## What the gates do NOT cover
 
-- the **llama** architecture (needs a llama-family GGUF; `make check` does one
-  smoke, not the full bit-exact contract),
+- the **llama** architecture at full scale: CI runs a generated deterministic
+  tiny model (`stratum/tools/make_tiny_model.py`, no weights in the repo) and
+  pins its greedy sequence — real end-to-end coverage, but at toy scale only;
+  a real llama-family GGUF still has no gate,
 - **small models** (gates target the 27B; small-model argmax identity is
   checked by `verify_backends.sh` on whatever small GGUF you have),
 - **GPU paths** (Metal, GPU2 staging, GPU-NC) — gates are CPU-only,

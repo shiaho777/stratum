@@ -1236,12 +1236,15 @@ int run_llama_arch(int argc, char** argv) {
     for (int g = 0; g < n_gen; g++) {
         last_tok = next_tok;
         if (la_forward_one_token(last_tok, position++) != 0) return 1;
+        int fused = 0;
 #ifdef STRATUM_USE_METAL
-        if (la_g_gpu_full && getenv("STRATUM_GPU_FUSED_ARGMAX")) next_tok = stratum_metal_get_last_token();
+        if (la_g_gpu_full && getenv("STRATUM_GPU_FUSED_ARGMAX")) { next_tok = stratum_metal_get_last_token(); fused = 1; }
         else next_tok = stratum_argmax(la_g_logits, la_g_cfg.vocab_size);
 #else
         next_tok = stratum_argmax(la_g_logits, la_g_cfg.vocab_size);
 #endif
+        if (!fused)
+            stratum_logits_dump_record(la_g_logits, la_g_cfg.vocab_size, next_tok);
         fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",
                 g, last_tok, next_tok, la_g_logits[next_tok]);
     }
