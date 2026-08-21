@@ -316,4 +316,42 @@ static inline float stratum_softmax(float* x, int n) {
     return sum;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Optional per-step logits dump (STRATUM_LOGITS_DUMP=<path>)         */
+/*                                                                     */
+/*  Opt-in measurement hook for offline backend/config comparison:
+ *  run the same prompt twice with different STRATUM_* settings, then
+ *  compare the two dumps with tools_logit_compare.c (KL(base||Q),
+ *  top-1 agreement, max|Δ|). Pure measurement — no effect on output. */
+/*  Format: "SLOG0001" | u32 n_vocab | repeat{ u32 token; f32[n_vocab] }*/
+/*  Captured at the greedy sampler, so plain greedy runs (what the     */
+/*  gates exercise) record every emitted token; speculative paths      */
+/*  that bypass the sampler are not represented. Zero cost when the    */
+/*  env var is unset.                                                  */
+/* ------------------------------------------------------------------ */
+
+static inline void stratum_logits_dump_record(const float* logits, int n_vocab, int token) {
+    static FILE* fp;
+    static int initialized;
+    if (!initialized) {
+        initialized = 1;
+        const char* path = getenv("STRATUM_LOGITS_DUMP");
+        if (path && path[0]) {
+            fp = fopen(path, "wb");
+            if (fp) {
+                fwrite("SLOG0001", 1, 8, fp);
+                uint32_t nv = (uint32_t)n_vocab;
+                fwrite(&nv, 4, 1, fp);
+            } else {
+                fprintf(stderr, "logits dump: cannot open %s\n", path);
+            }
+        }
+    }
+    if (!fp) return;
+    uint32_t t = (uint32_t)token;
+    fwrite(&t, 4, 1, fp);
+    fwrite(logits, sizeof(float), (size_t)n_vocab, fp);
+    fflush(fp);
+}
+
 #endif /* STRATUM_ENGINE_H */

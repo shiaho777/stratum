@@ -13568,7 +13568,11 @@ static int q35_sample_residual(const q35_Dist* p, const q35_Dist* q) {
 }
 
 static int q35_sample_token(const float* logits, int N) {
-    if (q35_g_temp <= 0.0f) return stratum_argmax(logits, N);
+    if (q35_g_temp <= 0.0f) {
+        int tok = stratum_argmax(logits, N);
+        stratum_logits_dump_record(logits, N, tok);
+        return tok;
+    }
     q35_Dist d;
     q35_build_dist(logits, N, q35_g_temp, q35_g_top_k, q35_g_top_p, &d);
     return q35_sample_from_dist(&d);

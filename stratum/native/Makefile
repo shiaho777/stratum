@@ -114,6 +114,11 @@ metal_test: metal_test.c stratum_metal.o stratum_q4k.metallib
 spec_sample_test: spec_sample_test.c
 	$(CC) -O2 -o $@ spec_sample_test.c
 
+# Offline backend/config comparison for STRATUM_LOGITS_DUMP files
+# (KL(base||candidate), top-1 agreement). See stratum_engine.h for the dump.
+logit_compare: tools_logit_compare.c
+	$(CC) -O2 -o $@ tools_logit_compare.c
+
 # Quick correctness sanity:
 #   - Run all quant kernel cross-validation
 #   - Run TinyLlama generation and check the output starts as expected
@@ -144,6 +149,6 @@ deps: $(MEMX_DYLIB)
 	@echo "memx dependency ready: $(MEMX_DYLIB)"
 
 clean:
-	rm -f stratum quant_test metal_test spec_sample_test stratum_metal.o \
+	rm -f stratum quant_test metal_test spec_sample_test logit_compare stratum_metal.o \
 	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h
 	rm -rf $(MEMX_HOME)/build

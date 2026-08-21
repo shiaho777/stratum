@@ -1100,11 +1100,14 @@ int run_llama_arch(int argc, char** argv) {
                 if (la_forward_one_token(next_tok, position) != 0) return 1;
 #ifdef STRATUM_USE_METAL
                 int argm;
-                if (la_g_gpu_full && getenv("STRATUM_GPU_FUSED_ARGMAX")) argm = stratum_metal_get_last_token();
+                int have_logits = 1;
+                if (la_g_gpu_full && getenv("STRATUM_GPU_FUSED_ARGMAX")) { argm = stratum_metal_get_last_token(); have_logits = 0; }
                 else argm = stratum_argmax(la_g_logits, la_g_cfg.vocab_size);
 #else
                 int argm = stratum_argmax(la_g_logits, la_g_cfg.vocab_size);
+                int have_logits = 1;
 #endif
+                if (have_logits) stratum_logits_dump_record(la_g_logits, la_g_cfg.vocab_size, argm);
                 fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",
                         g, next_tok, argm, la_g_logits[argm]);
                 hist[hlen++] = next_tok;
