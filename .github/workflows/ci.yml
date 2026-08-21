@@ -89,10 +89,12 @@ jobs:
         working-directory: stratum/native
         run: make USE_MEMX=0 USE_METAL=0 -j3
 
-      - name: Generate deterministic tiny model
-        run: python3 stratum/tools/make_tiny_model.py --out /tmp/tiny.gguf
+      - name: Generate deterministic tiny models (llama + qwen35)
+        run: |
+          python3 stratum/tools/make_tiny_model.py --arch llama --out /tmp/tiny.gguf
+          python3 stratum/tools/make_tiny_model.py --arch qwen35 --out /tmp/tiny35.gguf
 
-      - name: Greedy decode and pin the argmax sequence
+      - name: Greedy decode llama and pin the argmax sequence
         working-directory: stratum/native
         run: |
           OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8 2>&1)
@@ -100,3 +102,14 @@ jobs:
           SEQ=$(echo "$OUT" | grep -oE 'stratum_argmax ?=? ?[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
           echo "pinned sequence: $SEQ"
           [ "$SEQ" = "70 118 22 60 60" ]
+
+      - name: Greedy decode qwen35 (pure full-attn) and pin the argmax sequence
+        working-directory: stratum/native
+        run: |
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tiny35.gguf 4 1 2 3 4 5 6 7 8 2>&1)
+          echo "$OUT"
+          # qwen35 prints the prefill pick as "sampled = N" (llama says
+          # "stratum_argmax = N") — match both so the prefill token is pinned
+          SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
+          echo "pinned sequence: $SEQ"
+          [ "$SEQ" = "92 15 89 134 237" ]
