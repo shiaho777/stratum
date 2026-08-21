@@ -71,3 +71,32 @@ jobs:
       - name: Sampler exactness under sanitizers
         working-directory: stratum/native
         run: /tmp/spec_sample_test_asan
+
+  # Real inference smoke: a deterministic tiny model is GENERATED at test time
+  # (the repo never ships weights) and run end-to-end through the engine —
+  # GGUF parse, config, discovery, prefill, decode loop, KV advance, sampler.
+  # The CI build is CPU-only and MemX-free, which is byte-deterministic, so
+  # the pinned greedy sequence is a true regression assertion. This is also
+  # the only automated coverage for the llama architecture.
+  smoke-tiny-model:
+    name: tiny-model inference smoke (macos-14 arm64)
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build engine (CPU-only, MemX off)
+        working-directory: stratum/native
+        run: make USE_MEMX=0 USE_METAL=0 -j3
+
+      - name: Generate deterministic tiny model
+        run: python3 stratum/tools/make_tiny_model.py --out /tmp/tiny.gguf
+
+      - name: Greedy decode and pin the argmax sequence
+        working-directory: stratum/native
+        run: |
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8 2>&1)
+          echo "$OUT"
+          SEQ=$(echo "$OUT" | grep -oE 'stratum_argmax ?=? ?[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
+          echo "pinned sequence: $SEQ"
+          [ "$SEQ" = "70 118 22 60 60" ]
