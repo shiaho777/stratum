@@ -41,3 +41,29 @@ jobs:
       - name: Build CPU-only variant (no Metal)
         working-directory: stratum/native
         run: make clean && make USE_MEMX=0 USE_METAL=0 -j3
+
+  # The engine parses untrusted GGUF files and does pointer arithmetic over
+  # mmaps; these model-free tests are the highest-value sanitizer coverage
+  # available without a local model. Any ASan/UBSan report fails the gate.
+  sanitizers:
+    name: kernel tests under ASan + UBSan (macos-14 arm64)
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build quant_test + spec_sample_test with sanitizers
+        working-directory: stratum/native
+        run: |
+          clang -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+                -fblocks -mcpu=apple-m1 -o /tmp/quant_test_asan quant_test.c
+          clang -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+                -o /tmp/spec_sample_test_asan spec_sample_test.c
+
+      - name: Quant kernel cross-validation under sanitizers
+        working-directory: stratum/native
+        run: /tmp/quant_test_asan
+
+      - name: Sampler exactness under sanitizers
+        working-directory: stratum/native
+        run: /tmp/spec_sample_test_asan
