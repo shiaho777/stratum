@@ -36,6 +36,10 @@ jobs:
         working-directory: stratum/native
         run: make USE_MEMX=0 tests
 
+      - name: Build logit_compare (offline backend comparison tool)
+        working-directory: stratum/native
+        run: make USE_MEMX=0 logit_compare
+
       # The CPU-only configuration has no other automated coverage;
       # at least keep it compiling.
       - name: Build CPU-only variant (no Metal)

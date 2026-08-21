@@ -188,8 +188,13 @@ What is guaranteed, what is exempt, and what re-validates it — stated explicit
 **Exemptions / known drift sources**
 
 - The build uses `-ffast-math`: floating-point contraction is compiler-version dependent. Greedy argmax sequences are pinned by the gates, but full logit bit patterns may shift across Xcode/toolchain upgrades.
+- **MemX-enabled runs are not bit-deterministic in logits**: two identical invocations of the same binary differ by mean KL ~1e-4 in the output distribution (measured on the 27B with `STRATUM_LOGITS_DUMP` + `logit_compare`; see #10). Token sequences remain stable in all observed runs and the gates pass — but only `USE_MEMX=0` builds are byte-reproducible run-to-run.
 - int8 SDOT x-prequantization (Q4_K/Q6_K) is an approved approximation, verified greedy-identical against the fp32 NEON path.
 - The Q2K nibble layout (type 42) is a byte permutation only; values are unchanged and verified at load.
+
+**Finer-grained comparison**
+
+- The gates assert argmax over a handful of tokens. For distribution-level regression, run twice with `STRATUM_LOGITS_DUMP=<path>` and compare with `logit_compare <base.slog> <cand.slog>` (KL(base‖Q), top-1 agreement, max|Δ|). Same config + `USE_MEMX=0` must give KL = 0.
 
 **Re-validation**
 
