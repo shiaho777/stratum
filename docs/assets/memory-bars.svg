@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="330" fill="#FFFFFF"/>
+  <text x="24" y="36" font-size="16" font-weight="700" fill="#0F172A">Anonymous (binding) RAM — measured</text>
+  <text x="24" y="56" font-size="11" fill="#475569">stratum vs llama.cpp · TinyLlama 1.1B Q4_K_M · 64 tokens · CPU path · docs/headtohead_*.json</text>
+
+  <!-- axis -->
+  <line x1="330" y1="80" x2="330" y2="240" stroke="#CBD5E1"/>
+  <line x1="330" y1="240" x2="820" y2="240" stroke="#CBD5E1"/>
+  <!-- scale: 634.9 MB maps to 470 px -->
+  <g font-size="10" fill="#94A3B8">
+    <line x1="330" y1="240" x2="330" y2="244" stroke="#CBD5E1"/><text x="330" y="258" text-anchor="middle">0</text>
+    <line x1="478" y1="240" x2="478" y2="244" stroke="#CBD5E1"/><text x="478" y="258" text-anchor="middle">200 MB</text>
+    <line x1="627" y1="240" x2="627" y2="244" stroke="#CBD5E1"/><text x="627" y="258" text-anchor="middle">400 MB</text>
+    <line x1="776" y1="240" x2="776" y2="244" stroke="#CBD5E1"/><text x="776" y="258" text-anchor="middle">600 MB</text>
+  </g>
+
+  <!-- llama.cpp bar: 634.9MB -> width = 634.9/634.9*470 = 470 -->
+  <text x="320" y="104" text-anchor="end" font-size="12" fill="#0F172A">llama.cpp · 1.1B</text>
+  <rect x="330" y="90" width="470" height="24" rx="4" fill="#FEE2E2" stroke="#DC2626"/>
+  <text x="808" y="106" font-size="12" font-weight="700" fill="#DC2626">634.9 MB</text>
+
+  <!-- stratum 1.1B: 7.4MB -> 7.4/634.9*470 = 5.5px (min visible 6) -->
+  <text x="320" y="144" text-anchor="end" font-size="12" fill="#0F172A">stratum · 1.1B</text>
+  <rect x="330" y="130" width="7" height="24" rx="2" fill="#D1FAE5" stroke="#059669"/>
+  <text x="345" y="146" font-size="12" font-weight="700" fill="#059669">7.4 MB</text>
+
+  <!-- stratum 27B: 77MB -> 77/634.9*470 = 57 -->
+  <text x="320" y="184" text-anchor="end" font-size="12" fill="#0F172A">stratum · 27B</text>
+  <rect x="330" y="170" width="57" height="24" rx="4" fill="#A7F3D0" stroke="#059669"/>
+  <text x="395" y="186" font-size="12" font-weight="700" fill="#059669">77 MB (incl. KV/SSM)</text>
+
+  <!-- stratum 0.5B: ~7MB -->
+  <text x="320" y="224" text-anchor="end" font-size="12" fill="#0F172A">stratum · 0.5B</text>
+  <rect x="330" y="210" width="6" height="24" rx="2" fill="#D1FAE5" stroke="#059669"/>
+  <text x="345" y="226" font-size="12" font-weight="700" fill="#059669">≈ 7 MB</text>
+
+  <!-- callout -->
+  <g transform="translate(560,286)">
+    <rect x="0" y="0" width="260" height="30" rx="15" fill="#059669"/>
+    <text x="130" y="20" text-anchor="middle" font-size="13" font-weight="700" fill="#FFFFFF">85.7× lower anonymous RAM</text>
+  </g>
+</svg>

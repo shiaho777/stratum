@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="380" viewBox="0 0 880 380" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="380" fill="#FFFFFF"/>
+  <text x="24" y="34" font-size="16" font-weight="700" fill="#0F172A">Validation stack — every layer has a gate</text>
+
+  <!-- Layer 1: CI -->
+  <g transform="translate(40,60)">
+    <rect x="0" y="0" width="800" height="64" rx="10" fill="#DBEAFE" stroke="#2563EB"/>
+    <text x="16" y="24" font-size="12.5" font-weight="700" fill="#1E40AF">CI — every PR (5 jobs, macos-14 arm64)</text>
+    <text x="16" y="44" font-size="11" fill="#1E3A8A">build+kernel tests · ASan+UBSan · Metal probe · inference smoke on 4 generated models (llama / qwen35 / qwen35-hybrid / Q4_K) with pinned greedy sequences</text>
+  </g>
+  <polygon points="440,128 430,142 450,142" fill="#94A3B8"/>
+
+  <!-- Layer 2: model-free -->
+  <g transform="translate(40,146)">
+    <rect x="0" y="0" width="800" height="52" rx="10" fill="#EDE9FE" stroke="#7C3AED"/>
+    <text x="16" y="22" font-size="12.5" font-weight="700" fill="#5B21B6">Model-free correctness</text>
+    <text x="16" y="40" font-size="11" fill="#4C1D95">quant_test: all quant kernels vs scalar reference · spec_sample_test: Leviathan–Chen rejection-sampling exactness</text>
+  </g>
+  <polygon points="440,202 430,216 450,216" fill="#94A3B8"/>
+
+  <!-- Layer 3: gates -->
+  <g transform="translate(40,220)">
+    <rect x="0" y="0" width="800" height="52" rx="10" fill="#D1FAE5" stroke="#059669"/>
+    <text x="16" y="22" font-size="12.5" font-weight="700" fill="#065F46">19 full-model greedy gates (v199–v217, local 27B)</text>
+    <text x="16" y="40" font-size="11" fill="#064E3B">argmax [2, 220, 16, 13] bit-exact · tok/main ≥ 8.0 · per-gate scheduler/IO counter invariants · run_all_gates.sh</text>
+  </g>
+  <polygon points="440,276 430,290 450,290" fill="#94A3B8"/>
+
+  <!-- Layer 4: distribution -->
+  <g transform="translate(40,294)">
+    <rect x="0" y="0" width="392" height="56" rx="10" fill="#FEF3C7" stroke="#D97706"/>
+    <text x="14" y="22" font-size="12.5" font-weight="700" fill="#92400E">Distribution level — logit_compare</text>
+    <text x="14" y="42" font-size="11" fill="#B45309">KL(base‖cand) · top-1 agreement · max|Δ| between runs</text>
+  </g>
+  <g transform="translate(448,294)">
+    <rect x="0" y="0" width="392" height="56" rx="10" fill="#FEE2E2" stroke="#DC2626"/>
+    <text x="14" y="22" font-size="12.5" font-weight="700" fill="#B91C1C">Backend identity — verify_backends.sh (local HW)</text>
+    <text x="14" y="42" font-size="11" fill="#B91C1C">cpu = GPU-NC = GPU2 greedy sequences (Q4_K tiny models)</text>
+  </g>
+</svg>

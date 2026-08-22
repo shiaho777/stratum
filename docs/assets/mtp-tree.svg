@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="340" fill="#FFFFFF"/>
+  <text x="24" y="34" font-size="16" font-weight="700" fill="#0F172A">Speculative decoding — draft tree, batch verify, exact rollback</text>
+  <text x="24" y="54" font-size="11" fill="#475569">accept/reject by exact comparison · rejected drafts roll back KV + SSM state → output equals greedy by construction</text>
+
+  <!-- tree -->
+  <g transform="translate(90,90)">
+    <!-- root -->
+    <circle cx="0" cy="60" r="14" fill="#1E40AF"/>
+    <text x="0" y="64" text-anchor="middle" font-size="10" fill="#FFFFFF" font-weight="700">t₀</text>
+    <!-- level 1 -->
+    <line x1="0" y1="60" x2="90" y2="20" stroke="#94A3B8"/>
+    <line x1="0" y1="60" x2="90" y2="60" stroke="#94A3B8"/>
+    <line x1="0" y1="60" x2="90" y2="100" stroke="#94A3B8"/>
+    <circle cx="90" cy="20" r="12" fill="#059669"/><text x="90" y="24" text-anchor="middle" font-size="9" fill="#FFF">d1</text>
+    <circle cx="90" cy="60" r="12" fill="#94A3B8"/><text x="90" y="64" text-anchor="middle" font-size="9" fill="#FFF">d2</text>
+    <circle cx="90" cy="100" r="12" fill="#94A3B8"/><text x="90" y="104" text-anchor="middle" font-size="9" fill="#FFF">d3</text>
+    <!-- level 2 along accepted chain -->
+    <line x1="90" y1="20" x2="180" y2="20" stroke="#059669"/>
+    <line x1="180" y1="20" x2="270" y2="20" stroke="#059669"/>
+    <circle cx="180" cy="20" r="12" fill="#059669"/><text x="180" y="24" text-anchor="middle" font-size="9" fill="#FFF">d4</text>
+    <circle cx="270" cy="20" r="12" fill="#059669"/><text x="270" y="24" text-anchor="middle" font-size="9" fill="#FFF">d5</text>
+    <!-- rejected branch -->
+    <line x1="180" y1="20" x2="270" y2="60" stroke="#DC2626" stroke-dasharray="4 3"/>
+    <circle cx="270" cy="60" r="12" fill="#FEE2E2" stroke="#DC2626"/>
+    <text x="270" y="64" text-anchor="middle" font-size="9" fill="#B91C1C">✗</text>
+    <!-- accepted tail -->
+    <line x1="270" y1="20" x2="360" y2="20" stroke="#059669"/>
+    <circle cx="360" cy="20" r="12" fill="#059669"/><text x="360" y="24" text-anchor="middle" font-size="9" fill="#FFF">d6</text>
+    <text x="395" y="24" font-size="11" fill="#065F46">→ committed path</text>
+    <text x="300" y="88" font-size="10" fill="#B91C1C">rejected subtree → state rollback</text>
+  </g>
+
+  <!-- right panel: measured -->
+  <g transform="translate(560,80)">
+    <rect x="0" y="0" width="290" height="170" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="16" y="26" font-size="12" font-weight="700" fill="#0F172A">Measured (27B, v217 gate)</text>
+    <g font-size="11" fill="#334155">
+      <text x="16" y="52">tokens per main forward</text>
+      <text x="274" y="52" text-anchor="end" font-weight="700" fill="#059669">8.0</text>
+      <text x="16" y="74">main forwards for 8 tokens</text>
+      <text x="274" y="74" text-anchor="end" font-weight="700" fill="#059669">1</text>
+      <text x="16" y="96">drafters</text>
+      <text x="274" y="96" text-anchor="end" fill="#334155">n-gram family + union scoring</text>
+      <text x="16" y="118">adaptive topology</text>
+      <text x="274" y="118" text-anchor="end" fill="#334155">CHAIN / WIDE / BAL</text>
+      <text x="16" y="140">long-run tree efficiency</text>
+      <text x="274" y="140" text-anchor="end" fill="#B45309">2.46 tok/main (draft quality)</text>
+    </g>
+  </g>
+  <text x="24" y="316" font-size="10.5" fill="#475569">MTP head proposes an 8-token tree per forward; the main model verifies the whole tree in one batch. Acceptance is by exact comparison, so throughput changes — output never does.</text>
+</svg>

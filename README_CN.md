@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README_CN.md)
 
+![CI](https://github.com/shiaho777/stratum/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-black.svg)
+
 一个面向 Apple Silicon 的纯 C Transformer 推理引擎，其**驻留内存占用与模型大小无关**。权重是流，不是驻留物：引擎通过 `mmap` 映射模型并经由 OS 页缓存读取，因此匿名内存无论是 0.5B 还是 27B 模型都保持在 ~7 MB。
 
 | 指标 | 数值 |
@@ -14,7 +18,11 @@
 | GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
 | 架构支持 | Llama 家族 + Qwen3.5/3.6 混合（Gated DeltaNet SSM + attention） |
 
+<p align="center"><img src="docs/assets/project-stats.svg" alt="项目统计:代码行数、二进制大小、格式数、gate 数、CI job 数" width="720"></p>
+
 真正的约束是磁盘和带宽，而不是内存：只要模型文件放得下，模型就能跑完。内存买的是"模型在页缓存中有多少保持热"——内存越多，每个 token 的 SSD 读取越少，吞吐越高。除此之外一切不变。
+
+<p align="center"><img src="docs/assets/hero-stream.svg" alt="权重是流:磁盘 → 页缓存 → 引擎,匿名内存地板恒定" width="760"></p>
 
 ---
 
@@ -133,6 +141,8 @@ Stratum 持相反立场：**工作集与模型大小无关**。一个 token = �
 
 实测 mincore 采样本身在热路径上的成本约为零——赢的不是检测，而是知道什么时候*不用*预取。
 
+<p align="center"><img src="docs/assets/streaming-scheduler.svg" alt="流式调度:mincore 热检测与合并冷预取和计算重叠" width="720"></p>
+
 ### 削减 3 — MULTISEQ：一次权重扫描，N 个逻辑流
 
 这是摊薄打法：`STRATUM_MULTISEQ=N` 让 N 条独立解码流（相同 prompt，各自采样后分叉）每一步共享**一次权重扫描**。N 条流共享同一批 tensor 读取；计算在其上批量执行。
@@ -158,6 +168,8 @@ Q2_K 解包是计算受限的（14 核 ~7 GB/s）——瓶颈是反量化指令�
 - **draft 一致时每次 forward 8 个 token，100% 接受**——无额外 pass，输出与贪心完全相同。
 - 27B 上的墙是 draft 的*质量*而不是树参数：实测树效率 2.46 tok/main，树深实验（`STRATUM_TREE_EXTEND_K`）超过 4 反而更差。树机制本身没问题；draft head 才是约束。
 
+<p align="center"><img src="docs/assets/mtp-tree.svg" alt="MTP draft 树:批量验证与精确回滚" width="720"></p>
+
 ### Metal GPU：有界缓冲，逐 tensor 零拷贝
 
 GPU 可选且严格有界：
@@ -172,6 +184,9 @@ GPU 可选且严格有界：
 ### KV 缓存与 SSM 状态
 
 运行状态是模型唯一需要的匿名内存：
+
+
+<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 混合层结构:固定状态 SSM 层 + 周期性全注意力 KV 环" width="740"></p>
 
 - 全注意力层保留 KV 缓存；qwen35 混合架构的 SSM 层（Gated DeltaNet）保留固定大小的 delta-rule 状态，**与上下文长度无关**——每个 token 原位更新的有界矩阵，类似 kimi 的 KDA。
 - 27B 的 ~77 MB 匿名 = KV/SSM 状态 + 激活 + 小块 scratch；权重本身的贡献为 ~0。
@@ -206,9 +221,11 @@ stratum/native/
 
 ## Part III — 验证
 
+<p align="center"><img src="docs/assets/validation-stack.svg" alt="验证栈:CI、无模型测试、19 个 gate、分布级与后端检查" width="740"></p>
+
 引擎把正确性当作契约而不是希望：
 
-- **每个 PR 都跑 CI（3 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在**两个架构**上驱动完整解码回路，贪心序列被钉定为硬回归断言。
+- **每个 PR 都跑 CI（4 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；Metal 设备探针；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在**三个布局**（llama / qwen35 纯注意力 / qwen35 混合 SSM）外加 **Q4_K 权重**变体上驱动完整解码回路，贪心序列被钉定为硬回归断言。
 - **`quant_test`** —— 每个量化 kernel 与标量参考交叉验证。
 - **`spec_sample_test`** —— Leviathan-Chen 拒绝采样精确性。
 - **19 个 gate 脚本（`v199`–`v217`）** —— qwen35 架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
@@ -261,13 +278,21 @@ stratum/native/
 | 匿名（绑定 RAM） | **7.4 MB** | 634.9 MB | **低 85.7×** |
 | 总物理 | 645.2 MB | 1300.5 MB | 低 2.0× |
 
+<p align="center"><img src="docs/assets/memory-bars.svg" alt="匿名内存对比:stratum vs llama.cpp" width="720"></p>
+
 ### 规模 — 24 GB 机器上的 27B
 
 stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地运行它：`-ngl 0` 颠簸，`-ngl 99` 需要 16 GB 统一内存。Stratum 是唯一能产出 token 的引擎。
 
 ### 性能如何缩放
 
-每个 token 消耗一次完整权重流，因此每 token 时间为 `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)`——RAM 决定有多少保持热（`f_hot`），内存带宽决定 `BW_hot`，SSD 决定冷流式速率。27B 预估表现：
+每个 token 消耗一次完整权重流，因此每 token 时间由一个公式决定——RAM 决定有多少保持热（`f_hot`），内存带宽决定 `BW_hot`，SSD 决定冷流式速率：
+
+$$
+t_{\text{token}} \;=\; W_{\text{bytes}} \left( \frac{f_{\text{hot}}}{BW_{\text{hot}}} + \frac{f_{\text{cold}}}{BW_{\text{cold}}} \right)
+$$
+
+27B 理论表现（由该模型推导的估算——下图实心为实测，斜纹为推算）：
 
 | 硬件 | 内存 | 预期（估算） |
 |---|---|---|
@@ -275,6 +300,8 @@ stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地�
 | M4 Pro，24 GB | 部分热 | **5.73 tok/s 热短测 / ~1.4–2 持续**（实测） |
 | M4 Max，48 GB+ | 全热 | ~8–10 tok/s（更高带宽） |
 | ≥128 GB 工作站 | 全热 + nibble 布局 | 12+ tok/s（Q2_K 2.2× 解包） |
+
+<p align="center"><img src="docs/assets/throughput-estimate.svg" alt="27B 各硬件档位吞吐:实测与理论估算" width="740"></p>
 
 ### 机制极限
 

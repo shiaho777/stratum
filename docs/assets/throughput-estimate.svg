@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <defs>
+    <pattern id="hatch" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#DBEAFE"/>
+      <line x1="0" y1="0" x2="0" y2="8" stroke="#93C5FD" stroke-width="3"/>
+    </pattern>
+  </defs>
+  <rect width="880" height="340" fill="#FFFFFF"/>
+  <text x="24" y="34" font-size="16" font-weight="700" fill="#0F172A">27B decode throughput by hardware tier</text>
+  <text x="24" y="54" font-size="11" fill="#475569">solid = measured · hatched = theoretical estimate from W × (f_hot/BW_hot + f_cold/BW_cold) — not benchmarked, see formula in Part IV</text>
+
+  <!-- axis: 0..14 tok/s maps x 330..810 -->
+  <line x1="330" y1="70" x2="330" y2="270" stroke="#CBD5E1"/>
+  <g font-size="10" fill="#94A3B8" text-anchor="middle">
+    <text x="330" y="284">0</text><text x="459" y="284">4</text><text x="587" y="284">8</text><text x="715" y="284">12</text>
+    <text x="810" y="284" text-anchor="end">tok/s</text>
+  </g>
+  <g stroke="#F1F5F9">
+    <line x1="459" y1="70" x2="459" y2="270"/><line x1="587" y1="70" x2="587" y2="270"/><line x1="715" y1="70" x2="715" y2="270"/>
+  </g>
+
+  <!-- M1 base cold: 0.25 -> 330+0.25*32.14=338 -->
+  <text x="320" y="94" text-anchor="end" font-size="11.5" fill="#0F172A">M1 base · 8 GB · fully cold SSD</text>
+  <rect x="330" y="80" width="10" height="22" rx="3" fill="url(#hatch)" stroke="#3B82F6"/>
+  <text x="348" y="95" font-size="11.5" font-weight="600" fill="#3B82F6">~0.2–0.3 (estimate)</text>
+
+  <!-- M4 Pro sustained: ~1.7 -> 385 -->
+  <text x="320" y="139" text-anchor="end" font-size="11.5" fill="#0F172A">M4 Pro · 24 GB · sustained long-run</text>
+  <rect x="330" y="125" width="55" height="22" rx="3" fill="#BFDBFE" stroke="#2563EB"/>
+  <text x="393" y="140" font-size="11.5" font-weight="600" fill="#2563EB">~1.4–2 (observed range)</text>
+
+  <!-- M4 Pro hot short: 5.73 -> 514 -->
+  <text x="320" y="184" text-anchor="end" font-size="11.5" fill="#0F172A">M4 Pro · 24 GB · hot short-run</text>
+  <rect x="330" y="170" width="184" height="22" rx="3" fill="#2563EB"/>
+  <text x="522" y="185" font-size="11.5" font-weight="700" fill="#1D4ED8">5.73 (measured)</text>
+
+  <!-- M4 Max est: 9 -> 619 -->
+  <text x="320" y="229" text-anchor="end" font-size="11.5" fill="#0F172A">M4 Max · 48 GB · fully hot</text>
+  <rect x="330" y="215" width="289" height="22" rx="3" fill="url(#hatch)" stroke="#3B82F6"/>
+  <text x="627" y="230" font-size="11.5" font-weight="600" fill="#3B82F6">~8–10 (estimate)</text>
+
+  <!-- workstation est: 12 -> 716 -->
+  <text x="320" y="274" text-anchor="end" font-size="11.5" fill="#0F172A">≥128 GB workstation + Q2K nibble</text>
+  <rect x="330" y="260" width="380" height="22" rx="3" fill="url(#hatch)" stroke="#3B82F6"/>
+  <text x="716" y="275" font-size="11.5" font-weight="600" fill="#3B82F6">12+ (estimate, unpack 2.2×)</text>
+
+  <text x="24" y="318" font-size="10.5" fill="#475569">Decode is bandwidth-bound by construction: every token consumes the whole weight stream once (11.98 GB @ ~27 GB/s hot ≈ 0.44 s/token on M4 Pro).</text>
+</svg>
