@@ -131,9 +131,14 @@ check: stratum quant_test spec_sample_test
 	@echo "=== Leviathan-Chen rejection-sampling exactness ==="
 	./spec_sample_test
 	@echo ""
-	@echo "=== smoke: llama arch (NEON) — pass MODEL=<path-to-gguf> ==="
-	@test -n "$(MODEL)" || { echo "make check MODEL=<model.gguf>  (no default model)"; exit 1; }
-	./stratum "$(MODEL)" 2 1 450 7483 310 3444 338 2>&1 | tail -3
+	@echo "=== smoke: llama arch (NEON) — MODEL=<gguf>, or a tiny model is generated ==="
+	@if [ -z "$(MODEL)" ]; then \
+	    python3 ../tools/make_tiny_model.py --arch llama --out /tmp/stratum_check_tiny.gguf >/dev/null; \
+	    echo "  (auto-generated tiny model: /tmp/stratum_check_tiny.gguf)"; \
+	    ./stratum /tmp/stratum_check_tiny.gguf 2 1 2 3 4 5 6 7 8 2>&1 | tail -3; \
+	else \
+	    ./stratum "$(MODEL)" 2 1 450 7483 310 3444 338 2>&1 | tail -3; \
+	fi
 
 verify: stratum
 	@test -n "$(MODEL)" || { echo "make verify MODEL=<small.gguf>  (no default model)"; exit 1; }

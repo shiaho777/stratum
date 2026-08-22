@@ -316,6 +316,21 @@ static inline float stratum_softmax(float* x, int n) {
     return sum;
 }
 
+/* Prompt-id validation — ids arrive from argv/stdin and are otherwise
+ * untrusted; embedding lookup indexes token_embd by id, so an id outside
+ * [0, vocab) reads past the tensor. Call once after prompt assembly. */
+static inline int stratum_validate_prompt_ids(const int* ids, int n, int vocab) {
+    for (int i = 0; i < n; i++) {
+        if (ids[i] < 0 || ids[i] >= vocab) {
+            fprintf(stderr,
+                    "stratum: prompt token %d = %d outside vocab [0,%d) — refusing to run\n",
+                    i, ids[i], vocab);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Optional per-step logits dump (STRATUM_LOGITS_DUMP=<path>)         */
 /*                                                                     */
