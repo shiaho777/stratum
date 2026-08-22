@@ -94,7 +94,7 @@ Stratum targets **any model**, not a specific one. These rules must not be viola
 - `stratum_arch.h` — generic registry interface + generic config loader
 - `stratum_linear.h` — generic quantized linear layers (Q4_K/Q5_K/Q6_K/Q3_K/Q2_K/Q8_0/F16/F32 dispatch)
 - `stratum_engine.h` — generic engine infrastructure (CPU detect/GPU init/madvise/spec decode/memory reporting)
-- `stratum_arch_qwen35.inc.c` — Qwen3.5 hybrid architecture (Gated DeltaNet + full attention), self-registers (~24k lines, the main engine)
+- `stratum_arch_qwen35.inc.c` — Qwen3.8 hybrid architecture (GGUF arch id: `qwen35`, alias `qwen38`; Gated DeltaNet + full attention), self-registers (~24k lines, the main engine)
 - `stratum_arch_llama.inc.c` — Llama/Qwen2/Qwen3 dense architecture, self-registers
 - `stratum_metal.m/.h` — Metal GPU acceleration layer (GEMV kernels, batched-B, group dispatch, NC zero-copy)
 - `stratum_q2k/q3k/q4k/q5k/q6k.{h,neon.h,metal}` — quantized kernels (NEON + scalar + Metal shaders)

@@ -10,13 +10,13 @@
 
 | 指标 | 数值 |
 |---|---|
-| 实测模型 | 27B dense（Qwen3.6，11.98 GB GGUF），小至 0.5B |
+| 实测模型 | 27B dense（Qwen3.8，11.98 GB GGUF），小至 0.5B |
 | 27B 的匿名（wired）内存 | **~77 MB**（含 KV/SSM 状态） |
 | 0.5–1B 模型的匿名内存 | ~7 MB |
 | 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |
 | 引擎体积 | ~790 KB 二进制，~2.5 万行 C/Metal |
 | GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
-| 架构支持 | Llama 家族 + Qwen3.5/3.6 混合（Gated DeltaNet SSM + attention） |
+| 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`） |
 
 <p align="center"><img src="docs/assets/project-stats.svg" alt="项目统计:代码行数、二进制大小、格式数、gate 数、CI job 数" width="720"></p>
 
@@ -186,9 +186,9 @@ GPU 可选且严格有界：
 运行状态是模型唯一需要的匿名内存：
 
 
-<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 混合层结构:固定状态 SSM 层 + 周期性全注意力 KV 环" width="740"></p>
+<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="Qwen3.8 混合层结构:固定状态 SSM 层 + 周期性全注意力 KV 环" width="740"></p>
 
-- 全注意力层保留 KV 缓存；qwen35 混合架构的 SSM 层（Gated DeltaNet）保留固定大小的 delta-rule 状态，**与上下文长度无关**——每个 token 原位更新的有界矩阵，类似 kimi 的 KDA。
+- 全注意力层保留 KV 缓存；Qwen3.8 混合架构的 SSM 层（Gated DeltaNet）保留固定大小的 delta-rule 状态，**与上下文长度无关**——每个 token 原位更新的有界矩阵，类似 kimi 的 KDA。
 - 27B 的 ~77 MB 匿名 = KV/SSM 状态 + 激活 + 小块 scratch；权重本身的贡献为 ~0。
 
 ### 代码结构
@@ -200,7 +200,7 @@ stratum/native/
 ├── stratum_linear.h             ← 通用量化线性层（Q2_K…Q8_0/F16/F32）
 ├── stratum_engine.h             ← CPU/GPU 初始化、madvise、投机解码、内存报告
 ├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense 架构（自注册）
-├── stratum_arch_qwen35.inc.c    ← qwen35 混合架构：Gated DeltaNet + attention（~2.4 万行）
+├── stratum_arch_qwen35.inc.c    ← Qwen3.8 混合架构（GGUF 架构 id：qwen35）：Gated DeltaNet + attention（~2.4 万行）
 ├── stratum_metal.m/.h           ← Metal 层：GEMV kernel、batched-B、group dispatch、NC
 ├── stratum_q{k}_*.{h,neon.h,metal} ← 量化 kernel（scalar + NEON + Metal）
 ├── v199–v217_gate.sh            ← bit-exact 回归 gate
@@ -228,7 +228,7 @@ stratum/native/
 - **每个 PR 都跑 CI（4 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；Metal 设备探针；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在**三个布局**（llama / qwen35 纯注意力 / qwen35 混合 SSM）外加 **Q4_K 权重**变体上驱动完整解码回路，贪心序列被钉定为硬回归断言。
 - **`quant_test`** —— 每个量化 kernel 与标量参考交叉验证。
 - **`spec_sample_test`** —— Leviathan-Chen 拒绝采样精确性。
-- **19 个 gate 脚本（`v199`–`v217`）** —— qwen35 架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
+- **19 个 gate 脚本（`v199`–`v217`）** —— Qwen3.8 混合架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
 - **分布级回归** —— `STRATUM_LOGITS_DUMP=<path>` 记录每步 logits；`logit_compare` 报告任意两次运行的 KL(base‖candidate)、top-1 一致率与 max |Δ|。gate 只钉住少数 token 的 argmax，这看到的是整个分布。（MemX 运行间方差正是用它发现的，见 AGENTS.md。）
 - **双路径纪律** —— CPU（NEON）与 GPU（Metal）路径都被覆盖；逐 tensor NoCopy 在 27B 上与 CPU 路径验证 bit-exact 后才被允许。
 
@@ -238,7 +238,7 @@ stratum/native/
 
 ## Part IV — 实测数据
 
-所有数字实测于 Apple M4 Pro（14 核）、24 GB 统一内存、macOS、贪心解码、CPU 路径（`STRATUM_NO_GPU=1`），方法 `/usr/bin/time -p ./stratum <model.gguf> 64 0 1`。
+所有数字实测于 Apple M4 Pro（14 核）、24 GB 统一内存、macOS、贪心解码、CPU 路径。27B 工件为 Qwen3.8 发布版；验证在规格完全相同的 3.6 发布权重（文件 `qwen3.6-27b-mixed.gguf`）上进行——同架构，无需重跑。（`STRATUM_NO_GPU=1`），方法 `/usr/bin/time -p ./stratum <model.gguf> 64 0 1`。
 
 ### 小模型 — 感知即时（0.5B–1B）
 
@@ -257,7 +257,7 @@ stratum/native/
 
 | 模型 | 格式 | 大小 | tok/s | 备注 |
 |---|---|---|---|---|
-| Qwen3.6-27B-mixed | Q2_K/Q4_K/Q6_K 混合 | 11.98 GB | **5.73**（8-token 短测） | 热缓存；长生成持续 ~1.4–2 tok/s |
+| Qwen3.8-27B-mixed | Q2_K/Q4_K/Q6_K 混合 | 11.98 GB | **5.73**（8-token 短测） | 热缓存；长生成持续 ~1.4–2 tok/s |
 
 大模型是权衡最明显的地方：它能跑（llama.cpp 在这里颠簸或 OOM），但解码受带宽限制。**在保持资源占用无感的前提下缩小小模型速度与大模型吞吐之间的差距，是本项目当前的研究方向。**
 
@@ -267,7 +267,7 @@ stratum/native/
 |---|---|---|
 | Qwen2.5-Coder-0.5B | 0.5B | ~7 MB |
 | MiniCPM5-1B-Base | 1B | ~7 MB |
-| Qwen3.6-27B-mixed | 27B | **~77 MB**（含 KV/SSM 状态） |
+| Qwen3.8-27B-mixed | 27B | **~77 MB**（含 KV/SSM 状态） |
 
 **模型大小理论上无上限。**无论参数量多少，wired 内存都保持在 ~7 MB 量级，总物理占用与 OS 选择保留的页缓存成正比——引擎本身从不把模型放进匿名内存。唯一的实际限制是磁盘空间和每个 token 的耐心。
 

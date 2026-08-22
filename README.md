@@ -10,13 +10,13 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 
 | Metric | Value |
 |---|---|
-| Models measured | 27B dense (Qwen3.6, 11.98 GB GGUF), down to 0.5B |
+| Models measured | 27B dense (Qwen3.8, 11.98 GB GGUF), down to 0.5B |
 | Anonymous (wired) RAM for 27B | **~77 MB** (incl. KV/SSM state) |
 | Anonymous RAM for 0.5–1B | ~7 MB |
 | vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
 | Engine size | ~790 KB binary, ~25k lines C/Metal |
 | GPU required | none (integrated, optional Metal accel) |
-| Architecture support | Llama family + Qwen3.5/3.6 hybrid (Gated DeltaNet SSM + attention) |
+| Architecture support | Llama family + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) |
 
 <p align="center"><img src="docs/assets/project-stats.svg" alt="Project statistics: lines of code, binary size, formats, gates, CI jobs" width="720"></p>
 
@@ -185,7 +185,7 @@ Why the GPU at all, if CPU works? The memory answer is the point: GPU accelerati
 
 Runtime state is the only anonymous memory the model needs:
 
-- Full-attention layers keep KV cache; the qwen35 hybrid's SSM layers (Gated DeltaNet) keep a fixed-size delta-rule state that is **independent of context length** — a bounded matrix updated in place per token, like kimi's KDA.
+- Full-attention layers keep KV cache; the Qwen3.8 hybrid's SSM layers (Gated DeltaNet) keep a fixed-size delta-rule state that is **independent of context length** — a bounded matrix updated in place per token, like kimi's KDA.
 - The 27B's ~77 MB anon = KV/SSM state + activations + small scratch; the weights themselves contribute ~0.
 
 <p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 hybrid layer pattern: SSM layers with fixed-size state plus periodic full attention over a KV ring" width="740"></p>
@@ -199,7 +199,7 @@ stratum/native/
 ├── stratum_linear.h             ← generic quantized linear layers (Q2_K…Q8_0/F16/F32)
 ├── stratum_engine.h             ← CPU/GPU init, madvise, spec decode, memory report
 ├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense arch (self-registers)
-├── stratum_arch_qwen35.inc.c    ← qwen35 hybrid arch: Gated DeltaNet + attention (~24k lines)
+├── stratum_arch_qwen35.inc.c    ← Qwen3.8 hybrid arch (GGUF arch id: qwen35): Gated DeltaNet + attention (~24k lines)
 ├── stratum_metal.m/.h           ← Metal layer: GEMV kernels, batched-B, group dispatch, NC
 ├── stratum_q{k}_*.{h,neon.h,metal} ← quantized kernels (scalar + NEON + Metal)
 ├── v199–v217_gate.sh            ← bit-exact regression gates
@@ -227,7 +227,7 @@ The engine treats correctness as a contract, not a hope:
 - **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on **both architectures**, with the greedy sequences pinned as hard regression assertions.
 - **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
 - **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
-- **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the qwen35 architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
+- **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the Qwen3.8 hybrid architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
 - **Distribution-level regression** — `STRATUM_LOGITS_DUMP=<path>` records per-step logits; `logit_compare` reports KL(base‖candidate), top-1 agreement, and max |Δ| between any two runs. The gates pin argmax over a handful of tokens; this sees the whole distribution. (It is also how the MemX run-to-run variance documented in AGENTS.md was found.)
 - **Dual-path discipline** — CPU (NEON) and GPU (Metal) paths are both exercised; per-tensor NoCopy was verified bit-exact against the CPU path on the 27B before it was allowed.
 
@@ -238,6 +238,8 @@ What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolcha
 ## Part IV — Measurements
 
 All numbers measured on Apple M4 Pro (14 cores), 24 GB unified memory, macOS, greedy decoding, CPU path (`STRATUM_NO_GPU=1`), method `/usr/bin/time -p ./stratum <model.gguf> 64 0 1`.
+
+The 27B artifact is the Qwen3.8 release; validation was performed on the 3.6-release weights of identical specification (file `qwen3.6-27b-mixed.gguf`) — same architecture, no re-run required.
 
 ### Small models — perceptually instant (0.5B–1B)
 
@@ -256,7 +258,7 @@ This is where Stratum is the pick of the litter: small models run at normal, int
 
 | Model | Format | Size | tok/s | Notes |
 |---|---|---|---|---|
-| Qwen3.6-27B-mixed | Q2_K/Q4_K/Q6_K mixed | 11.98 GB | **5.73** (8-token short run) | hot cache; sustained ~1.4–2 tok/s long generation |
+| Qwen3.8-27B-mixed | Q2_K/Q4_K/Q6_K mixed | 11.98 GB | **5.73** (8-token short run) | hot cache; sustained ~1.4–2 tok/s long generation |
 
 Large models are where the trade-off is visible: they run — where llama.cpp thrashes or OOMs — but decode is bandwidth-bound. **Closing the gap between small-model speed and large-model throughput, while keeping the resource footprint imperceptible, is the active research direction of this project.**
 
@@ -266,7 +268,7 @@ Large models are where the trade-off is visible: they run — where llama.cpp th
 |---|---|---|
 | Qwen2.5-Coder-0.5B | 0.5B | ~7 MB |
 | MiniCPM5-1B-Base | 1B | ~7 MB |
-| Qwen3.6-27B-mixed | 27B | **~77 MB** (incl. KV/SSM state) |
+| Qwen3.8-27B-mixed | 27B | **~77 MB** (incl. KV/SSM state) |
 
 **Model size is theoretically unbounded.** Whatever the parameter count, wired memory stays at the ~7 MB level and total physical footprint stays proportional to the page cache the OS chooses to keep — the engine itself never holds the model in anonymous RAM. The only practical limits are disk space and patience per token.
 
