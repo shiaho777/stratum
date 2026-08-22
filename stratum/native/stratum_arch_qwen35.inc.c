@@ -10935,16 +10935,33 @@ static void* q35_prefetch_worker(void* arg) {
     return NULL;
 }
 
+static int q35_prefetch_started = 0;
+
 static void q35_prefetch_request(int layer) {
-    static int started = 0;
-    if (!started) {
-        started = 1;
+    if (!q35_prefetch_started) {
+        q35_prefetch_started = 1;
         pthread_create(&q35_prefetch_thread, NULL, q35_prefetch_worker, NULL);
     }
     pthread_mutex_lock(&q35_prefetch_lock);
     q35_prefetch_target = layer;
     pthread_cond_signal(&q35_prefetch_cond);
     pthread_mutex_unlock(&q35_prefetch_lock);
+}
+
+/* Stop and join the prefetch worker BEFORE teardown unmaps the model.
+ * The worker dereferences q35_g_layer_ranges and mmap_base asynchronously;
+ * exiting while it is mid-request races gguf_close — an intermittent
+ * use-after-unmap at process exit (observed as spontaneous death right
+ * after the last decode step on CI, not locally reproducible). */
+static void q35_prefetch_shutdown(void) {
+    if (!q35_prefetch_started) return;
+    pthread_mutex_lock(&q35_prefetch_lock);
+    q35_prefetch_stop = 1;
+    pthread_cond_signal(&q35_prefetch_cond);
+    pthread_mutex_unlock(&q35_prefetch_lock);
+    pthread_join(q35_prefetch_thread, NULL);
+    q35_prefetch_started = 0;
+    q35_prefetch_stop = 0;
 }
 
 /* V34: Multi-threaded parallel page-touch prefetch.
@@ -23435,6 +23452,7 @@ server_request:
 
         if (server_mode) goto server_loop;
         stratum_memx_print_stats();
+        q35_prefetch_shutdown();
         gguf_close(&q35_g_gguf);
         q35_probe_sparsity_summary();
         q35_probe_coherence_summary();
@@ -23797,6 +23815,7 @@ server_request:
                 (double)gen_count / (double)total_main_calls);
         if (server_mode) goto server_loop;
         stratum_memx_print_stats();
+        q35_prefetch_shutdown();
         gguf_close(&q35_g_gguf);
         q35_probe_sparsity_summary();
         q35_probe_coherence_summary();
@@ -23980,7 +23999,8 @@ server_request:
             free(saved_conv); free(saved_rec);
             if (server_mode) goto server_loop;
             stratum_memx_print_stats();
-            gguf_close(&q35_g_gguf);
+            q35_prefetch_shutdown();
+        gguf_close(&q35_g_gguf);
             stratum_memx_shutdown();
             return 0;
         }
@@ -24050,7 +24070,8 @@ server_request:
             /* Batch forward B=2 */
             if (q35_forward_batch(btok, bpos, 2) != 0) {
                 free(saved_conv); free(saved_rec);
-                gguf_close(&q35_g_gguf);
+                q35_prefetch_shutdown();
+        gguf_close(&q35_g_gguf);
                 return 1;
             }
             spec_calls++;
@@ -24150,6 +24171,7 @@ server_request:
         free(saved_conv); free(saved_rec);
         if (server_mode) goto server_loop;
         stratum_memx_print_stats();
+        q35_prefetch_shutdown();
         gguf_close(&q35_g_gguf);
         q35_probe_sparsity_summary();
         q35_probe_coherence_summary();

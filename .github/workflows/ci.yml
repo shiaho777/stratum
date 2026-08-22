@@ -104,11 +104,12 @@ jobs:
         working-directory: stratum/native
         run: make USE_MEMX=0 USE_METAL=0 -j3
 
-      - name: Generate deterministic tiny models (llama + qwen35 + qwen35-hybrid)
+      - name: Generate deterministic tiny models (llama + qwen35 + qwen35-hybrid + q4k)
         run: |
           python3 stratum/tools/make_tiny_model.py --arch llama --out /tmp/tiny.gguf
           python3 stratum/tools/make_tiny_model.py --arch qwen35 --out /tmp/tiny35.gguf
           python3 stratum/tools/make_tiny_model.py --arch qwen35-hybrid --out /tmp/tinyh.gguf
+          python3 stratum/tools/make_tiny_model.py --arch llama --weights q4k --out /tmp/tinyq.gguf
 
       - name: Greedy decode llama and pin the argmax sequence
         working-directory: stratum/native
@@ -140,4 +141,15 @@ jobs:
           echo "$OUT"
           SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
           echo "pinned sequence: $SEQ"
-          [ "$SEQ" = "1 142 73 104 185" ]
+          [ "$SEQ" = "89 90 216 77 134" ]
+
+      # Q4_K weights route through the quantized GEMV kernels end-to-end
+      # (the f16 models skip them) — the same path verify_backends.sh needs.
+      - name: Greedy decode llama with Q4_K weights and pin the argmax sequence
+        working-directory: stratum/native
+        run: |
+          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8 2>&1)
+          echo "$OUT"
+          SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
+          echo "pinned sequence: $SEQ"
+          [ "$SEQ" = "875 240 779 418 769 769 769 769 769" ]
