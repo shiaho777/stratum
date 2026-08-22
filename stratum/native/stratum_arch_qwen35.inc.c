@@ -24357,8 +24357,11 @@ server_done:
 /* ------------------------------------------------------------------ */
 
 static const StratumArch stratum_arch_qwen35 = {
-    .arch_names   = "qwen35,qwen35moe",
-    .description  = "Qwen3.5 / Qwen3.6 hybrid Mamba/Transformer (SSM + full-attention)",
+    /* "qwen35" is the on-disk GGUF architecture id (kept for every
+     * 3.5/3.6-era file); "qwen38" is accepted as an alias — Qwen3.8
+     * ships the identical specification. */
+    .arch_names   = "qwen35,qwen35moe,qwen38",
+    .description  = "Qwen3.8 hybrid Mamba/Transformer (SSM + full-attention; GGUF arch id: qwen35)",
     .run          = run_qwen35_arch,
 };
 
