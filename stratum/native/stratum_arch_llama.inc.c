@@ -862,6 +862,7 @@ int run_llama_arch(int argc, char** argv) {
         prompt[n_prompt++] = 12968;
     }
 
+    if (stratum_validate_prompt_ids(prompt, n_prompt, la_g_cfg.vocab_size) != 0) return 1;
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);

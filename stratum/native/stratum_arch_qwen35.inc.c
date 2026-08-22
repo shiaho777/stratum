@@ -14362,6 +14362,7 @@ server_request:
         prompt[n_prompt++] = 1;
     }
 
+    if (stratum_validate_prompt_ids(prompt, n_prompt, q35_g_cfg.vocab_size) != 0) return 1;
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt && i < 32; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);

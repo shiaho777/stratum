@@ -13,6 +13,12 @@
 # only — a 12 GB model takes minutes per backend and stresses the machine;
 # for the 27B, use the v*_gate.sh scripts instead.
 #
+# After the sequence check, each backend's per-step logits are compared
+# against cpu with logit_compare: top-1 agreement on EVERY recorded step
+# must be 100% (hard gate); mean KL is reported as information — cross-
+# backend FP accumulation paths differ legitimately, so KL > 0 between
+# backends is expected and only worth watching when it jumps.
+#
 # Exit code: 0 = all backends bit-identical to CPU, 1 = mismatch/error.
 
 set -euo pipefail
@@ -34,7 +40,7 @@ fi
 seq_of() {  # $1 = label
     local label="$1"
     # `|| true` at pipeline end: a missing match must not trip `set -e`.
-    rg -o "stratum_argmax=[0-9]+" "/tmp/backend_${label}.log" 2>/dev/null \
+    grep -oE "stratum_argmax=[0-9]+" "/tmp/backend_${label}.log" 2>/dev/null \
         | sed 's/stratum_argmax=//' | tr '\n' ' ' || true
 }
 
@@ -67,13 +73,34 @@ ref=""
 # NOSPEC forces per-token `stratum_argmax=` lines (speculative tree mode
 # prints `tree-step path=[...]` instead) and makes greedy output the sole
 # contract, so CPU / GPU-NC / GPU2 are directly comparable.
-run_backend cpu STRATUM_NO_GPU=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1
+run_backend cpu STRATUM_NO_GPU=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1 STRATUM_LOGITS_DUMP=/tmp/backend_cpu.slog
 
 if [[ -f stratum_q4k.metallib ]]; then
-    run_backend nc  STRATUM_GPU_NC=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1
-    run_backend gpu2 STRATUM_GPU2=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1
+    run_backend nc  STRATUM_GPU_NC=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1 STRATUM_LOGITS_DUMP=/tmp/backend_nc.slog
+    run_backend gpu2 STRATUM_GPU2=1 STRATUM_NOSPEC=1 STRATUM_SOFT_WARM=0 STRATUM_NO_PARTIAL_WARM=1 STRATUM_LOGITS_DUMP=/tmp/backend_gpu2.slog
 else
     echo "SKIP nc/gpu2: stratum_q4k.metallib not found (run: make)"
 fi
 
 echo "== backend verification: all argmax sequences match cpu =="
+
+# Distribution-level comparison: every recorded step's top-1 token must
+# agree with cpu (stronger than the printed-lines check above); mean KL is
+# informational — different FP accumulation paths across backends make
+# KL > 0 normal, jumps are what deserve attention.
+[[ -x ./logit_compare ]] || make logit_compare >/dev/null || true
+for label in nc gpu2; do
+    [[ -f "/tmp/backend_${label}.slog" ]] || { echo "DIST ${label}: no logits dump (skipped)"; continue; }
+    [[ -f /tmp/backend_cpu.slog ]] || { echo "DIST: no cpu dump (skipped)"; break; }
+    echo "== distribution: ${label} vs cpu =="
+    dist_line=$(./logit_compare /tmp/backend_cpu.slog "/tmp/backend_${label}.slog" | tail -1)
+    echo "  ${dist_line}"
+    agree=$(printf '%s' "$dist_line" | grep -oE '[0-9]+/[0-9]+' | head -1 | cut -d/ -f1)
+    steps=$(printf '%s' "$dist_line" | grep -oE '[0-9]+/[0-9]+' | head -1 | cut -d/ -f2)
+    if [[ -z $agree || $agree != $steps ]]; then
+        echo "FAIL ${label}: top-1 agreement ${agree:-?}/${steps:-?} != full"
+        exit 1
+    fi
+    echo "  OK ${label}: top-1 agreement full"
+done
+echo "== backend verification complete =="
