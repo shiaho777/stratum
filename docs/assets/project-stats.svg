@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="150" viewBox="0 0 880 150" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="150" fill="#FFFFFF"/>
+  <!-- 4 cards x2 rows -->
+  <g>
+    <rect x="20" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="120" y="38" text-anchor="middle" font-size="17" font-weight="700" fill="#1D4ED8">45,934</text>
+    <text x="120" y="56" text-anchor="middle" font-size="10.5" fill="#64748B">lines C / Metal / Python tooling</text>
+
+    <rect x="236" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="336" y="38" text-anchor="middle" font-size="17" font-weight="700" fill="#047857">752 KB</text>
+    <text x="336" y="56" text-anchor="middle" font-size="10.5" fill="#64748B">engine binary, zero deps beyond system</text>
+
+    <rect x="452" y="16" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="552" y="38" text-anchor="middle" font-size="17" font-weight="700" fill="#B45309">8</text>
+    <text x="552" y="56" text-anchor="middle" font-size="10.5" fill="#64748B">quant formats: Q2_K…Q8_0 + F16/F32</text>
+
+    <rect x="668" y="16" width="192" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="764" y="38" text-anchor="middle" font-size="17" font-weight="700" fill="#6D28D9">2</text>
+    <text x="764" y="56" text-anchor="middle" font-size="10.5" fill="#64748B">registered architectures (self-registering)</text>
+  </g>
+  <g>
+    <rect x="20" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="120" y="104" text-anchor="middle" font-size="17" font-weight="700" fill="#BE185D">199</text>
+    <text x="120" y="122" text-anchor="middle" font-size="10.5" fill="#64748B">STRATUM_* switches (env census)</text>
+
+    <rect x="236" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="336" y="104" text-anchor="middle" font-size="17" font-weight="700" fill="#0F766E">19</text>
+    <text x="336" y="122" text-anchor="middle" font-size="10.5" fill="#64748B">full-model greedy gates v199–v217</text>
+
+    <rect x="452" y="82" width="200" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="552" y="104" text-anchor="middle" font-size="17" font-weight="700" fill="#B91C1C">4</text>
+    <text x="552" y="122" text-anchor="middle" font-size="10.5" fill="#64748B">CI jobs incl. ASan/UBSan + inference smoke</text>
+
+    <rect x="668" y="82" width="192" height="52" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="764" y="104" text-anchor="middle" font-size="17" font-weight="700" fill="#374151">4</text>
+    <text x="764" y="122" text-anchor="middle" font-size="10.5" fill="#64748B">hard boundaries, enforced at startup</text>
+  </g>
+</svg>

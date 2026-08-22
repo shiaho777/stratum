@@ -2,6 +2,10 @@
 
 [English](README.md) | [简体中文](README_CN.md)
 
+![CI](https://github.com/shiaho777/stratum/actions/workflows/ci.yml/badge.svg)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-black.svg)
+
 A pure-C transformer inference engine for Apple Silicon with a wired-memory footprint that is **independent of model size**. Weights are a stream, not a resident: the engine `mmap`s the model and reads it through the OS page cache, so anonymous memory stays ~7 MB whether the model is 0.5B or 27B.
 
 | Metric | Value |
@@ -14,7 +18,11 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 | GPU required | none (integrated, optional Metal accel) |
 | Architecture support | Llama family + Qwen3.5/3.6 hybrid (Gated DeltaNet SSM + attention) |
 
+<p align="center"><img src="docs/assets/project-stats.svg" alt="Project statistics: lines of code, binary size, formats, gates, CI jobs" width="720"></p>
+
 The binding constraint is disk and bandwidth, not RAM: a model runs to completion as long as it fits on disk. What RAM buys is *how much of the model stays hot in page cache* — more RAM, fewer SSD reads per token, higher throughput. Nothing else changes.
+
+<p align="center"><img src="docs/assets/hero-stream.svg" alt="Weights are a stream: disk → page cache → engine, with a flat anonymous-memory floor" width="760"></p>
 
 ---
 
@@ -133,6 +141,8 @@ Not all layers are equal. On a 24 GB machine with a 12 GB model, most weights st
 
 The measured cost of the mincore sampling itself was ~zero on the hot path — the win is not the detection, it is knowing when *not* to prefetch.
 
+<p align="center"><img src="docs/assets/streaming-scheduler.svg" alt="Streaming scheduler: mincore hot detection and coalesced cold prefetch overlapping compute" width="720"></p>
+
 ### Reduction 3 — MULTISEQ: one weight scan, N logical streams
 
 This is the amortization play: `STRATUM_MULTISEQ=N` runs N independent decode streams (same prompt, diverging as each samples) through **one weight scan per step**. N streams share the same tensor reads; the compute is batched on top.
@@ -158,6 +168,8 @@ Multi-token prediction: a small draft head proposes an 8-token tree per forward;
 - **8 tokens per forward at 100% acceptance** when the draft agrees — no extra passes, output identical to greedy.
 - On the 27B the wall is draft *quality*, not tree parameters: measured tree efficiency 2.46 tok/main, and tree-depth experiments (`STRATUM_TREE_EXTEND_K`) beyond 4 made it worse. The tree machinery works; the draft head is the binding constraint.
 
+<p align="center"><img src="docs/assets/mtp-tree.svg" alt="MTP draft tree with batch verification and exact rollback" width="720"></p>
+
 ### Metal GPU: bounded buffers, per-tensor zero-copy
 
 GPU is optional and strictly bounded:
@@ -175,6 +187,8 @@ Runtime state is the only anonymous memory the model needs:
 
 - Full-attention layers keep KV cache; the qwen35 hybrid's SSM layers (Gated DeltaNet) keep a fixed-size delta-rule state that is **independent of context length** — a bounded matrix updated in place per token, like kimi's KDA.
 - The 27B's ~77 MB anon = KV/SSM state + activations + small scratch; the weights themselves contribute ~0.
+
+<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 hybrid layer pattern: SSM layers with fixed-size state plus periodic full attention over a KV ring" width="740"></p>
 
 ### The codebase
 
@@ -206,9 +220,11 @@ Three hard boundaries the engine never crosses — they are the reason numbers s
 
 ## Part III — Validation
 
+<p align="center"><img src="docs/assets/validation-stack.svg" alt="Validation stack: CI, model-free tests, 19 gates, distribution-level and backend checks" width="740"></p>
+
 The engine treats correctness as a contract, not a hope:
 
-- **CI on every PR (3 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on **both architectures**, with the greedy sequences pinned as hard regression assertions.
+- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on **both architectures**, with the greedy sequences pinned as hard regression assertions.
 - **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
 - **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
 - **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the qwen35 architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
@@ -261,13 +277,21 @@ Large models are where the trade-off is visible: they run — where llama.cpp th
 | anonymous (binding RAM) | **7.4 MB** | 634.9 MB | **85.7× lower** |
 | total physical | 645.2 MB | 1300.5 MB | 2.0× lower |
 
+<p align="center"><img src="docs/assets/memory-bars.svg" alt="Anonymous RAM comparison: stratum vs llama.cpp" width="720"></p>
+
 ### Scale — 27B on a 24 GB machine
 
 stratum runs the 27B to completion in ~77 MB anonymous RAM. llama.cpp cannot run it usably here: `-ngl 0` thrashes, `-ngl 99` needs 16 GB in unified memory. Stratum is the only engine that produces tokens.
 
 ### How performance scales
 
-Every token consumes the whole weight stream once, so per-token time is `W_bytes × (f_hot / BW_hot + f_cold / BW_cold)` — RAM decides how much stays hot in page cache (`f_hot`), memory bandwidth sets `BW_hot`, the SSD sets the cold-streaming rate. Estimated 27B behavior:
+Every token consumes the whole weight stream once, so per-token time follows one formula — RAM decides how much stays hot in page cache (`f_hot`), memory bandwidth sets `BW_hot`, the SSD sets the cold-streaming rate:
+
+$$
+t_{\text{token}} \;=\; W_{\text{bytes}} \left( \frac{f_{\text{hot}}}{BW_{\text{hot}}} + \frac{f_{\text{cold}}}{BW_{\text{cold}}} \right)
+$$
+
+Theoretical 27B behavior (estimates derived from this model — solid bars below are measurements, hatched are projections):
 
 | Hardware | RAM | Expected (estimate) |
 |---|---|---|
@@ -275,6 +299,8 @@ Every token consumes the whole weight stream once, so per-token time is `W_bytes
 | M4 Pro, 24 GB | partially hot | **5.73 tok/s hot short-run / ~1.4–2 sustained** (measured) |
 | M4 Max, 48 GB+ | fully hot | ~8–10 tok/s (higher bandwidth) |
 | ≥128 GB workstation | fully hot + nibble layout | 12+ tok/s (Q2_K 2.2× unpack) |
+
+<p align="center"><img src="docs/assets/throughput-estimate.svg" alt="27B throughput by hardware tier; measured vs theoretical estimates" width="740"></p>
 
 ### Mechanism limits
 

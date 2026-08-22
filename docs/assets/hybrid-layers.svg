@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="360" viewBox="0 0 880 360" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="360" fill="#FFFFFF"/>
+  <text x="24" y="34" font-size="16" font-weight="700" fill="#0F172A">qwen35 hybrid layout — Gated DeltaNet SSM + full attention</text>
+  <text x="24" y="54" font-size="11" fill="#475569">layer type from <tspan font-family="Menlo,monospace">full_attention_interval</tspan> metadata; MTP/NextN layers (if any) sit at the end</text>
+
+  <!-- repeating block: SSM SSM SSM FA -->
+  <g transform="translate(40,90)">
+    <!-- block frame -->
+    <rect x="-12" y="-14" width="424" height="120" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="200" y="-2" text-anchor="middle" font-size="10" fill="#94A3B8">repeats every 4 layers (27B: 64 main layers)</text>
+    <!-- SSM boxes -->
+    <g>
+      <rect x="0" y="10" width="90" height="72" rx="8" fill="#EDE9FE" stroke="#7C3AED"/>
+      <text x="45" y="34" text-anchor="middle" font-size="12" font-weight="700" fill="#5B21B6">SSM</text>
+      <text x="45" y="50" text-anchor="middle" font-size="9" fill="#6D28D9">Gated DeltaNet</text>
+      <text x="45" y="64" text-anchor="middle" font-size="9" fill="#6D28D9">conv + delta rule</text>
+    </g>
+    <g>
+      <rect x="106" y="10" width="90" height="72" rx="8" fill="#EDE9FE" stroke="#7C3AED"/>
+      <text x="151" y="34" text-anchor="middle" font-size="12" font-weight="700" fill="#5B21B6">SSM</text>
+      <text x="151" y="50" text-anchor="middle" font-size="9" fill="#6D28D9">state: NV×HK×HV</text>
+      <text x="151" y="64" text-anchor="middle" font-size="9" fill="#6D28D9">fixed size</text>
+    </g>
+    <g>
+      <rect x="212" y="10" width="90" height="72" rx="8" fill="#EDE9FE" stroke="#7C3AED"/>
+      <text x="257" y="34" text-anchor="middle" font-size="12" font-weight="700" fill="#5B21B6">SSM</text>
+      <text x="257" y="50" text-anchor="middle" font-size="9" fill="#6D28D9">no KV growth</text>
+      <text x="257" y="64" text-anchor="middle" font-size="9" fill="#6D28D9">vs context len</text>
+    </g>
+    <!-- FA box -->
+    <g>
+      <rect x="318" y="10" width="90" height="72" rx="8" fill="#DBEAFE" stroke="#2563EB"/>
+      <text x="363" y="34" text-anchor="middle" font-size="12" font-weight="700" fill="#1E40AF">Full attn</text>
+      <text x="363" y="50" text-anchor="middle" font-size="9" fill="#1D4ED8">KV ring 4096</text>
+      <text x="363" y="64" text-anchor="middle" font-size="9" fill="#1D4ED8">+ 4 sink slots</text>
+    </g>
+  </g>
+
+  <!-- MTP tail -->
+  <g transform="translate(500,90)">
+    <rect x="-12" y="-14" width="180" height="120" rx="10" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <rect x="0" y="10" width="156" height="72" rx="8" fill="#FEF3C7" stroke="#D97706"/>
+    <text x="78" y="34" text-anchor="middle" font-size="12" font-weight="700" fill="#92400E">MTP / NextN head</text>
+    <text x="78" y="50" text-anchor="middle" font-size="9" fill="#B45309">8-token draft tree</text>
+    <text x="78" y="64" text-anchor="middle" font-size="9" fill="#B45309">verify in one pass</text>
+  </g>
+
+  <!-- state footprint panel -->
+  <g transform="translate(40,240)">
+    <rect x="0" y="0" width="800" height="86" rx="10" fill="#F0FDF4" stroke="#86EFAC"/>
+    <text x="20" y="26" font-size="12" font-weight="700" fill="#065F46">Why the footprint stays flat as context grows:</text>
+    <text x="20" y="48" font-size="11" fill="#166534">• SSM state is a bounded matrix updated in place — independent of context length (like KDA / Mamba-style recurrences)</text>
+    <text x="20" y="66" font-size="11" fill="#166534">• full-attention layers keep a sliding KV ring with attention sink — bounded window, exact positions via logical↔physical mapping</text>
+    <text x="20" y="80" font-size="11" fill="#166534">• 27B measured total: ≈ 77 MB anonymous, KV/SSM/activations included</text>
+  </g>
+</svg>

@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="880" height="330" fill="#FFFFFF"/>
+  <text x="24" y="34" font-size="16" font-weight="700" fill="#0F172A">Streaming scheduler — hot detection + cold prefetch overlap</text>
+  <text x="24" y="54" font-size="11" fill="#475569">per layer: <tspan font-family="Menlo,monospace">mincore()</tspan> samples 3–12 pages; ≥80% resident → pure compute, else coalesced madvise / F_RDADVISE bursts</text>
+
+  <!-- timeline -->
+  <line x1="60" y1="230" x2="840" y2="230" stroke="#94A3B8"/>
+  <g font-size="10" fill="#94A3B8" text-anchor="middle">
+    <text x="100" y="248">layer N</text><text x="220" y="248">N+1</text><text x="340" y="248">N+2</text>
+    <text x="460" y="248">N+3</text><text x="580" y="248">N+4</text><text x="700" y="248">N+5</text><text x="800" y="248">time</text>
+  </g>
+
+  <!-- hot lane -->
+  <text x="24" y="106" font-size="11" font-weight="600" fill="#065F46">hot layers</text>
+  <g>
+    <rect x="70" y="90" width="130" height="26" rx="6" fill="#D1FAE5" stroke="#059669"/>
+    <rect x="210" y="90" width="120" height="26" rx="6" fill="#D1FAE5" stroke="#059669"/>
+    <rect x="450" y="90" width="140" height="26" rx="6" fill="#D1FAE5" stroke="#059669"/>
+  </g>
+  <g font-size="10" fill="#065F46" text-anchor="middle">
+    <text x="135" y="107">pure compute (no I/O wait)</text>
+    <text x="270" y="107">pure compute</text>
+    <text x="520" y="107">pure compute</text>
+  </g>
+  <!-- mincore diamonds on hot lane -->
+  <g fill="#059669">
+    <polygon points="66,103 74,95 82,103 74,111"/>
+    <polygon points="446,103 454,95 462,103 454,111"/>
+  </g>
+  <text x="74" y="86" font-size="9" fill="#059669">mincore ✓ hot</text>
+
+  <!-- cold lane -->
+  <text x="24" y="166" font-size="11" font-weight="600" fill="#92400E">cold layers</text>
+  <!-- compute block riding on prefetched data -->
+  <rect x="310" y="150" width="110" height="26" rx="6" fill="#FEF3C7" stroke="#D97706"/>
+  <text x="365" y="167" font-size="10" fill="#92400E" text-anchor="middle">compute</text>
+  <!-- prefetch burst window ahead of it -->
+  <rect x="180" y="150" width="120" height="26" rx="6" fill="#FFEDD5" stroke="#F59E0B" stroke-dasharray="4 3"/>
+  <text x="240" y="167" font-size="10" fill="#B45309" text-anchor="middle">coalesced burst</text>
+  <line x1="300" y1="163" x2="308" y2="163" stroke="#D97706" marker-end="url(#arr)"/>
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#D97706"/>
+    </marker>
+  </defs>
+  <text x="240" y="190" font-size="9" fill="#B45309" text-anchor="middle">SSD streams while compute proceeds — SSD is the bottleneck, RAM buys f_hot</text>
+
+  <!-- notes panel -->
+  <g transform="translate(60,272)">
+    <rect x="0" y="0" width="780" height="44" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+    <text x="14" y="18" font-size="10.5" fill="#475569">deterministic mode (<tspan font-family="Menlo,monospace">STRATUM_STREAM_DET=1</tspan>) skips mincore and treats everything as cold · measured mincore tax ≈ 0 on the hot path</text>
+    <text x="14" y="34" font-size="10.5" fill="#475569">per-token time model: <tspan font-style="italic">W × (f_hot/BW_hot + f_cold/BW_cold)</tspan> — RAM size chooses f_hot, silicon sets BW_hot, SSD sets BW_cold</text>
+  </g>
+</svg>
