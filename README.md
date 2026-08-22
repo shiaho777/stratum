@@ -14,7 +14,7 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 | Anonymous (wired) RAM for 27B | **~77 MB** (incl. KV/SSM state) |
 | Anonymous RAM for 0.5–1B | ~7 MB |
 | vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
-| Engine size | ~790 KB binary, ~25k lines C/Metal |
+| Engine size | ~752 KB binary · ≈46k lines C/Metal/tooling (≈26k engine core) |
 | GPU required | none (integrated, optional Metal accel) |
 | Architecture support | Llama family + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) |
 
@@ -72,6 +72,22 @@ make tests            # quant-kernel cross-validation + sampler exactness
 No model is shipped, bundled, or assumed: the engine and every script require a model path as an explicit argument. The binary reads `general.architecture` from the GGUF metadata and dispatches to a registered handler — no model names are hardcoded.
 
 Build options: MemX (`github.com/shiaho777/memx`, MIT) is an optional compressed-memory runtime backing staging buffers and KV/SSM state — it is **fetched automatically** on first use (`make deps` clones/pulls it; a plain `make` does so when needed) and can be disabled with `make USE_MEMX=0`. `make USE_METAL=0` builds CPU-only without the Metal shader library.
+
+#### Test drive without downloading any weights
+
+The repo ships no model, but it *generates* one: `make_tiny_model.py` emits deterministic GGUFs (~0.4–1 MB, fixed seed, byte-identical across machines) in three layouts — llama, qwen35 full-attention, and the qwen35 hybrid SSM layout — with F16 or Q4_K weights:
+
+```sh
+cd stratum/native
+python3 ../tools/make_tiny_model.py --arch llama --weights q4k --out /tmp/tinyq.gguf
+
+STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8     # real greedy decode
+
+# three-backend identity check (CPU vs GPU-NC vs GPU2; needs the metallib):
+./verify_backends.sh /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
+```
+
+Q4_K weights route through the quantized GEMV kernels — the same path real models take. The CI inference smoke uses exactly these generators and pins their greedy sequences.
 
 ### Usage
 
@@ -190,6 +206,14 @@ Runtime state is the only anonymous memory the model needs:
 
 <p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 hybrid layer pattern: SSM layers with fixed-size state plus periodic full attention over a KV ring" width="740"></p>
 
+### Optional MemX plane — compressed memory for state
+
+[MemX](https://github.com/shiaho777/memx) (MIT, fetched automatically) backs staging buffers and KV/SSM state with a compressed-memory plane; the ~77 MB 27B figure above is measured with it enabled.
+
+- **Runtime-tunable quotas** — `STRATUM_MEMX_BUF_QUOTA_MB` / `STRATUM_MEMX_KV_QUOTA_MB` override the 3 GB / 2 GB defaults. Shrinking a quota raises internal pool pressure, which is also the safe way to reproduce pressure scenarios without stressing the host.
+- **Pinnable dependency** — `MEMX_REF=<branch-or-sha> make deps` checks out a fixed upstream revision instead of floating HEAD.
+- **Measured caveat** — which backing a stage buffer receives (MemX plane vs anon fallback) depends on allocation-time memory pressure, and the two backings take slightly different FP accumulation paths. MemX-enabled runs therefore vary by mean KL ~1e-4 between identical invocations; token sequences stay stable and all gates pass, but only `USE_MEMX=0` builds are byte-reproducible run-to-run (see the determinism contract in AGENTS.md).
+
 ### The codebase
 
 ```
@@ -224,12 +248,24 @@ Three hard boundaries the engine never crosses — they are the reason numbers s
 
 The engine treats correctness as a contract, not a hope:
 
-- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on **both architectures**, with the greedy sequences pinned as hard regression assertions.
+- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on three layouts — llama, qwen35 full-attention, qwen35 hybrid SSM — plus a Q4_K-weighted variant, with the greedy sequences pinned as hard regression assertions.
 - **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
 - **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
 - **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the Qwen3.8 hybrid architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
 - **Distribution-level regression** — `STRATUM_LOGITS_DUMP=<path>` records per-step logits; `logit_compare` reports KL(base‖candidate), top-1 agreement, and max |Δ| between any two runs. The gates pin argmax over a handful of tokens; this sees the whole distribution. (It is also how the MemX run-to-run variance documented in AGENTS.md was found.)
 - **Dual-path discipline** — CPU (NEON) and GPU (Metal) paths are both exercised; per-tensor NoCopy was verified bit-exact against the CPU path on the 27B before it was allowed.
+
+- **Backend identity (local hardware)** — `verify_backends.sh <model>` asserts cpu = GPU-NC = GPU2 greedy sequences on a generated Q4_K tiny model.
+
+Two configs agreeing on argmax is necessary, not sufficient. For distribution-level comparison:
+
+```sh
+STRATUM_NO_GPU=1 STRATUM_LOGITS_DUMP=/tmp/a.slog ./stratum <model.gguf> 64 <prompt ids>
+STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prompt ids>
+./logit_compare /tmp/a.slog /tmp/b.slog        # KL(base‖cand) per step + top-1 agreement
+```
+
+Same config twice must give KL = 0 (`USE_MEMX=0` builds are byte-reproducible run-to-run). This is the tool that surfaced the MemX variance documented below.
 
 What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolchains, int8 SDOT, MemX backing flips), and what re-validates it: see the determinism contract in `AGENTS.md`, and `stratum/docs/VALIDATION.md` for the full coverage matrix.
 
@@ -310,6 +346,14 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 - **Q2_K unpack is compute-bound** (~7 GB/s at 14 cores); the nibble layout breaks this (2.2×) at the cost of +50% file size — needs ≥32 GB RAM to stay hot.
 - **Long-generation tree efficiency is 2.46 tok/main** — draft quality, not tree parameters, is the wall.
 
+### Honest limitations
+
+- **Single-model, single-process by design**: architecture state lives in file-scope globals; one process runs one model, and `STRATUM_SERVER` mode is a serial loop, not a concurrent server.
+- **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
+- **Speculative-decode long-run gains are draft-quality-bound** (2.46 tok/main sustained vs 8.0 short-run).
+- **MemX trades bit-reproducibility for footprint** (~1e-4 mean KL run-to-run variance; token sequences stable).
+- **Apple Silicon only** — the NEON hot path has no x86_64 port.
+
 ---
 
 ## Part V — Reference
@@ -331,6 +375,10 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 | `STRATUM_TREE_EXTEND_K=N` | Tree chain depth (cap 12, default 4) | ✅ |
 | `STRATUM_GPU2=1` | Cold-weight staging pipeline | ⚠️ slower than CPU for hot weights |
 | `STRATUM_Q2K_SDOT=1` | int8 SDOT for Q2K | ⚠️ no gain at 14 cores |
+| `STRATUM_LOGITS_DUMP=<path>` | Per-step logits dump → `logit_compare` | ✅ measurement |
+| `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram speculative decoding | ✅ |
+| `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX plane quotas (pressure repro) | ✅ |
+| `MEMX_REF=<ref>` (make deps) | Pin the MemX dependency revision | ✅ reproducibility |
 | `STRATUM_PREDECODE=1` | Q4_K→F16 predecode to GPU | ❌ memory boundary |
 | `STRATUM_Q4_0=1` | Q4_K→Q4_0 re-encode | ❌ quality boundary |
 | `STRATUM_MLOCK_ALL` / `STRATUM_KEEP_RESIDENT` | Lock/pin weights | ❌ memory boundary |
@@ -340,11 +388,12 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 ```
 ├── README.md          ← this file (English)
 ├── README_CN.md       ← 简体中文
-├── AGENTS.md          ← development guide, boundaries, full env reference
+├── AGENTS.md          ← development guide, boundaries, determinism contract
+├── docs/assets/       ← SVG figures embedded in this README
 └── stratum/
-    ├── native/        ← the engine (C/Metal), Makefile, 19 gate scripts
-    ├── docs/          ← measured evidence (benchmark records) + README
-    ├── tools/         ← standalone GGUF utilities (quantize, inspect, decode)
+    ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh
+    ├── docs/          ← measured evidence + VALIDATION.md coverage matrix
+    ├── tools/         ← GGUF utilities incl. make_tiny_model.py (test models from seed)
     └── benchmarks/    ← benchmark scripts (headtohead, manifesto, GPU sweeps)
 ```
 

@@ -14,7 +14,7 @@
 | 27B 的匿名（wired）内存 | **~77 MB**（含 KV/SSM 状态） |
 | 0.5–1B 模型的匿名内存 | ~7 MB |
 | 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |
-| 引擎体积 | ~790 KB 二进制，~2.5 万行 C/Metal |
+| 引擎体积 | ~752 KB 二进制 · ≈4.6 万行 C/Metal/工具（引擎核心 ≈2.6 万行） |
 | GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
 | 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`） |
 
@@ -72,6 +72,22 @@ make tests            # 量化 kernel 交叉验证 + 采样器精确性
 仓库不附带、不内置、不假设任何模型：引擎和所有脚本都要求把模型路径作为显式参数传入。二进制从 GGUF 元数据读取 `general.architecture` 并分发到已注册的处理器——没有任何模型名被硬编码。
 
 构建选项：MemX（`github.com/shiaho777/memx`，MIT）是可选的内存压缩运行时，承载暂存缓冲与 KV/SSM 状态——**首次使用时自动拉取**（`make deps` 克隆/更新；直接 `make` 会在需要时自动拉取），可用 `make USE_MEMX=0` 禁用。`make USE_METAL=0` 构建纯 CPU 版（不含 Metal shader 库）。
+
+#### 无需下载权重即可试用
+
+仓库不附带模型，但可以*现场生成*：`make_tiny_model.py` 以固定种子产出确定性 GGUF（约 0.4–1 MB，跨机器字节一致），覆盖三种布局——llama、qwen35 纯注意力、qwen35 混合 SSM——支持 F16 或 Q4_K 权重：
+
+```sh
+cd stratum/native
+python3 ../tools/make_tiny_model.py --arch llama --weights q4k --out /tmp/tinyq.gguf
+
+STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8     # 真实贪心解码
+
+# 三后端一致性检查（CPU vs GPU-NC vs GPU2；需要 metallib）:
+./verify_backends.sh /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
+```
+
+Q4_K 权重会走真实的量化 GEMV 内核路径。CI 推理冒烟用的正是这些生成器和钉定的贪心序列。
 
 ### 用法
 
@@ -191,6 +207,14 @@ GPU 可选且严格有界：
 - 全注意力层保留 KV 缓存；Qwen3.8 混合架构的 SSM 层（Gated DeltaNet）保留固定大小的 delta-rule 状态，**与上下文长度无关**——每个 token 原位更新的有界矩阵，类似 kimi 的 KDA。
 - 27B 的 ~77 MB 匿名 = KV/SSM 状态 + 激活 + 小块 scratch；权重本身的贡献为 ~0。
 
+### 可选 MemX 平面 —— 状态的压缩内存
+
+[MemX](https://github.com/shiaho777/memx)（MIT，自动拉取）用压缩内存平面承载暂存缓冲与 KV/SSM 状态；上文 27B 的 ~77 MB 数字即在其启用下实测。
+
+- **配额运行时可调** —— `STRATUM_MEMX_BUF_QUOTA_MB` / `STRATUM_MEMX_KV_QUOTA_MB` 覆盖默认的 3 GB / 2 GB。调小配额会抬升内部池压力，也是在不拖垮主机的前提下复现压力场景的安全手段。
+- **依赖可钉定** —— `MEMX_REF=<branch-or-sha> make deps` 检出固定上游版本，而不是浮动 HEAD。
+- **实测注意事项** —— stage 缓冲拿到哪种背板（MemX 平面 vs anon 回退）取决于分配时的内存压力，两种背板的 FP 累加路径略有不同。因此启用 MemX 的运行在完全相同的调用之间会有 mean KL ~1e-4 的方差；token 序列稳定、全部 gate 通过，但只有 `USE_MEMX=0` 构建跨运行字节可复现（见 AGENTS.md 的确定性契约）。
+
 ### 代码结构
 
 ```
@@ -231,6 +255,17 @@ stratum/native/
 - **19 个 gate 脚本（`v199`–`v217`）** —— Qwen3.8 混合架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
 - **分布级回归** —— `STRATUM_LOGITS_DUMP=<path>` 记录每步 logits；`logit_compare` 报告任意两次运行的 KL(base‖candidate)、top-1 一致率与 max |Δ|。gate 只钉住少数 token 的 argmax，这看到的是整个分布。（MemX 运行间方差正是用它发现的，见 AGENTS.md。）
 - **双路径纪律** —— CPU（NEON）与 GPU（Metal）路径都被覆盖；逐 tensor NoCopy 在 27B 上与 CPU 路径验证 bit-exact 后才被允许。
+- **后端一致性（本地硬件）** —— `verify_backends.sh <model>` 断言 cpu = GPU-NC = GPU2 贪心序列（在生成的 Q4_K 小模型上运行）。
+
+两个配置 argmax 一致是必要条件，不是充分条件。分布级对比：
+
+```sh
+STRATUM_NO_GPU=1 STRATUM_LOGITS_DUMP=/tmp/a.slog ./stratum <model.gguf> 64 <prompt ids>
+STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prompt ids>
+./logit_compare /tmp/a.slog /tmp/b.slog        # 每步 KL(base‖cand) + top-1 一致率
+```
+
+同一配置跑两遍必须 KL = 0（`USE_MEMX=0` 构建跨运行字节可复现）。MemX 方差正是这个工具发现的。
 
 "bit-exact" 的确切含义、豁免项（跨工具链的 `-ffast-math` 收缩、int8 SDOT、MemX 背板切换）与再验证规则：见 `AGENTS.md` 的确定性契约；完整覆盖矩阵见 `stratum/docs/VALIDATION.md`。
 
@@ -309,6 +344,14 @@ $$
 - **Q2_K 解包是计算受限的**（14 核 ~7 GB/s）；nibble 布局突破这一点（2.2×），代价是文件体积 +50%——需要 ≥32 GB 内存保持热。
 - **长生成树效率 2.46 tok/main**——墙是 draft 质量，不是树参数。
 
+### 诚实的局限
+
+- **按设计单模型、单进程**：架构状态位于文件级全局变量；一个进程跑一个模型，`STRATUM_SERVER` 模式是串行循环而非并发服务。
+- **解码保持带宽受限**：吞吐遵循上述公式——大模型是耐心的活，不是交互的活。MULTISEQ 在流间摊销，但不改变单流延迟。
+- **投机解码的长程收益受 draft 质量限制**（持续 2.46 tok/main vs 短测 8.0）。
+- **MemX 以位可复现性换足迹**（~1e-4 mean KL 运行间方差；token 序列稳定）。
+- **仅支持 Apple Silicon** —— NEON 热路径没有 x86_64 移植。
+
 ---
 
 ## Part V — 参考
@@ -330,6 +373,10 @@ $$
 | `STRATUM_TREE_EXTEND_K=N` | 树链深度（上限 12，默认 4） | ✅ |
 | `STRATUM_GPU2=1` | 冷权重 staging 流水线 | ⚠️ 热权重时比 CPU 慢 |
 | `STRATUM_Q2K_SDOT=1` | Q2K 的 int8 SDOT | ⚠️ 14 核无增益 |
+| `STRATUM_LOGITS_DUMP=<path>` | 逐步 logits 导出 → `logit_compare` | ✅ 测量 |
+| `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram 投机解码 | ✅ |
+| `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX 平面配额（压力复现） | ✅ |
+| `MEMX_REF=<ref>` (make deps) | 钉定 MemX 依赖版本 | ✅ 可复现性 |
 | `STRATUM_PREDECODE=1` | Q4_K→F16 预解码到 GPU | ❌ 内存边界 |
 | `STRATUM_Q4_0=1` | Q4_K→Q4_0 重编码 | ❌ 质量边界 |
 | `STRATUM_MLOCK_ALL` / `STRATUM_KEEP_RESIDENT` | 锁定/钉住权重 | ❌ 内存边界 |
@@ -339,11 +386,12 @@ $$
 ```
 ├── README.md          ← 本文件（英文）
 ├── README_CN.md       ← 简体中文
-├── AGENTS.md          ← 开发指南、边界、完整 env 参考
+├── AGENTS.md          ← 开发指南、边界、确定性契约
+├── docs/assets/       ← 本 README 嵌入的 SVG 图集
 └── stratum/
-    ├── native/        ← 引擎（C/Metal）、Makefile、19 个 gate 脚本
-    ├── docs/          ← 实测证据（基准记录）+ README
-    ├── tools/         ← 独立 GGUF 工具（量化、检查、解码）
+    ├── native/        ← 引擎（C/Metal）、Makefile、gate 脚本、verify_backends.sh
+    ├── docs/          ← 实测证据 + VALIDATION.md 覆盖矩阵
+    ├── tools/         ← GGUF 工具,含 make_tiny_model.py(从种子生成测试模型)
     └── benchmarks/    ← 基准脚本（headtohead、manifesto、GPU 扫描）
 ```
 
