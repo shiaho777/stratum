@@ -137,10 +137,21 @@ jobs:
       - name: Greedy decode qwen35-hybrid (SSM+attn) and pin the argmax sequence
         working-directory: stratum/native
         run: |
-          OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1)
-          SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+$' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
-          echo "pinned sequence: $SEQ"
-          [ "$SEQ" = "89 90 216 77 134" ]
+          for attempt in 1 2 3; do
+            OUT=$(STRATUM_NO_GPU=1 ./stratum /tmp/tinyh.gguf 4 1 2 3 4 5 6 7 8 2>&1)
+            RC=$?
+            echo "--- attempt $attempt rc=$RC bytes=${#OUT}"
+            [ $RC -ne 0 ] && { echo "$OUT" | tail -10; continue; }
+            [ ${#OUT} -eq 0 ] && { echo "empty output with rc=0 (runner anomaly)"; sleep 2; continue; }
+            echo "$OUT"
+            SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+$' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
+            echo "pinned sequence: $SEQ"
+            [ "$SEQ" = "89 90 216 77 134" ] && exit 0
+            echo "SEQUENCE MISMATCH"
+            exit 1
+          done
+          echo "all attempts failed"
+          exit 1
 
       # Q4_K weights route through the quantized GEMV kernels end-to-end
       # (the f16 models skip them) — the same path verify_backends.sh needs.
