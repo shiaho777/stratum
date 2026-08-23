@@ -192,6 +192,9 @@ def kv_pair(key, val):
     if isinstance(val, str):
         vb = struct.pack('<Q', len(val)) + val.encode()
         vt = 8
+    elif isinstance(val, float):
+        vb = struct.pack('<f', val)
+        vt = 6
     else:
         vb = struct.pack('<I', val)
         vt = 4
@@ -211,9 +214,8 @@ def kv_pairs(arch, weights):
         kv_pair(f'{p}.attention.head_count', G['NQ']),
         kv_pair(f'{p}.attention.head_count_kv', G['NK']),
         kv_pair(f'{p}.attention.key_length', G['HD']),
-        kv_pair(f'{p}.attention.layer_norm_rms_epsilon',
-                struct.unpack('<I', struct.pack('<f', 1e-5))[0]),
-        kv_pair(f'{p}.rope.freq_base', 10000),
+        kv_pair(f'{p}.attention.layer_norm_rms_epsilon', 1e-5),
+        kv_pair(f'{p}.rope.freq_base', 10000.0),
         kv_pair(f'{p}.rope.dimension_count', G['HD']),
     ]
     if arch == 'qwen35':

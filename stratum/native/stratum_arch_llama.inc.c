@@ -201,6 +201,14 @@ static void la_linear_multix(const GgufTensor* w, const float* const* xs,
     for (int s = 0; s < B; s++) st_linear_dispatch(w, xs[s], ys[s], N, K);
 }
 
+/* Hidden-state export (STRATUM_HIDDEN_DUMP=<layer>:<path>): captures the
+ * residual stream after layer <layer> for every processed token, f32 records
+ * behind a "SHID0001" | u32 layer | u32 H header. Probe tooling for the
+ * video-encoder phase (epic #35); single-stream paths only — MULTISEQ/spec
+ * interleave streams and are not represented. */
+static FILE* la_hidden_dump_fp = NULL;
+static int   la_hidden_dump_layer = -1;
+
 static void la_forward_block(int li, int position) {
     la_BlockTensors* b = &la_g_blocks[li];
     int H  = la_g_cfg.n_embed;
@@ -209,6 +217,7 @@ static void la_forward_block(int li, int position) {
     int Nk = la_g_cfg.n_kv_heads;
     int Ff = la_g_cfg.n_ff;
 
+    int dbg = getenv("STRATUM_BLOCK_DBG") && position == 1;
     memcpy(la_g_x_resid, la_g_x, sizeof(float) * H);
     {
         const float* gain = st_f32_tensor_ptr(b->attn_norm);
@@ -294,6 +303,11 @@ static void la_forward_block(int li, int position) {
         st_linear_dispatch(b->ffn_down, la_g_ff_a, ff_out, H, Ff);
     }
     for (int i = 0; i < H; i++) la_g_x[i] = la_g_x_resid[i] + ff_out[i];
+
+    if (li == la_hidden_dump_layer && la_hidden_dump_fp) {
+        fwrite(la_g_x, sizeof(float), H, la_hidden_dump_fp);
+        fflush(la_hidden_dump_fp);
+    }
 }
 
 static void la_embed_lookup(int token_id, float* out) {
@@ -782,6 +796,28 @@ int run_llama_arch(int argc, char** argv) {
     fprintf(stderr, "\n");
 
     if (la_discover_blocks() != 0) return 1;
+    {
+        const char* hd = getenv("STRATUM_HIDDEN_DUMP");
+        if (hd && hd[0]) {
+            char path[512];
+            if (sscanf(hd, "%d:%511s", &la_hidden_dump_layer, path) == 2
+                && la_hidden_dump_layer >= 0 && la_hidden_dump_layer < la_g_cfg.n_layers) {
+                la_hidden_dump_fp = fopen(path, "wb");
+                if (la_hidden_dump_fp) {
+                    fwrite("SHID0001", 1, 8, la_hidden_dump_fp);
+                    uint32_t meta[2] = { (uint32_t)la_hidden_dump_layer,
+                                         (uint32_t)la_g_cfg.n_embed };
+                    fwrite(meta, 4, 2, la_hidden_dump_fp);
+                    fprintf(stderr, "  hidden dump: layer %d -> %s\n",
+                            la_hidden_dump_layer, path);
+                } else {
+                    fprintf(stderr, "  hidden dump: cannot open %s\n", path);
+                }
+            } else {
+                fprintf(stderr, "  hidden dump: bad spec '%s' (want <layer>:<path>)\n", hd);
+            }
+        }
+    }
     if (la_allocate_state()  != 0) return 1;
 
     {
@@ -972,6 +1008,7 @@ int run_llama_arch(int argc, char** argv) {
     struct timespec _tp0, _tp1, _tg0, _tg1;
     if (_timing) clock_gettime(CLOCK_MONOTONIC, &_tp0);
     int pf_B = 8;   /* batched prefill default (bit-exact, ~3x on long prompts) */
+    if (la_hidden_dump_fp) pf_B = 1;  /* probe mode: capture every position */
     { const char* e = getenv("STRATUM_BATCH_PREFILL"); if (e) pf_B = atoi(e); }
 #ifdef STRATUM_USE_METAL
     if (la_g_gpu_full) pf_B = 1;  /* full-GPU forward keeps KV on GPU; prefill must go token-by-token */
