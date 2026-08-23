@@ -44,6 +44,11 @@ SSM_CONV_DIM = 2 * SSM_KEY_DIM + SSM_INNER   # 256
 SSM_CONV_K = 4
 FULL_ATTN_INTERVAL = 4   # layers where (i+1)%4==0 are full-attn, rest SSM
 
+# Mini-DiT probe geometry (epic #35 Phase-1 spike): packed token sequence on
+# a tiny (t,h,w) grid for MM-RoPE, timestep-conditioned blocks (AdaLN-lite).
+DIT = dict(S=32, T=2, HG=4, WG=4,   # 32 tokens on a 2x4x4 grid
+           H=64, HEADS=4, HD=16, FF=176, NL=2)
+
 
 def q4k_encode_mat(vals, k, n):
     """Encode a [k, n] row-major f32 matrix as Q4_K blocks.
@@ -123,6 +128,50 @@ def build_entries(arch, weights, rng):
                                   for _ in range(n))
 
     entries = []  # (name, dims, ggml_type, data)
+    if arch == 'dit':
+        G = DIT
+        Hb, FFb, NLb = G['H'], G['FF'], G['NL']
+
+        def norm_vec(n):
+            return b''.join(struct.pack('<f', 0.5 + rng.random() * 0.5)
+                            for _ in range(n))
+
+        def lin(k, n):
+            scale = 1.0 / (k ** 0.5)
+            return b''.join(struct.pack('<e', rng.gauss(0.0, scale))
+                            for _ in range(k * n))
+
+        for li in range(NLb):
+            entries.append((f'blk.{li}.attn_norm.weight', (Hb,), GGML_F32,
+                            norm_vec(Hb)))
+            entries.append((f'blk.{li}.ada_shift.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.ada_gate.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.attn_q.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.attn_k.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.attn_v.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.attn_output.weight', (Hb, Hb), GGML_F16,
+                            lin(Hb, Hb)))
+            entries.append((f'blk.{li}.mlp_norm.weight', (Hb,), GGML_F32,
+                            norm_vec(Hb)))
+            entries.append((f'blk.{li}.mlp_ada_shift.weight', (Hb, Hb),
+                            GGML_F16, lin(Hb, Hb)))
+            entries.append((f'blk.{li}.mlp_ada_gate.weight', (Hb, Hb),
+                            GGML_F16, lin(Hb, Hb)))
+            entries.append((f'blk.{li}.ffn_gate.weight', (Hb, FFb), GGML_F16,
+                            lin(Hb, FFb)))
+            entries.append((f'blk.{li}.ffn_up.weight', (Hb, FFb), GGML_F16,
+                            lin(Hb, FFb)))
+            entries.append((f'blk.{li}.ffn_down.weight', (FFb, Hb), GGML_F16,
+                            lin(FFb, Hb)))
+        entries.append(('final_norm.weight', (Hb,), GGML_F32, norm_vec(Hb)))
+        entries.append(('output_head.weight', (Hb, Hb), GGML_F16, lin(Hb, Hb)))
+        return entries
+
     for li in range(NL):
         entries.append((f'blk.{li}.attn_norm.weight', (H,), *norm_vec(H)))
         if arch == 'qwen35-hybrid' and (li + 1) % FULL_ATTN_INTERVAL != 0:
@@ -202,6 +251,24 @@ def kv_pair(key, val):
 
 
 def kv_pairs(arch, weights):
+    if arch == 'dit':
+        G = DIT
+        kvs = [
+            kv_pair('general.architecture', 'dit-probe'),
+            kv_pair('dit.sequence_length', G['S']),
+            kv_pair('dit.grid_t', G['T']),
+            kv_pair('dit.grid_h', G['HG']),
+            kv_pair('dit.grid_w', G['WG']),
+            kv_pair('dit.embedding_length', G['H']),
+            kv_pair('dit.attention.head_count', G['HEADS']),
+            kv_pair('dit.attention.key_length', G['HD']),
+            kv_pair('dit.block_count', G['NL']),
+            kv_pair('dit.feed_forward_length', G['FF']),
+            kv_pair('dit.rope.freq_base', 10000.0),
+            kv_pair('general.alignment', 32),
+        ]
+        return b''.join(kvs), len(kvs)
+
     # both qwen35 variants share the registered arch string "qwen35";
     # hybrid-ness comes from full_attention_interval + ssm.* metadata
     p = 'llama' if arch == 'llama' else 'qwen35'
@@ -237,7 +304,7 @@ def kv_pairs(arch, weights):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arch', default='llama',
-                    choices=['llama', 'qwen35', 'qwen35-hybrid'])
+                    choices=['llama', 'qwen35', 'qwen35-hybrid', 'dit'])
     ap.add_argument('--weights', default='f16', choices=['f16', 'q4k'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
