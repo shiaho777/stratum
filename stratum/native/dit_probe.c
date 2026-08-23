@@ -135,10 +135,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    int dbg = getenv("STRATUM_BLOCK_DBG") != NULL;
     for (int li = 0; li < NLn; li++) {
         /* ---- attention block ---- */
-        if (dbg && li == 0) fprintf(stderr, "[DBG] seed x[0..2]=%.6f %.6f %.6f\n", x[0], x[1], x[2]);
         memcpy(xres, x, sizeof(float) * S_i * H);
         for (int s = 0; s < S_i; s++)
             rmsnorm(&x[s * H], ftensor(NAME(nm, "blk.%d.attn_norm.weight", li)),
@@ -147,28 +145,21 @@ int main(int argc, char** argv) {
         lin_f16(ftensor(NAME(nm, "blk.%d.ada_gate.weight", li)), H, H, te, adga);
         for (int s = 0; s < S_i * H; s++)
             xn[s] = xn[s] * (1.0f + adga[s % H]) + adsh[s % H];
-        if (dbg && li == 0) {
-            FILE* xf = fopen("/tmp/c_xn.bin", "wb");
-            fwrite(xn, sizeof(float), S_i * H, xf);
-            fclose(xf);
-        }
+        
 
         for (int s = 0; s < S_i; s++) {
             lin_f16(ftensor(NAME(nm, "blk.%d.attn_q.weight", li)), H, H, &xn[s * H], &q[s * H]);
             lin_f16(ftensor(NAME(nm, "blk.%d.attn_k.weight", li)), H, H, &xn[s * H], &k[s * H]);
             lin_f16(ftensor(NAME(nm, "blk.%d.attn_v.weight", li)), H, H, &xn[s * H], &v[s * H]);
         }
-        for (int s = 0; s < S_i; s++) {
+                for (int s = 0; s < S_i; s++) {
             int t = s / ((int)GH * (int)GW);
             int h = (s / (int)GW) % (int)GH;
             int w = s % (int)GW;
             mm_rope(&q[s * H], HD, t, h, w, (double)theta);
             mm_rope(&k[s * H], HD, t, h, w, (double)theta);
         }
-        if (dbg && li == 0) fprintf(stderr, "[DBG] q_rope[0..2]=%.6f %.6f %.6f k_rope[0..2]=%.6f %.6f %.6f\n", q[0], q[1], q[2], k[0], k[1], k[2]);
-        if (dbg && li == 0) fprintf(stderr, "[DBG] v00[0..2]=%.6f %.6f %.6f\n", v[0], v[1], v[2]);
-        if (dbg && li == 0) fprintf(stderr, "[DBG] k_tok1_rope[0..2]=%.6f %.6f %.6f\n", k[H + 0], k[H + 1], k[H + 2]);
-
+                        
         /* bidirectional attention, all heads, full S×S */
         float scale = 1.0f / sqrtf((float)HD);
         float* logits = malloc(sizeof(float) * S_i);
@@ -196,20 +187,11 @@ int main(int argc, char** argv) {
             }
         }
         free(logits);
-        if (dbg && li == 0) {
-            fprintf(stderr, "[DBG] raw_attn[0..2]=%.6f %.6f %.6f\n", attn[0], attn[1], attn[2]);
-            for (int hh = 0; hh < (int)NQ; hh++)
-                fprintf(stderr, "[DBG] head%d out[0..1]=%.6f %.6f\n", hh, attn[hh*HD], attn[hh*HD+1]);
-        }
-        for (int s = 0; s < S_i; s++)
+                for (int s = 0; s < S_i; s++)
             lin_f16(ftensor(NAME(nm, "blk.%d.attn_output.weight", li)),
                     H, H, &attn[s * H], &proj[s * H]);
         for (int s = 0; s < S_i * H; s++) x[s] = xres[s] + proj[s];
-        if (dbg && li == 0) {
-            for (int s2 = 0; s2 < S_i; s2 += 8)
-                fprintf(stderr, "[DBG] PA s%d: %.6f %.6f %.6f\n", s2, x[s2*H], x[s2*H+1], x[s2*H+2]);
-        }
-
+        
         /* ---- MLP block ---- */
         memcpy(xres, x, sizeof(float) * S_i * H);
         for (int s = 0; s < S_i; s++)
@@ -217,28 +199,37 @@ int main(int argc, char** argv) {
                     H, 1e-5f, &xn[s * H]);
         lin_f16(ftensor(NAME(nm, "blk.%d.mlp_ada_shift.weight", li)), H, H, te, adsh);
         lin_f16(ftensor(NAME(nm, "blk.%d.mlp_ada_gate.weight", li)), H, H, te, adga);
-        for (int s = 0; s < S_i * H; s++)
+                        for (int s = 0; s < S_i * H; s++)
             xn[s] = xn[s] * (1.0f + adga[s % H]) + adsh[s % H];
-
+        
         for (int s = 0; s < S_i; s++) {
             lin_f16(ftensor(NAME(nm, "blk.%d.ffn_gate.weight", li)),
-                    H, FF, &xn[s * H], &gbuf[s * FF]);
+                    FF, H, &xn[s * H], &gbuf[s * FF]);
             lin_f16(ftensor(NAME(nm, "blk.%d.ffn_up.weight", li)),
-                    H, FF, &xn[s * H], &ubuf[s * FF]);
+                    FF, H, &xn[s * H], &ubuf[s * FF]);
         }
-        for (int s = 0; s < S_i * FF; s++) {
+        if (li == 0) {
+            const GgufTensor* gt = gguf_find_tensor(&G, "blk.0.ffn_gate.weight");
+                    (unsigned long long)gt->offset, (void*)G.mmap_base,
+                    (void*)(G.mmap_base + gt->offset));
+            const uint16_t* gw = (const uint16_t*)ftensor("blk.0.ffn_gate.weight");
+            double manual = 0.0;
+            for (int c = 0; c < H; c++)
+                manual += (double)q4k_fp16_to_fp32(gw[c]) * (double)xn[c];
+                    q4k_fp16_to_fp32(gw[0]), xn[0], gbuf[0], manual,
+                    fabs((float)manual - gbuf[0]));
+        }
+                        for (int s = 0; s < S_i * FF; s++) {
             float gv = gbuf[s];
             gbuf[s] = (gv / (1.0f + expf(-gv))) * ubuf[s];
         }
-        for (int s = 0; s < S_i; s++)
+                for (int s = 0; s < S_i; s++)
             lin_f16(ftensor(NAME(nm, "blk.%d.ffn_down.weight", li)),
-                    FF, H, &gbuf[s * FF], &proj[s * H]);
+                    H, FF, &gbuf[s * FF], &proj[s * H]);
         for (int s = 0; s < S_i * H; s++) x[s] = xres[s] + proj[s];
-        if (dbg && li == 0) fprintf(stderr, "[DBG] post_ffn x[0..2]=%.6f %.6f %.6f\n", x[0], x[1], x[2]);
-    }
+            }
 
     /* final norm + output head; dump all S rows */
-    if (dbg) fprintf(stderr, "[DBG] final out[0..2]=%.6f %.6f %.6f\n", proj[0], proj[1], proj[2]);
     for (int s = 0; s < S_i; s++)
         rmsnorm(&x[s * H], ftensor("final_norm.weight"), H, 1e-5f, &xn[s * H]);
     for (int s = 0; s < S_i; s++)
