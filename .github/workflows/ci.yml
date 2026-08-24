@@ -147,7 +147,7 @@ jobs:
         working-directory: stratum/native
         run: |
           make dit_probe
-          python3 stratum/tools/make_tiny_model.py --arch dit --out /tmp/dit.gguf
+          python3 ../tools/make_tiny_model.py --arch dit --out /tmp/dit.gguf
           ./dit_probe /tmp/dit.gguf /tmp/c_dit.bin 2>&1 | grep "dit-probe: wrote"
           echo "DiT probe OK"
 
