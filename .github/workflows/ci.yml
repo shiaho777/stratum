@@ -143,6 +143,14 @@ jobs:
           echo "pinned sequence: $SEQ"
           [ "$SEQ" = "89 90 216 77 134" ]
 
+      - name: Greedy decode mini-DiT (sequence-shaped forward) and verify
+        working-directory: stratum/native
+        run: |
+          make dit_probe
+          python3 stratum/tools/make_tiny_model.py --arch dit --out /tmp/dit.gguf
+          ./dit_probe /tmp/dit.gguf /tmp/c_dit.bin 2>&1 | grep "dit-probe: wrote"
+          echo "DiT probe OK"
+
       # Q4_K weights route through the quantized GEMV kernels end-to-end
       # (the f16 models skip them) — the same path verify_backends.sh needs.
       - name: Greedy decode llama with Q4_K weights and pin the argmax sequence

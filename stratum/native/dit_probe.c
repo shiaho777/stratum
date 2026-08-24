@@ -208,18 +208,7 @@ int main(int argc, char** argv) {
             lin_f16(ftensor(NAME(nm, "blk.%d.ffn_up.weight", li)),
                     FF, H, &xn[s * H], &ubuf[s * FF]);
         }
-        if (li == 0) {
-            const GgufTensor* gt = gguf_find_tensor(&G, "blk.0.ffn_gate.weight");
-                    (unsigned long long)gt->offset, (void*)G.mmap_base,
-                    (void*)(G.mmap_base + gt->offset));
-            const uint16_t* gw = (const uint16_t*)ftensor("blk.0.ffn_gate.weight");
-            double manual = 0.0;
-            for (int c = 0; c < H; c++)
-                manual += (double)q4k_fp16_to_fp32(gw[c]) * (double)xn[c];
-                    q4k_fp16_to_fp32(gw[0]), xn[0], gbuf[0], manual,
-                    fabs((float)manual - gbuf[0]));
-        }
-                        for (int s = 0; s < S_i * FF; s++) {
+        for (int s = 0; s < S_i * FF; s++) {
             float gv = gbuf[s];
             gbuf[s] = (gv / (1.0f + expf(-gv))) * ubuf[s];
         }

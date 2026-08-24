@@ -31,6 +31,9 @@ decode settings. **Any engine change must keep every gate passing.**
 
 ## What the gates do NOT cover
 
+- **video-DiT sequence forward** (`dit_probe`): CI runs a mini-DiT model
+  (packed grid, MM-RoPE, bidirectional attention, AdaLN) validated against
+  an independent torch oracle at max|diff| ≤ 5e-7,
 - the **llama** architecture at full scale: CI runs generated deterministic
   tiny models (`stratum/tools/make_tiny_model.py`, no weights in the repo) and
   pins their greedy sequences — real end-to-end coverage for llama, qwen35

@@ -118,6 +118,12 @@ def read_gguf(path):
     return cfg, weights
 
 
+import os as _os
+def _dump(tag, tensor):
+    if not _os.environ.get('DIT_DUMP'): return
+    tensor.detach().numpy().astype('<f4').tofile(f'/tmp/dit_py_{tag}.bin')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gguf', required=True)
@@ -185,6 +191,7 @@ def main():
     import os as _os
     dbg = _os.environ.get('STRATUM_BLOCK_DBG')
 
+    _dump("seed", x)
     for li in range(NL):
         resid = x.clone()
         xn = torch.stack([rmsnorm(x[s], gt[f'blk.{li}.attn_norm.weight'])
@@ -197,8 +204,10 @@ def main():
 
         q = torch.stack([mm_rope(lin(f'blk.{li}.attn_q', xn[s]), *coords[s])
                          for s in range(S)])
+        _dump(f'L{li}_q', q)
         k = torch.stack([mm_rope(lin(f'blk.{li}.attn_k', xn[s]), *coords[s])
                          for s in range(S)])
+        _dump(f'L{li}_k', k)
         v = torch.stack([lin(f'blk.{li}.attn_v', xn[s]) for s in range(S)])
         if dbg and li == 0:
             print(f"[DBG] q_rope[0..2]={float(q[0,0]):.6f} {float(q[0,1]):.6f} {float(q[0,2]):.6f} k_rope[0..2]={float(k[0,0]):.6f} {float(k[0,1]):.6f} {float(k[0,2]):.6f}")
@@ -220,9 +229,11 @@ def main():
             print(f"[DBG] raw_attn[0..2]={float(attn[0,0]):.6f} {float(attn[0,1]):.6f} {float(attn[0,2]):.6f}")
             for hh in range(heads):
                 print(f"[DBG] head{hh} out[0..1]={float(attn[0,hh*HD]):.6f} {float(attn[0,hh*HD+1]):.6f}")
+        _dump(f'L{li}_attnout', attn)
         proj = torch.stack([lin(f'blk.{li}.attn_output', attn[s])
                             for s in range(S)])
         x = resid + proj
+        _dump(f'L{li}_attn', x)
 
         resid = x.clone()
         xn = torch.stack([rmsnorm(x[s], gt[f'blk.{li}.mlp_norm.weight'])
@@ -230,11 +241,16 @@ def main():
         sh = lin(f'blk.{li}.mlp_ada_shift', te)
         ga = lin(f'blk.{li}.mlp_ada_gate', te)
         xn = xn * (1.0 + ga.unsqueeze(0)) + sh.unsqueeze(0)
+        _dump(f'L{li}_mlp_xn', xn)
         g = torch.stack([lin(f'blk.{li}.ffn_gate', xn[s]) for s in range(S)])
         u = torch.stack([lin(f'blk.{li}.ffn_up', xn[s]) for s in range(S)])
         a = (g / (1.0 + torch.exp(-g))) * u
+        _dump(f'L{li}_mlp_a', a)
         ff = torch.stack([lin(f'blk.{li}.ffn_down', a[s]) for s in range(S)])
+        _dump(f'L{li}_mlp_ff', ff)
+        _dump(f'L{li}_mlp_resid', resid)
         x = resid + ff
+        _dump(f'L{li}_ffn', x)
     if dbg and li == 0:
         for s2 in range(0, S, 8):
             print(f"[DBG] PA s{s2}: {float(x[s2,0]):.6f} {float(x[s2,1]):.6f} {float(x[s2,2]):.6f}")
@@ -246,6 +262,7 @@ def main():
         f.write(b'SDIT0001')
         f.write(struct.pack('<II', S, H))
         f.write(out.flatten().numpy().astype('<f4').tobytes())
+    _dump('final', out)
     print(f'wrote {args.out}: tokens={S} H={H}')
 
     if args.compare:
