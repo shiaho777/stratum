@@ -66,6 +66,15 @@ int main(int argc, char** argv) {
     { const GgufTensor* t = gguf_find_tensor(&G, "blocks.0.mlp.fc2.weight");
       if (!t) return 1; FF2 = (int)t->dims[0]; }
 
+    /* Count transformer blocks from tensor names */
+    NL = 0;
+    for (uint64_t i = 0; i < G.n_tensors; i++) {
+        if (strncmp(G.tensors[i].name, "blocks.", 7) == 0) {
+            int bi = atoi(G.tensors[i].name + 7);
+            if (bi + 1 > NL) NL = bi + 1;
+        }
+    }
+
     printf("Architecture:\n");
     printf("  hidden_size:     %d\n", HID);
     printf("  attention heads: %d × %d = %d QKV dims\n", HEADS, HD, HEADS*HD);
