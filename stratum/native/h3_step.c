@@ -1,11 +1,12 @@
-/* h3_step.c — Phase-2 validation: read real H3 weights, dequantize, compute.
+/* h3_step.c — Phase 2: run real H3 weights through Stratum primitives.
  *
- * Validates that Stratum's infrastructure can process production-scale
- * video DiT weights. This is NOT a complete inference engine — it proves
- * the data pipeline works end-to-end on real model dimensions.
+ * Reads the Q4_K quantized MiniMax-H3 GGUF, runs ONE transformer block
+ * forward with production dimensions (hidden=5376, heads=56×128), and
+ * reports timing + output statistics.
  */
 #include "stratum_gguf.h"
 #include "stratum_q4k.h"
+#include <Accelerate/Accelerate.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,60 +14,66 @@
 #include <time.h>
 
 static Gguf G;
-static int S, HID, HD, HEADS, QKV, FF1, FF2, NL;
 
 static const void* T(const char* name) {
     const GgufTensor* t = gguf_find_tensor(&G, name);
-    if (!t) { fprintf(stderr, "h3: missing '%s'\n", name); return NULL; }
+    if (!t) { fprintf(stderr, "h3: missing '%s'\n", name); exit(1); }
     return (const void*)(G.mmap_base + t->offset);
 }
 
-static double q4k_dot(const void* w_data, const float* x,
-                      int in_dim, int out_idx, int out_dim) {
-    /* For Q4_K weight [in_padded × out], extract row `out_idx`
-     * and compute dot product with x[0..in_dim) */
-    int n_blocks_per_row = in_dim / 256;
-    const block_q4_K* blocks = (const block_q4_K*)w_data;
-    /* Weight layout: each output column has n_blocks_per_row contiguous
-     * Q4_K blocks along the input dimension */
-    const block_q4_K* col_blocks = blocks + out_idx * n_blocks_per_row;
+static inline float bf16_to_f32(uint16_t h) {
+    uint32_t u = (uint32_t)h << 16;
+    float f; memcpy(&f, &u, 4);
+    return f;
+}
 
-    double acc = 0.0;
+static void rmsnorm(float* x, const float* gain, int n) {
+    double ss = 0;
+    for (int i = 0; i < n; i++) ss += (double)x[i]*x[i];
+    float sc = (float)(1.0/sqrt(ss/n + 1e-6));
+    for (int i = 0; i < n; i++) x[i] *= sc * gain[i];
+}
+
+/* Q4_K matvec: y[r] = sum_c dequant(W[r,c])*x[c]
+ * Weight layout: [in/256 Q4_K blocks per output] × [out outputs] */
+static void q4k_gemv(const void* w, int in_dim, int out_dim,
+                     const float* x, float* y) {
+    int nbpr = in_dim / 256;
+    const block_q4_K* blk = (const block_q4_K*)w;
     float tmp[256];
-    for (int nb = 0; nb < n_blocks_per_row; nb++) {
-        q4k_dequant_block_scalar(&col_blocks[nb], tmp);
-        for (int c = 0; c < 256; c++)
-            acc += (double)tmp[c] * (double)x[nb * 256 + c];
+    for (int r = 0; r < out_dim; r++) {
+        double acc = 0;
+        const block_q4_K* row = &blk[r * nbpr];
+        for (int nb = 0; nb < nbpr; nb++) {
+            q4k_dequant_block_scalar(&row[nb], tmp);
+            for (int c = 0; c < 256; c++)
+                acc += (double)tmp[c] * x[nb*256+c];
+        }
+        y[r] = (float)acc;
     }
-    return acc;
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <h3.gguf>\n", argv[0]);
-        return 1;
-    }
-    if (gguf_open(argv[1], &G) != 0) { fprintf(stderr, "open failed\n"); return 1; }
+    if (argc < 2) { fprintf(stderr, "usage: %s <h3.gguf> [seq=64]\n", argv[0]); return 1; }
+    int S = (argc > 2) ? atoi(argv[2]) : 64;
+    if (S < 1 || S > 4096) S = 64;
 
-    printf("=== H3 Model Validation ===\n\n");
+    if (gguf_open(argv[1], &G) != 0) return 1;
 
-    /* 1. Architecture discovery from tensor shapes */
+    /* derive architecture from tensor shapes */
+    int HID, HD, HEADS, QKV, FF1, FF2, NL;
     { const GgufTensor* t = gguf_find_tensor(&G, "token_refiner.final_norm.weight");
       if (!t) return 1; HID = (int)t->dims[0]; }
-
     { const GgufTensor* t = gguf_find_tensor(&G, "blocks.0.attn.q_norm.weight");
       if (!t) return 1; HD = (int)t->dims[0]; }
-
     { const GgufTensor* t = gguf_find_tensor(&G, "blocks.0.attn.qkv_proj.weight");
       if (!t) return 1; QKV = (int)t->dims[1]; HEADS = QKV / 3 / HD; }
-
     { const GgufTensor* t = gguf_find_tensor(&G, "blocks.0.mlp.fc1.weight");
       if (!t) return 1; FF1 = (int)t->dims[1]; }
-
     { const GgufTensor* t = gguf_find_tensor(&G, "blocks.0.mlp.fc2.weight");
       if (!t) return 1; FF2 = (int)t->dims[0]; }
 
-    /* Count transformer blocks from tensor names */
+    /* count blocks */
     NL = 0;
     for (uint64_t i = 0; i < G.n_tensors; i++) {
         if (strncmp(G.tensors[i].name, "blocks.", 7) == 0) {
@@ -75,125 +82,180 @@ int main(int argc, char** argv) {
         }
     }
 
-    printf("Architecture:\n");
-    printf("  hidden_size:     %d\n", HID);
-    printf("  attention heads: %d × %d = %d QKV dims\n", HEADS, HD, HEADS*HD);
-    printf("  QKV total:       %d (= 3 × %d)\n", QKV, QKV/3);
-    printf("  FFN fused:       %d → inner: %d (fused gate+up)\n", FF1, FF2);
-    printf("  layers:          %d\n", NL);
-    printf("\n");
+    printf("H3: hidden=%d heads=%d×%d qkv=%d ff1=%d ff2=%d layers=%d seq=%d\n",
+           HID, HEADS, HD, QKV, FF1, FF2, NL, S);
 
-    /* 2. Validate all expected tensors exist */
-    printf("Tensor presence check:\n");
-    const char* critical[] = {
-        "adaln_t_table",
-        "video_patch_proj.weight",
-        "condition_proj.weight",
-        "rope.inv_freq",
-        "final_layer.norm.weight",
-        "final_layer.video_out.weight",
-        NULL
-    };
-    int missing = 0;
-    for (int i = 0; critical[i]; i++) {
-        if (!gguf_find_tensor(&G, critical[i])) {
-            printf("  ✗ MISSING: %s\n", critical[i]);
-            missing++;
-        } else {
-            printf("  ✓ %s\n", critical[i]);
-        }
-    }
+    /* allocate */
+    size_t xsz = sizeof(float)*S*HID;
+    float* x     = malloc(xsz);
+    float* xres  = malloc(xsz);
+    float* xn    = malloc(xsz);
+    float* qkv   = malloc(sizeof(float)*S*QKV);
+    float* attn  = malloc(sizeof(float)*S*HEADS*HD);
+    float* proj  = malloc(xsz);
+    float* mlp   = malloc(sizeof(float)*S*FF2);
+    float* te    = calloc(HID, sizeof(float));
 
-    /* Check all blocks have required tensors */
+    /* deterministic input */
+    srand(42);
+    for (int i = 0; i < S*HID; i++)
+        x[i] = (float)((rand()/(double)RAND_MAX)*2.0 - 1.0);
+
+    char nm[160];
+    clock_t t0 = clock();
+
+    /* ===== run ALL 50 blocks ===== */
     for (int li = 0; li < NL; li++) {
-        char nm[160];
-        const char* required[] = {
-            "adaln_proj.linear.weight", "attn.qkv_proj.weight",
-            "attn.out_proj.weight", "mlp.fc1.weight", "mlp.fc2.weight",
-            "norm1.weight", "norm2.weight", NULL
-        };
-        for (int j = 0; required[j]; j++) {
-            snprintf(nm, sizeof nm, "blocks.%d.%s", li, required[j]);
-            if (!gguf_find_tensor(&G, nm)) {
-                printf("  ✗ MISSING: %s\n", nm);
-                missing++;
+        /* attention sub-block */
+        memcpy(xres, x, xsz);
+        snprintf(nm, sizeof nm, "blocks.%d.norm1.weight", li);
+        rmsnorm(x, (const float*)T(nm), HID);
+
+        snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
+        for (int s = 0; s < S; s++)
+            q4k_gemv(T(nm), HID, QKV, &x[s*HID], &qkv[s*QKV]);
+
+        /* split Q,K,V */
+        float* Qh = malloc(sizeof(float)*S*(QKV/3));
+        float* Kh = malloc(sizeof(float)*S*(QKV/3));
+        float* Vh = malloc(sizeof(float)*S*(QKV/3));
+        int comp = QKV / 3; /* per-component dim */
+        for (int s = 0; s < S; s++) {
+            memcpy(&Qh[s*comp], &qkv[s*QKV], sizeof(float)*comp);
+            memcpy(&Kh[s*comp], &qkv[s*QKV+comp], sizeof(float)*comp);
+            memcpy(&Vh[s*comp], &qkv[s*QKV+2*comp], sizeof(float)*comp);
+        }
+
+        /* rope using inv_freq from model */
+        { const float* inv_freq = (const float*)T("rope.inv_freq");
+          for (int s = 0; s < S; s++)
+            for (int hh = 0; hh < HEADS; hh++) {
+                float* qp = &Qh[s*comp + hh*HD];
+                float* kp = &Kh[s*comp + hh*HD];
+                for (int k = 0; k < HD/2; k++) {
+                    float ang = (float)s * inv_freq[k];
+                    float c = cosf(ang), sn = sinf(ang);
+                    float a0 = qp[2*k], a1 = qp[2*k+1];
+                    qp[2*k] = a0*c-a1*sn; qp[2*k+1] = a0*sn+a1*c;
+                    a0 = kp[2*k]; a1 = kp[2*k+1];
+                    kp[2*k] = a0*c-a1*sn; kp[2*k+1] = a0*sn+a1*c;
+                }
+            } }
+
+        /* QK norm */
+        snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
+        { const uint16_t* qw = (const uint16_t*)T(nm);
+          for (int s = 0; s < S; s++) for (int hh = 0; hh < HEADS; hh++) {
+              float* qp = &Qh[s*comp + hh*HD];
+              float ss = 0; for (int d = 0; d < HD; d++) ss += qp[d]*qp[d];
+              float sc = 1.0f/sqrtf(ss/HD + 1e-6f);
+              for (int d = 0; d < HD; d++) qp[d] *= sc * bf16_to_f32(qw[d]);
+          } }
+        snprintf(nm, sizeof nm, "blocks.%d.attn.k_norm.weight", li);
+        { const uint16_t* kw = (const uint16_t*)T(nm);
+          for (int s = 0; s < S; s++) for (int hh = 0; hh < HEADS; hh++) {
+              float* kp = &Kh[s*comp + hh*HD];
+              float ss = 0; for (int d = 0; d < HD; d++) ss += kp[d]*kp[d];
+              float sc = 1.0f/sqrtf(ss/HD + 1e-6f);
+              for (int d = 0; d < HD; d++) kp[d] *= sc * bf16_to_f32(kw[d]);
+          } }
+
+        /* bidirectional attention */
+        float scale = 1.0f/sqrtf((float)HD);
+        memset(attn, 0, sizeof(float)*S*HEADS*HD);
+        for (int hh = 0; hh < HEADS; hh++) {
+            for (int qi = 0; qi < S; qi++) {
+                const float* qh = &Qh[qi*comp + hh*HD];
+                float logits[4096];
+                for (int kj = 0; kj < S; kj++) {
+                    const float* kh = &Kh[kj*comp + hh*HD];
+                    double dot = 0;
+                    for (int d = 0; d < HD; d++) dot += (double)qh[d]*kh[d];
+                    logits[kj] = (float)(dot*scale);
+                }
+                float mx = logits[0];
+                for (int j = 1; j < S; j++) if (logits[j]>mx) mx=logits[j];
+                double se = 0;
+                for (int j = 0; j < S; j++) { logits[j]-=mx; se+=exp((double)logits[j]); }
+                float inv = (float)(1.0/se);
+                float* oh = &attn[qi*HEADS*HD + hh*HD];
+                for (int kj = 0; kj < S; kj++) {
+                    float pv = expf(logits[kj])*inv;
+                    const float* vh = &Vh[kj*comp + hh*HD];
+                    for (int d = 0; d < HD; d++) oh[d] += pv*vh[d];
+                }
             }
         }
-    }
-    printf("  missing: %d / %d checks\n\n", missing,
-           6 + NL * 7);
 
-    /* 3. Dequantize real Q4_K weights and compute */
-    printf("Q4_K dequantization test (blocks.0.mlp.fc1):\n");
-    const void* fc1_w = T("blocks.0.mlp.fc1.weight");
-    if (!fc1_w) return 1;
+        /* output projection */
+        snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
+        for (int s = 0; s < S; s++)
+            q4k_gemv(T(nm), comp, HID, &attn[s*comp], &proj[s*HID]);
+        for (int i = 0; i < S*HID; i++) x[i] = xres[i] + proj[i];
 
-    /* Create deterministic input vector of size HID=5376 */
-    float* xin = malloc(sizeof(float) * HID);
-    srand(42);
-    for (int i = 0; i < HID; i++)
-        xin[i] = (float)((rand() / (double)RAND_MAX) * 2.0 - 1.0);
+        free(Qh); free(Kh); free(Vh);
 
-    clock_t start = clock();
+        /* MLP sub-block */
+        memcpy(xres, x, xsz);
+        snprintf(nm, sizeof nm, "blocks.%d.norm2.weight", li);
+        rmsnorm(x, (const float*)T(nm), HID);
 
-    /* Compute first 8 outputs of mlp.fc1 using Q4_K dequantization */
-    float outputs[8];
-    int n_blocks_per_col = HID / 256;
-    const block_q4_K* blk = (const block_q4_K*)fc1_w;
+        /* fc1: [S,HID] → [S,FF1] (fused gate+up) */
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
+        { float* fc1_out = malloc(sizeof(float)*S*FF1);
+          for (int s = 0; s < S; s++)
+            q4k_gemv(T(nm), HID, FF1, &x[s*HID], &fc1_out[s*FF1]);
 
-    /* Q4_K layout: [HID/256 blocks][out] — each block covers 256 input dims
-     * for one output neuron. So for output r, the blocks are at
-     * blk[r*n_blocks_per_col .. (r+1)*n_blocks_per_col) */
-    for (int r = 0; r < 8; r++) {
-        double acc = 0.0;
-        float tmp[256];
-        for (int nb = 0; nb < n_blocks_per_col; nb++) {
-            q4k_dequant_block_scalar(&blk[r * n_blocks_per_col + nb], tmp);
-            for (int c = 0; c < 256 && nb*256+c < HID; c++)
-                acc += (double)tmp[c] * (double)xin[nb*256+c];
+        /* split fused output: gate = first FF2, up = next FF2 */
+        for (int s = 0; s < S; s++) {
+            const float* fco = &fc1_out[s * FF1];
+            for (int i = 0; i < FF2; i++) {
+                float gv = fco[i];
+                float uv = fco[FF2 + i];
+                mlp[s*FF2 + i] = (gv/(1.0f+expf(-gv))) * uv;
+            }
         }
-        outputs[r] = (float)acc;
+        free(fc1_out); }
+
+        /* fc2: [S,FF2] → [S,HID] */
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
+        { float* proj2 = malloc(sizeof(float)*S*HID);
+          for (int s = 0; s < S; s++)
+            q4k_gemv(T(nm), FF2, HID, &mlp[s*FF2], &proj2[s*HID]);
+          for (int i = 0; i < S*HID; i++) x[i] = xres[i] + proj2[i];
+          free(proj2); }
+
+        if (li % 10 == 0 || li == NL-1)
+            fprintf(stderr, "  L%02d/%d done (%.1fs elapsed)\n",
+                    li, NL-1, (double)(clock()-t0)/CLOCKS_PER_SEC);
     }
 
-    double dt = (double)(clock() - start) / CLOCKS_PER_SEC;
-    printf("  outputs[0..7]: ");
-    for (int r = 0; r < 8; r++) printf("%.6f ", outputs[r]);
-    printf("\n");
-    printf("  timing: %.4fs for 8 outputs × %d dims (est %.1fs per full layer)\n",
-           dt, HID, dt / 8 * FF1);
-    printf("  values range: [%.4f, %.4f]\n",
-           outputs[0] < outputs[1] ? outputs[0] : outputs[1],
-           outputs[0] > outputs[1] ? outputs[0] : outputs[1]);
+    /* final norm */
+    snprintf(nm, sizeof nm, "final_layer.norm.weight");
+    rmsnorm(x, (const float*)T("final_layer.norm.weight"), HID);
 
-    /* 4. BF16 reading test */
-    printf("\nBF16 reading test (blocks.0.norm1):\n");
-    const uint16_t* n1 = (const uint16_t*)T("blocks.0.norm1.weight");
-    printf("  values[0..3]: ");
-    for (int i = 0; i < 4; i++) {
-        uint32_t bits = (uint32_t)n1[i] << 16;
-        float f; memcpy(&f, &bits, 4);
-        printf("%.6f ", f);
+    double elapsed = (double)(clock()-t0)/CLOCKS_PER_SEC;
+    fprintf(stderr, "\n  H3 full forward (%d layers): %.1fs\n", NL, elapsed);
+
+    /* stats */
+    float mn = x[0], mx = x[0];
+    double sum = 0;
+    for (int i = 0; i < S*HID; i++) {
+        if (x[i]<mn) mn=x[i]; if (x[i]>mx) mx=x[i]; sum += x[i];
     }
-    printf("\n");
+    printf("output: min=%.4f max=%.4f mean=%.4f\n", mn, mx, sum/(S*HID));
+    printf("dumped to %s\n", "/tmp/h3_full_out.bin");
 
-    /* 5. Memory footprint estimate */
-    printf("\nMemory estimate for full forward (S=%d tokens):\n", 256);
-    size_t wts = 11420630112ULL; /* from GGUF header */
-    size_t act_hidden = 256 * HID * 4;
-    size_t act_qkv = 256 * QKV * 4;
-    size_t act_ffn = 256 * FF1 * 4;
-    printf("  weights (mmap):   %.2f GB\n", wts / 1e9);
-    printf("  hidden states:    %.2f MB\n", act_hidden / 1e6);
-    printf("  QKV buffer:       %.2f MB\n", act_qkv / 1e6);
-    printf("  FFN intermediate: %.2f MB\n", act_ffn / 1e6);
-    printf("  total anon:       %.2f GB\n",
-           (act_hidden + act_qkv + act_ffn) / 1e9);
+    FILE* out = fopen("/tmp/h3_full_out.bin","wb");
+    fwrite("H3ALL01",1,8,out);
+    uint32_t meta[2]={S,HID};
+    fwrite(meta,4,2,out);
+    fwrite(x,sizeof(float),S*HID,out);
+    fclose(out);
 
-    printf("\n=== Validation %s ===\n", missing == 0 ? "PASSED" : "PARTIAL");
-    printf("All critical tensors present and readable.\n");
-    printf("Ready for Phase-2 implementation.\n");
+    free(x);free(xres);free(xn);free(qkv);free(attn);free(proj);
+    free(mlp);free(te);
 
-    free(xin);
     gguf_close(&G);
     return 0;
 }
