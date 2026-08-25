@@ -62,3 +62,6 @@ stratum/native/*.bak.*
 
 # Model directories (configs/weights are not part of the engine repo)
 model*/
+stratum/native/dit_probe
+stratum/native/h3_step
+stratum/native/dit_sample
