@@ -4,6 +4,7 @@
 #include "stratum_arch.h"
 #include "stratum_linear.h"
 #include "stratum_engine.h"
+#include "stratum_tokenize.h"
 #include "stratum_st.h"
 #include "stratum_soft_io.h"
 #include "stratum_sro.h"
@@ -13584,10 +13585,19 @@ static int q35_sample_residual(const q35_Dist* p, const q35_Dist* q) {
     return p->it[p->n - 1].id;
 }
 
+static StratumVocab q35_vocab;
+static int q35_vocab_ready = 0;
+
 static int q35_sample_token(const float* logits, int N) {
     if (q35_g_temp <= 0.0f) {
         int tok = stratum_argmax(logits, N);
         stratum_logits_dump_record(logits, N, tok);
+        if (q35_vocab_ready) {
+            char txt[256];
+            stratum_decode_token(&q35_vocab, tok, txt, sizeof(txt));
+            fprintf(stdout, "%s", txt);
+            fflush(stdout);
+        }
         return tok;
     }
     q35_Dist d;
@@ -14363,6 +14373,9 @@ server_request:
     }
 
     if (stratum_validate_prompt_ids(prompt, n_prompt, q35_g_cfg.vocab_size) != 0) return 1;
+    q35_vocab_ready = stratum_vocab_init(&q35_g_gguf, q35_g_gguf.mmap_base, &q35_vocab) == 0;
+    if (q35_vocab_ready)
+        fprintf(stderr, "  tokenizer: %u tokens loaded\n", q35_vocab.count);
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt && i < 32; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);

@@ -4,6 +4,7 @@
 #include "stratum_arch.h"
 #include "stratum_linear.h"
 #include "stratum_engine.h"
+#include "stratum_tokenize.h"
 
 #include <Accelerate/Accelerate.h>
 #include <dispatch/dispatch.h>
@@ -899,6 +900,10 @@ int run_llama_arch(int argc, char** argv) {
     }
 
     if (stratum_validate_prompt_ids(prompt, n_prompt, la_g_cfg.vocab_size) != 0) return 1;
+    static StratumVocab la_vocab;
+    stratum_vocab_init(&la_g_gguf, la_g_gguf.mmap_base, &la_vocab);
+    if (la_vocab.available)
+        fprintf(stderr, "  tokenizer: %u tokens loaded (text output enabled)\n", la_vocab.count);
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);
@@ -1148,6 +1153,12 @@ int run_llama_arch(int argc, char** argv) {
                 if (have_logits) stratum_logits_dump_record(la_g_logits, la_g_cfg.vocab_size, argm);
                 fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",
                         g, next_tok, argm, la_g_logits[argm]);
+                if (la_vocab.available) {
+                    char tok_text[256];
+                    stratum_decode_token(&la_vocab, argm, tok_text, sizeof(tok_text));
+                    fprintf(stdout, "%s", tok_text);
+                    fflush(stdout);
+                }
                 hist[hlen++] = next_tok;
                 position++; g++;
                 next_tok = argm;
@@ -1285,6 +1296,12 @@ int run_llama_arch(int argc, char** argv) {
             stratum_logits_dump_record(la_g_logits, la_g_cfg.vocab_size, next_tok);
         fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",
                 g, last_tok, next_tok, la_g_logits[next_tok]);
+        if (la_vocab.available) {
+            char tok_text[256];
+            stratum_decode_token(&la_vocab, next_tok, tok_text, sizeof(tok_text));
+            fprintf(stdout, "%s", tok_text);
+            fflush(stdout);
+        }
     }
     if (_timing) {
         clock_gettime(CLOCK_MONOTONIC, &_tg1);
