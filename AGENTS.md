@@ -170,10 +170,10 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 
 1. **Default test objects**: small models (0.5B–1B Q4_K GGUF, e.g. Qwen2.5-Coder-0.5B, Qwen3-0.6B); the 27B model only for specific streaming/wired-memory validation
 2. **Kernel experiments**: use `bench_*.c` micro-benchmarks (tens of MB), never the 27B end-to-end
-3. **Check memory before big tests**: `vm_stat` free pages and `sysctl vm.swapusage`; abort if the system is under pressure
+3. **Check memory before big tests**: `vm_stat` free pages and `sysctl vm.swapusage`; abort if the system is under pressure. After a big-model run, return the resident weight pages (`stratum/tools/drop_page_cache.py <model.gguf>`, mincore-verified) so the next test starts from a known cache state
 4. **bit-exact validation**: run `v217_gate.sh` (or the relevant `v*_gate.sh`) — asserts greedy argmax sequence `[2, 220, 16, 13]` and `tok/main >= 8.0`. Any engine change must keep these gates passing. `run_all_gates.sh <model.gguf>` runs every gate in sequence.
 5. **Backend consistency**: `verify_backends.sh <small.gguf>` asserts CPU / GPU-NC / GPU2 greedy sequences are identical (needs metallib). See `docs/VALIDATION.md` for the full matrix — what the gates cover, what they don't, and the per-kernel-change checklist.
-6. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s
+6. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s, plus thermal state (`stratum/tools/thermal_report.sh`; `run_all_gates.sh` records it automatically) — a throttled or swapping run changes tok/s without changing output
 
 ### Determinism & exactness contract
 
