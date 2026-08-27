@@ -2729,11 +2729,24 @@ static int    q35_g_kv_len  = 0;    /* total tokens written (can exceed MAX_KV) 
  * Saved at end of prefill, restored on next request if n_reuse > 0.
  * Lets the Python backend skip re-encoding common prompt prefixes
  * (e.g., constant system prompt in chat). Activated by STRATUM_PRESERVE_KV.
- * Snapshot is per-layer (indexed by li, same pattern as spec-decode save). */
+ * Snapshot is per-layer (indexed by li, same pattern as spec-decode save).
+ *
+ * V220: multi-slot anchor ring. A slot stores the full state at a named
+ * token position (the "anchor") — e.g. just after an agent's tool-call
+ * opener — so later requests can restore to that EARLIER point, not only
+ * to the previous request's end-of-prefill. Restoring to len < anchor
+ * length is refused: SSM states are position-bound and cannot be
+ * truncated (restore must be exact-equal, unlike the prefill-tail
+ * default slot which pairs with whole-token KV overwrites). */
+#define q35_ANCHOR_SLOTS 8
 static int       q35_g_preserve_kv_len = 0;
 static float*    q35_g_preserve_conv = NULL;
 static uint16_t* q35_g_preserve_rec = NULL;
 static int       q35_g_preserve_valid = 0;
+/* anchor ring: slot 0 = the plain Phase 3b preserve slot; 1..N = anchors */
+static int       q35_g_anchor_len[q35_ANCHOR_SLOTS];
+static int       q35_g_anchor_valid[q35_ANCHOR_SLOTS];
+
 
 static float* q35_g_x_b[q35_B_MAX]  = {NULL};
 static float* q35_g_xn_b[q35_B_MAX] = {NULL};
@@ -5318,6 +5331,47 @@ static float* q35_g_ssm_conv_state = NULL;
 static uint16_t* q35_g_ssm_rec_state = NULL;
 static int*   q35_g_ssm_layer_slot = NULL;
 static int    q35_g_n_ssm_layers   = 0;
+
+/* V220: stamp ring slot `slot` with the LIVE SSM state + current kv_len.
+ * Called from the server loop on an "ANCHOR STAMP=<n>" line, right after
+ * the request whose decode passed the anchor position — the live state is
+ * exactly the post-decode state then (server reset has not run yet).
+ * KV content is not copied: restoring rewinds kv_len and lets prefill
+ * rewrite the suffix; positions >= kv_len are never read before written. */
+static void q35_anchor_stamp(int slot) {
+    if (!q35_g_preserve_conv || !q35_g_preserve_rec) return;
+    if (slot < 1 || slot >= q35_ANCHOR_SLOTS) {
+        fprintf(stderr, "[server] anchor: bad slot %d\n", slot);
+        return;
+    }
+    if (q35_g_kv_len <= 0 || q35_g_kv_len >= q35_MAX_KV - 100) {
+        fprintf(stderr, "[server] anchor: kv_len %d out of range\n", q35_g_kv_len);
+        return;
+    }
+    int A_CONV_DIM = q35_g_cfg.ssm_conv_dim;
+    int A_KERNEL   = q35_g_cfg.ssm_conv_kernel;
+    int A_NV       = q35_g_cfg.ssm_value_heads;
+    int A_HK       = q35_g_cfg.ssm_state_size;
+    int A_HV       = q35_g_cfg.ssm_state_size;
+    size_t aconv_sz = (size_t)A_CONV_DIM * A_KERNEL;
+    size_t arec_sz  = (size_t)A_NV * A_HK * A_HV;
+    size_t base = (size_t)slot * (size_t)q35_g_cfg.n_layers;
+    for (int li = 0; li < q35_g_cfg.n_layers; li++) {
+        if (stratum_is_nextn_v2(&q35_g_cfg, li)) continue;
+        int sslot = q35_g_ssm_layer_slot[li];
+        if (sslot < 0) continue;
+        memcpy(q35_g_preserve_conv + (base + (size_t)li) * aconv_sz,
+               q35_g_ssm_conv_state + (size_t)sslot * aconv_sz,
+               sizeof(float) * aconv_sz);
+        memcpy(q35_g_preserve_rec + (base + (size_t)li) * arec_sz,
+               q35_g_ssm_rec_state + (size_t)sslot * arec_sz,
+               sizeof(uint16_t) * arec_sz);
+    }
+    q35_g_anchor_len[slot] = q35_g_kv_len;
+    q35_g_anchor_valid[slot] = 1;
+    fprintf(stderr, "[server] anchor: stamped slot %d at kv_len=%d\n",
+            slot, q35_g_kv_len);
+}
 
 static void q35_embed_lookup(int token_id, float* out);
 static int  q35_forward_mtp(const float* main_hidden, int prev_token, int position);
@@ -10888,6 +10942,12 @@ static pthread_cond_t q35_prefetch_cond = PTHREAD_COND_INITIALIZER;
 
 static void* q35_prefetch_worker(void* arg) {
     (void)arg;
+#if defined(__APPLE__)
+    /* V218: UTILITY priority like the V37 parpref threads — madvise/
+     * F_RDADVISE only trigger kernel I/O; keep decode's P-cores clear
+     * and avoid busy-IO-thread power coupling throttling the laptop. */
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#endif
     while (1) {
         int target = -1;
         pthread_mutex_lock(&q35_prefetch_lock);
@@ -12106,15 +12166,25 @@ static int q35_allocate_state(void) {
         q35_g_ssm_rec_state  = (uint16_t*)calloc(rec_cells, sizeof(uint16_t));
     if (!q35_g_ssm_conv_state || !q35_g_ssm_rec_state) return -1;
 
-    /* Phase 3b: allocate prefix-preservation snapshots (one per layer).
-     * Reused across all server requests. Only when STRATUM_PRESERVE_KV set. */
+    /* Phase 3b / V220: allocate prefix-preservation snapshots (one per
+     * layer) times the anchor-ring slot count. Reused across all server
+     * requests. Only when STRATUM_PRESERVE_KV set. */
     if (getenv("STRATUM_PRESERVE_KV")) {
         size_t pconv_sz = (size_t)CONV_DIM * KERNEL;
         size_t prec_sz  = (size_t)NV * HK * HV;
-        q35_g_preserve_conv = (float*)malloc(sizeof(float) * pconv_sz * q35_g_cfg.n_layers);
-        q35_g_preserve_rec  = (uint16_t*)malloc(sizeof(uint16_t) * prec_sz * q35_g_cfg.n_layers);
+        q35_g_preserve_conv =
+            (float*)malloc(sizeof(float) * pconv_sz
+                           * q35_ANCHOR_SLOTS * q35_g_cfg.n_layers);
+        q35_g_preserve_rec =
+            (uint16_t*)malloc(sizeof(uint16_t) * prec_sz
+                              * q35_ANCHOR_SLOTS * q35_g_cfg.n_layers);
         if (!q35_g_preserve_conv || !q35_g_preserve_rec) return -1;
-        fprintf(stderr, "  preserve: KV prefix reuse enabled (STRATUM_PRESERVE_KV)\n");
+        for (int s = 0; s < q35_ANCHOR_SLOTS; s++) {
+            q35_g_anchor_len[s] = -1;
+            q35_g_anchor_valid[s] = 0;
+        }
+        fprintf(stderr, "  preserve: KV prefix reuse enabled (STRATUM_PRESERVE_KV, "
+                        "%d anchor slots)\n", q35_ANCHOR_SLOTS);
     }
 
     if (q35_g_cfg.n_nextn_layers > 0) {
@@ -13889,6 +13959,12 @@ int run_qwen35_arch(int argc, char** argv) {
                 g_st.mmap_size / (1024.0*1024.0*1024.0));
         fprintf(stderr, "  layer-range prefetch    : %s\n",
                 "enabled (STRATUM_NO_MADV=1 to disable)");
+
+    /* V219: optional bandwidth calibration — measured machine context in
+     * every run banner (STRATUM_ADAPTIVE=1). Routing consumption lands
+     * separately, gated on end-to-end A/B data. */
+    if (getenv("STRATUM_ADAPTIVE"))
+        stratum_adaptive_calibrate();
 
     /* V34 usable-speed: async layer prefetch ON by default for streaming
      * models (UTILITY QoS — does not steal P-cores from matmul). Disable
@@ -16395,16 +16471,57 @@ server_request:
         }
     }
 
-    /* Phase 3b: conditional KV/SSM restore.
+    /* Phase 3b / V220: conditional KV/SSM restore.
      * Must happen AFTER n_reuse is parsed (above) and BEFORE prefill.
-     * If n_reuse > 0 and a valid snapshot exists, restore to n_reuse
-     * tokens (truncating any generated tokens from previous request).
-     * Otherwise, the server_loop reset already zeroed everything. */
-    if (n_reuse > 0 && q35_g_preserve_valid
-        && n_reuse <= q35_g_preserve_kv_len
-        && q35_g_preserve_kv_len < q35_MAX_KV - 100
-        && q35_g_preserve_conv) {
-        q35_g_kv_len = n_reuse;
+     * Request grammar (STRATUM_PRESERVE_KV + server stdin line):
+     *   "N_GEN N_REUSE tok1 ..."                  — restore slot 0 (the
+     *     previous end-of-prefill tail) to any len <= snapshot length;
+     *     KV self-heals because the prompt re-encodes over the suffix.
+     *   "ANCHOR STAMP=<n>"                        — ring slot n := current
+     *     SSM state + kv_len (send right after the request whose decode
+     *     passed the anchor position).
+     *   "N_GEN N_REUSE:SLOT=<n> tok1 ..."         — restore EXACTLY to
+     *     slot n's recorded length; anything else is refused for anchors:
+     *     SSM states are position-bound, cannot be truncated. The prompt
+     *     must supply the anchor prefix verbatim (KV content itself is
+     *     never copied; prefix stays untouched, suffix is re-encoded). */
+    int reuse_slot = 0;
+    if (getenv("STRATUM_PRESERVE_KV") && argc > 3) {
+        const char* rs = strstr(argv[3], ":SLOT=");
+        if (rs) {
+            reuse_slot = atoi(rs + 6);
+            if (reuse_slot < 1 || reuse_slot >= q35_ANCHOR_SLOTS) {
+                fprintf(stderr, "[server] preserve: bad slot %d (1..%d)\n",
+                        reuse_slot, q35_ANCHOR_SLOTS - 1);
+                return 1;
+            }
+        }
+    }
+    int restore_ok = 0;
+    if (reuse_slot == 0) {
+        restore_ok = n_reuse > 0 && q35_g_preserve_valid
+                     && n_reuse <= q35_g_preserve_kv_len
+                     && q35_g_preserve_kv_len < q35_MAX_KV - 100
+                     && q35_g_preserve_conv;
+    } else {
+        /* V220: anchors restore EXACTLY to their stamped length AND need
+         * at least one new token (n_reuse < n_prompt): the sample must
+         * come from a real forward pass, and agentic resumes always carry
+         * new content (tool results etc.). Prefix tokens must be supplied
+         * verbatim — positions >= old kv_len are overwritten by prefill;
+         * anything else silently corrupts. */
+        restore_ok = n_reuse > 0 && q35_g_anchor_valid[reuse_slot]
+                     && q35_g_preserve_conv
+                     && n_reuse == q35_g_anchor_len[reuse_slot]
+                     && n_reuse < n_prompt
+                     && n_reuse < q35_MAX_KV - 100;
+        if (!restore_ok && n_reuse > 0)
+            fprintf(stderr, "[server] preserve: slot %d restore refused "
+                            "(need exact len %d with >=1 new token, got len %d)\n",
+                    reuse_slot, q35_g_anchor_len[reuse_slot], n_reuse);
+    }
+    if (restore_ok) {
+        size_t base = (size_t)reuse_slot * (size_t)q35_g_cfg.n_layers;
         int R_CONV_DIM = q35_g_cfg.ssm_conv_dim;
         int R_KERNEL   = q35_g_cfg.ssm_conv_kernel;
         int R_NV       = q35_g_cfg.ssm_value_heads;
@@ -16412,18 +16529,20 @@ server_request:
         int R_HV       = q35_g_cfg.ssm_state_size;
         size_t rconv_sz = (size_t)R_CONV_DIM * R_KERNEL;
         size_t rrec_sz  = (size_t)R_NV * R_HK * R_HV;
+        q35_g_kv_len = n_reuse;
         for (int li = 0; li < q35_g_cfg.n_layers; li++) {
             if (stratum_is_nextn_v2(&q35_g_cfg, li)) continue;
             int sslot = q35_g_ssm_layer_slot[li];
             if (sslot < 0) continue;
             memcpy(q35_g_ssm_conv_state + (size_t)sslot * rconv_sz,
-                   q35_g_preserve_conv + (size_t)li * rconv_sz,
+                   q35_g_preserve_conv + (base + (size_t)li) * rconv_sz,
                    sizeof(float) * rconv_sz);
             memcpy(q35_g_ssm_rec_state + (size_t)sslot * rrec_sz,
-                   q35_g_preserve_rec + (size_t)li * rrec_sz,
+                   q35_g_preserve_rec + (base + (size_t)li) * rrec_sz,
                    sizeof(uint16_t) * rrec_sz);
         }
-        fprintf(stderr, "[server] preserve: reusing %d prefix tokens\n", n_reuse);
+        fprintf(stderr, "[server] preserve: restored %d prefix tokens (slot %d)\n",
+                n_reuse, reuse_slot);
     } else {
         /* server_loop already zeroed KV/SSM; just ensure kv_len matches */
         q35_g_kv_len = 0;
@@ -16431,6 +16550,7 @@ server_request:
 
     int position = n_reuse;   /* Phase 3b: skip reused prefix */
     int last_tok = (n_reuse > 0 && n_prompt > 0) ? prompt[n_reuse - 1] : -1;
+    int pf_start = n_reuse;   /* V220: first token THIS request will process */
 
     int pf_B = q35_g_tree_b_cap;
     if (pf_B < 1) pf_B = 1;
@@ -16461,15 +16581,22 @@ server_request:
         last_tok = prompt[n_prompt-1];
 
         {
-            int lastB = ((n_prompt - 1) % pf_B);
+            /* V220 fix: the tail-pickup slot is relative to the batches
+             * THIS request actually ran, not to absolute prompt position.
+             * With n_reuse > 0 (preserve/anchor restore) only the suffix
+             * was forwarded, so the old "(n_prompt-1) % pf_B" grabbed a
+             * stale zeroed buffer — sampled came out as token 0. */
+            int executed = n_prompt - pf_start;
+            int blast = executed % pf_B ? executed % pf_B : pf_B;
+            int slot = blast - 1;
+            if (executed > 0 && q35_g_logits_b[slot] != NULL
+                && q35_g_logits_b[slot] != q35_g_logits)
+                memcpy(q35_g_logits, q35_g_logits_b[slot],
+                       sizeof(float)*q35_g_cfg.vocab_size);
 
-            int rem = n_prompt % pf_B; int slot = (rem == 0) ? pf_B - 1 : rem - 1;
-            (void)lastB;
-            if (q35_g_logits_b[slot] != q35_g_logits)
-                memcpy(q35_g_logits, q35_g_logits_b[slot], sizeof(float)*q35_g_cfg.vocab_size);
-
-            if (q35_g_main_hidden && q35_g_main_hidden_b[slot])
-                memcpy(q35_g_main_hidden, q35_g_main_hidden_b[slot], sizeof(float)*q35_g_cfg.n_embed);
+            if (executed > 0 && q35_g_main_hidden && q35_g_main_hidden_b[slot])
+                memcpy(q35_g_main_hidden, q35_g_main_hidden_b[slot],
+                       sizeof(float)*q35_g_cfg.n_embed);
         }
     } else {
         for (int t = n_reuse; t < n_prompt; t++) {
@@ -16693,9 +16820,11 @@ server_request:
         }
     }
 
-    /* Phase 3b: save prefix-preservation snapshot at end of prefill.
-     * This captures KV length + SSM states so the next request can skip
-     * re-encoding the leading prompt tokens. */
+    /* Phase 3b / V220: snapshot save. Slot 0 keeps the old behavior (end
+     * of prefill, restore-to-<=len); slots 1..7 hold named anchors set by
+     * the ANCHOR request verb. All slots share one ring of per-layer SSM
+     * snapshots; KV content is never copied — restoring rewinds kv_len and
+     * prefill overwrites the suffix in place. */
     if (getenv("STRATUM_PRESERVE_KV") && q35_g_preserve_conv) {
         int P_CONV_DIM = q35_g_cfg.ssm_conv_dim;
         int P_KERNEL   = q35_g_cfg.ssm_conv_kernel;
@@ -16709,10 +16838,10 @@ server_request:
             if (stratum_is_nextn_v2(&q35_g_cfg, li)) continue;
             int sslot = q35_g_ssm_layer_slot[li];
             if (sslot < 0) continue;
-            memcpy(q35_g_preserve_conv + (size_t)li * pconv_sz,
+            memcpy(q35_g_preserve_conv + (size_t)(0 * q35_g_cfg.n_layers + li) * pconv_sz,
                    q35_g_ssm_conv_state + (size_t)sslot * pconv_sz,
                    sizeof(float) * pconv_sz);
-            memcpy(q35_g_preserve_rec + (size_t)li * prec_sz,
+            memcpy(q35_g_preserve_rec + (size_t)(0 * q35_g_cfg.n_layers + li) * prec_sz,
                    q35_g_ssm_rec_state + (size_t)sslot * prec_sz,
                    sizeof(uint16_t) * prec_sz);
         }
@@ -24319,6 +24448,16 @@ server_loop:
         if (strncmp(sline, "QUIT", 4) == 0) {
             fprintf(stderr, "[server] QUIT received\n");
             goto server_done;
+        }
+
+        /* V220: "ANCHOR STAMP=<n>" — snapshot the LIVE SSM state (i.e. the
+         * state right after the previous request's decode, before any reset)
+         * into ring slot n. No generation happens for this line. */
+        if (strncmp(sline, "ANCHOR ", 7) == 0 && getenv("STRATUM_PRESERVE_KV")) {
+            const char* st = strstr(sline + 7, "STAMP=");
+            int slot = st ? atoi(st + 6) : 0;
+            q35_anchor_stamp(slot);
+            goto server_loop;
         }
 
         /* Parse into static argv */

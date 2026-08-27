@@ -18,6 +18,11 @@ MODEL="${1:?usage: $0 <model.gguf>}"
 BIN=./stratum
 [[ -x $BIN ]] || make stratum || exit 1
 
+# Record machine state alongside the gate results: a throttled or swapping run
+# changes tok/s without changing output, and the config-record rule requires it.
+../tools/thermal_report.sh
+echo "== swap: $(sysctl -n vm.swapusage 2>/dev/null) =="
+
 pass=0
 fail=0
 for g in v*_gate.sh; do
