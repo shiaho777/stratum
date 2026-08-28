@@ -65,3 +65,4 @@ model*/
 stratum/native/dit_probe
 stratum/native/h3_step
 stratum/native/dit_sample
+model-h3-gguf/
