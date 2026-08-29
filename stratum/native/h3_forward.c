@@ -117,6 +117,22 @@ static void f32_gemv(const void* w, int in_dim, int out_dim,
     }
 }
 
+static double g_sigma_v = 0.0;   /* M4 driver sets these per step */
+static double g_sigma_a = 0.0;
+
+static double env_sigma_default(void) {
+    const char* e = getenv("H3_SIGMA_V");
+    double sv = e ? atof(e) : 0.0;
+    if (sv < 1e-6) sv = 1e-6;
+    if (sv > 1.0) sv = 1.0;
+    return sv;
+}
+
+static double shift_map(double s, double f, double g) {
+    double base = s / (f + s * (1.0 - f));
+    return g * base / (1.0 + (g - 1.0) * base);
+}
+
 static double axis_val(int dim, int patch, int idx, double sqrt_area) {
     int n = dim / patch;
     double ratio = (double)dim / sqrt_area;
@@ -130,7 +146,17 @@ static double video_t_at(int k, double origin) {
     return origin + acc;
 }
 
-int main(int argc, char** argv) {
+static float (*g_adaln)[3][6][MAX_HID] = NULL;
+static float g_t_emb_v[16], g_t_emb_a[16];
+static long g_seq_len; static int g_tag_sel;
+
+int run_h3_forward_main(int argc, char** argv);   /* old main */
+
+/* M4 driver: Euler loop lives in h3_sample_main below; the packed
+ * forward itself is parameterized by sigma through g_t_emb_*. */
+int main(int argc, char** argv) { return run_h3_forward_main(argc, argv); }
+
+int run_h3_forward_main(int argc, char** argv) {
     if (argc < 3) {
         fprintf(stderr, "usage: %s <denoiser.gguf> <text_states.bin> "
                         "[vt=1 lat_h=32 lat_w=32 audio_t=4]\n", argv[0]);
@@ -356,8 +382,17 @@ int main(int argc, char** argv) {
     {
         size_t ln = (size_t)LATENTS_DIM * vt * lat_h * lat_w;
         float* latent = malloc(sizeof(float) * ln);
-        for (size_t i = 0; i < ln; i++)
-            latent[i] = (float)(((i * 13) % 41) * 0.06 - 1.2);
+        const char* xin = getenv("H3_X_IN");
+        if (xin) {
+            FILE* xf = fopen(xin, "rb");
+            if (!xf || fread(latent, sizeof(float), ln, xf) != ln) {
+                fprintf(stderr, "H3_X_IN unreadable\n"); return 1;
+            }
+            fclose(xf);
+        } else {
+            for (size_t i = 0; i < ln; i++)
+                latent[i] = (float)(((i * 13) % 41) * 0.06 - 1.2);
+        }
         float* prow = malloc(sizeof(float) * VIDEO_ROW_DIM);
         long r = s_text + n_audio;
         double sqrt_area = sqrt((double)lat_h * lat_w);
@@ -392,13 +427,35 @@ int main(int argc, char** argv) {
         const GgufTensor* t = TT("adaln_t_table");
         T_DIM = (int)t->dims[0]; TBL_ROWS = (long)t->dims[1];
     }
+    /* M4: two stream timesteps. t_v = 1 - sigma_v (video/text);
+     * t_a = 1 - shift_map(sigma_v, 12 -> 3) (audio). Table row =
+     * fractional index of t over [0,1] grid (rows-1). */
     float t_emb[16];
     {
+        double sigma_v = g_sigma_v, sigma_a = g_sigma_a;
+        if (sigma_v <= 0.0) {
+            sigma_v = env_sigma_default();
+            sigma_a = shift_map(sigma_v, 12.0, 3.0);
+        }
+        double t_v = 1.0 - sigma_v, t_a = 1.0 - sigma_a;
         const float* raw = (const float*)T("adaln_t_table");
-        for (int k = 0; k < T_DIM; k++) t_emb[k] = raw[k];   /* t=0 row 0 */
+        for (int k = 0; k < T_DIM; k++) {
+            double pv = t_v * ((double)TBL_ROWS - 1.0);
+            int p0 = (int)pv; if (p0 > (int)TBL_ROWS - 2) p0 = (int)TBL_ROWS - 2;
+            double pf = pv - p0;
+            g_t_emb_v[k] = (float)((1.0 - pf) * raw[(size_t)p0 * T_DIM + k]
+                                   + pf * raw[(size_t)(p0 + 1) * T_DIM + k]);
+            double pa = t_a * ((double)TBL_ROWS - 1.0);
+            int a0 = (int)pa; if (a0 > (int)TBL_ROWS - 2) a0 = (int)TBL_ROWS - 2;
+            double af = pa - a0;
+            g_t_emb_a[k] = (float)((1.0 - af) * raw[(size_t)a0 * T_DIM + k]
+                                   + af * raw[(size_t)(a0 + 1) * T_DIM + k]);
+        }
+        memcpy(t_emb, g_t_emb_v, sizeof(float) * T_DIM);
     }
     float (*adaln)[3][6][MAX_HID] =
         malloc(sizeof(float[3][6][MAX_HID]) * NL);
+    g_adaln = adaln;
     for (int li = 0; li < NL; li++) {
         char nm[160];
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.weight", li);
@@ -409,11 +466,12 @@ int main(int argc, char** argv) {
         const uint16_t* bb = (const uint16_t*)(G.mmap_base + bts->offset);
         for (int row = 0; row < 3; row++) {
             (void)row;
+            const float* emb_row = row == 2 ? g_t_emb_a : g_t_emb_v;
             for (int cidx = 0; cidx < 6 * HID; cidx++) {
                 const uint16_t* wrow = wb + (size_t)cidx * T_DIM;
                 double acc = (double)f16v(bb[cidx]);
                 for (int k = 0; k < T_DIM; k++)
-                    acc += (double)f16v(wrow[k]) * (double)t_emb[k];
+                    acc += (double)f16v(wrow[k]) * (double)emb_row[k];
                 int chunk = cidx / HID, i = cidx % HID;
                 adaln[li][row][chunk][i] = (float)acc;
             }
@@ -608,6 +666,12 @@ int main(int argc, char** argv) {
     fwrite(stream + (size_t)(s_text + n_audio) * HID, sizeof(float),
            (size_t)n_video * HID, out);
     fclose(out);
+    if (getenv("H3_X_OUT")) {
+        FILE* xo = fopen(getenv("H3_X_OUT"), "wb");
+        fwrite(stream + (size_t)(s_text + n_audio) * HID, sizeof(float),
+               (size_t)n_video * HID, xo);
+        fclose(xo);
+    }
     printf("video rows: %d x %d -> /tmp/h3_packed_out.bin\n", n_video, HID);
     act_stats("final-video", stream + (size_t)(s_text + n_audio) * HID,
               (long)n_video * HID);
