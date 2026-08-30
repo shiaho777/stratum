@@ -30,6 +30,11 @@
 #include "stratum_gguf.h"
 #include "stratum_q4k.h"
 #include "stratum_q6k.h"
+#include "stratum_q4k_neon.h"
+#include "stratum_q6k_neon.h"
+#include <pthread.h>
+#include <mach/mach_time.h>
+#include "stratum_q6k.h"
 #include <Accelerate/Accelerate.h>
 #include <math.h>
 #include <stdint.h>
@@ -79,6 +84,85 @@ static void act_stats(const char* tag, const float* x, long n) {
 }
 
 /* mixed-quant gemv (Q4_K/Q6_K), rows [out][K/256] */
+/* ---- threaded row-parallel batched gemv (rows split across threads) ---- */
+
+static int g_nt = 8;
+static int g_nt_init = 0;
+
+typedef struct {
+    const GgufTensor* t;
+    int in_dim, out_dim;
+    const float* x;       /* [S, in_dim] */
+    float* y;             /* [S, out_dim] */
+    long S;
+} BGMVCtx;
+
+static void bgmv_range(int lo, int hi, void* arg) {
+    BGMVCtx* c = (BGMVCtx*)arg;
+    const void* base = (const void*)(G.mmap_base + c->t->offset);
+    GgmlType ty = (GgmlType)c->t->type;
+    for (long s = 0; s < c->S; s++) {
+        const float* x = c->x + s * c->in_dim;
+        float* y = c->y + s * c->out_dim;
+        if (ty == GGML_TYPE_Q4_K) {
+            const block_q4_K* brow = (const block_q4_K*)base;
+            for (int r = lo; r < hi; r++)
+                y[r] = q4k_dot_row_neon(brow + (size_t)r * (c->in_dim / 256),
+                                        c->in_dim, x);
+        } else { /* Q6_K */
+            const block_q6_K* brow = (const block_q6_K*)base;
+            for (int r = lo; r < hi; r++)
+                y[r] = q6k_dot_row_neon(brow + (size_t)r * (c->in_dim / 256),
+                                        c->in_dim, x);
+        }
+    }
+}
+
+typedef struct { int lo, hi; void (*fn)(int, int, void*); void* arg; } HJob;
+
+static void* hworker(void* p) {
+    HJob* j = (HJob*)p;
+    j->fn(j->lo, j->hi, j->arg);
+    return NULL;
+}
+
+static void h3_par_for(int n, void (*fn)(int, int, void*), void* arg) {
+    if (!g_nt_init) {
+        g_nt_init = 1;
+        const char* e = getenv("H3_THREADS");
+        if (e) { g_nt = atoi(e); if (g_nt < 1) g_nt = 1; if (g_nt > 32) g_nt = 32; }
+    }
+    if (g_nt <= 1 || n < 2 * g_nt) { fn(0, n, arg); return; }
+    int nt = g_nt > 32 ? 32 : g_nt;
+    pthread_t th[32];
+    HJob jobs[32];
+    int chunk = (n + nt - 1) / nt;
+    int started = 0;
+    for (int t = 0; t < nt; t++) {
+        int lo = t * chunk, hi = lo + chunk;
+        if (hi > n) hi = n;
+        if (lo >= hi) break;
+        if (t == nt - 1 || t == 31) { fn(lo, hi, arg); break; }
+        jobs[t].lo = lo; jobs[t].hi = hi; jobs[t].fn = fn; jobs[t].arg = arg;
+        if (pthread_create(&th[t], NULL, hworker, &jobs[t]) != 0) fn(lo, hi, arg);
+        else started++;
+    }
+    for (int t = 0; t < started; t++) pthread_join(th[t], NULL);
+}
+
+/* batched: y[s] = W @ x[s] for all S token rows, rows parallelized */
+static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
+                             long S, const float* x, float* y) {
+    BGMVCtx c = { t, in_dim, out_dim, x, y, S };
+    h3_par_for(out_dim, bgmv_range, &c);
+}
+
+static double h3_now_s(void) {
+    static mach_timebase_info_data_t tb;
+    if (!tb.denom) mach_timebase_info(&tb);
+    return mach_absolute_time() * tb.numer / tb.denom / 1e9;
+}
+
 static void mixed_gemv(const GgufTensor* t, int in_dim, int out_dim,
                        const float* x, float* y) {
     int nbpr = in_dim / 256;
@@ -242,8 +326,7 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         float* qkv = malloc(sizeof(float) * s_text * QKV);
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.qkv_proj.weight", li);
-        for (long s = 0; s < s_text; s++)
-            mixed_gemv(TT(nm), HID, QKV, &text_cond[s * HID], &qkv[s * QKV]);
+        mixed_gemv_batch(TT(nm), HID, QKV, s_text, text_cond, qkv);
         /* qk-norm only (no rope in refiner) */
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.q_norm.weight", li);
         const uint16_t* qw = (const uint16_t*)T(nm);
@@ -291,8 +374,7 @@ int run_h3_forward_main(int argc, char** argv) {
                 }
             }
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.out_proj.weight", li);
-        for (long s = 0; s < s_text; s++)
-            mixed_gemv(TT(nm), comp, HID, &attn[s * comp], &trow[s * HID]);
+        mixed_gemv_batch(TT(nm), comp, HID, s_text, attn, trow);
         for (long i = 0; i < s_text * HID; i++) text_cond[i] = xr[i] + trow[i];
         free(qkv); free(attn);
 
@@ -311,8 +393,7 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         float* f1 = malloc(sizeof(float) * s_text * FF1);
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.mlp.fc1.weight", li);
-        for (long s = 0; s < s_text; s++)
-            mixed_gemv(TT(nm), HID, FF1, &text_cond[s * HID], &f1[s * FF1]);
+        mixed_gemv_batch(TT(nm), HID, FF1, s_text, text_cond, f1);
         float* fa = malloc(sizeof(float) * s_text * FF2);
         for (long s = 0; s < s_text; s++)
             for (int i = 0; i < FF2; i++) {
@@ -320,8 +401,7 @@ int run_h3_forward_main(int argc, char** argv) {
                 fa[s * FF2 + i] = (gv / (1.0f + expf(-gv))) * f1[s * FF1 + FF2 + i];
             }
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.mlp.fc2.weight", li);
-        for (long s = 0; s < s_text; s++)
-            mixed_gemv(TT(nm), FF2, HID, &fa[s * FF2], &trow[s * HID]);
+        mixed_gemv_batch(TT(nm), FF2, HID, s_text, fa, trow);
         for (long i = 0; i < s_text * HID; i++) text_cond[i] = xr[i] + trow[i];
         free(xr); free(f1); free(fa);
     }
@@ -544,8 +624,7 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
-        for (long s = 0; s < seq_len; s++)
-            mixed_gemv(TT(nm), HID, QKV, &stream[s * HID], &qkv[s * QKV]);
+        mixed_gemv_batch(TT(nm), HID, QKV, seq_len, stream, qkv);
 
         /* fused qk-norm + split-half rope, per-tag AdaLN'd rows already in */
         snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
@@ -616,8 +695,7 @@ int run_h3_forward_main(int argc, char** argv) {
             }
 
         snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
-        for (long s = 0; s < seq_len; s++)
-            mixed_gemv(TT(nm), comp, HID, &attn[s * comp], &proj[s * HID]);
+        mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_msa
                            : tag[s] == 1 ? gate_msa_t : gate_msa_a;
@@ -645,8 +723,7 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
-        for (long s = 0; s < seq_len; s++)
-            mixed_gemv(TT(nm), HID, FF1, &stream[s * HID], &fc1o[s * FF1]);
+        mixed_gemv_batch(TT(nm), HID, FF1, seq_len, stream, fc1o);
         for (long s = 0; s < seq_len; s++)
             for (int i = 0; i < FF2; i++) {
                 float gv = fc1o[s * FF1 + i];
@@ -654,8 +731,7 @@ int run_h3_forward_main(int argc, char** argv) {
                     (gv / (1.0f + expf(-gv))) * fc1o[s * FF1 + FF2 + i];
             }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
-        for (long s = 0; s < seq_len; s++)
-            mixed_gemv(TT(nm), FF2, HID, &fc1o[s * FF2], &proj[s * HID]);
+        mixed_gemv_batch(TT(nm), FF2, HID, seq_len, fc1o, proj);
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_mlp
                            : tag[s] == 1 ? gate_mlp_t : gate_mlp_a;
