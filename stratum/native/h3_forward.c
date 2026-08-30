@@ -441,11 +441,29 @@ int run_h3_forward_main(int argc, char** argv) {
         const GgufTensor* b = TT("audio_patch_proj.bias");
         double w_low = axis_val(lat_w, 2, 0, sqrt((double)lat_h * lat_w));
         double w_high = axis_val(lat_w, 2, nw - 1, sqrt((double)lat_h * lat_w));
+        float* astate = NULL;
+        {
+            const char* ain = getenv("H3_A_IN");
+            if (ain) {
+                FILE* af = fopen(ain, "rb");
+                if (!af || fread(arow, 4, (size_t)n_audio * AUDIO_ROW_DIM, af)
+                        != (size_t)n_audio * AUDIO_ROW_DIM) {
+                    fprintf(stderr, "H3_A_IN unreadable\n"); return 1;
+                }
+                fclose(af);
+                astate = arow;   /* rows (t, c): [n_audio, 32] */
+                arow = malloc(sizeof(float) * AUDIO_ROW_DIM);
+            }
+        }
         long r = s_text;
         for (int t = 0; t < audio_t; t++)
             for (int c = 0; c < 2; c++) {
-                for (int i = 0; i < AUDIO_ROW_DIM; i++)
-                    arow[i] = (float)(((i * 7 + t * 3 + c) % 29) * 0.05 - 0.7);
+                if (astate)
+                    memcpy(arow, astate + (size_t)(t * 2 + c) * AUDIO_ROW_DIM,
+                           sizeof(float) * AUDIO_ROW_DIM);
+                else
+                    for (int i = 0; i < AUDIO_ROW_DIM; i++)
+                        arow[i] = (float)(((i * 7 + t * 3 + c) % 29) * 0.05 - 0.7);
                 f32_gemv(T("audio_patch_proj.weight"), AUDIO_ROW_DIM, HID,
                          arow, &stream[r * HID]);
                 for (int i = 0; i < HID; i++)
@@ -552,6 +570,7 @@ int run_h3_forward_main(int argc, char** argv) {
     float (*adaln6)[6][6][MAX_HID] =
         malloc(sizeof(float[6][6][MAX_HID]) * NL);
     (void)0; /* g_adaln removed */
+    double t_fw = h3_now_s();
     for (int li = 0; li < NL; li++) {
         char nm[160];
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.weight", li);
@@ -746,8 +765,8 @@ int run_h3_forward_main(int argc, char** argv) {
             act_stats("post-mlp", stream, seq_len * HID);
         }
     }
-    double elapsed = (double)(clock() - t0) / CLOCKS_PER_SEC;
-    fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs\n",
+    double elapsed = h3_now_s() - t_fw;
+    fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs wall\n",
             NL, seq_len, elapsed);
 
     /* --- M4b: final_layer — norm + its own AdaLN (expand=2, modalities=1)
@@ -816,6 +835,11 @@ int run_h3_forward_main(int argc, char** argv) {
             FILE* xo = fopen(getenv("H3_X_OUT"), "wb");
             fwrite(vvel, sizeof(float), (size_t)n_video * 96, xo);
             fclose(xo);
+        }
+        if (getenv("H3_A_OUT")) {
+            FILE* ao = fopen(getenv("H3_A_OUT"), "wb");
+            fwrite(avel, sizeof(float), (size_t)n_audio * 32, ao);
+            fclose(ao);
         }
         printf("velocity: video %dx96, audio %dx32 -> /tmp/h3_packed_out.bin\n",
                n_video, n_audio);
