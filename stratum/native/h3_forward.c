@@ -34,6 +34,9 @@
 #include "stratum_q6k_neon.h"
 #include <pthread.h>
 #include <mach/mach_time.h>
+#ifdef STRATUM_USE_METAL
+#include "stratum_metal.h"
+#endif
 #include "stratum_q6k.h"
 #include <Accelerate/Accelerate.h>
 #include <math.h>
@@ -95,7 +98,14 @@ typedef struct {
     const float* x;       /* [S, in_dim] */
     float* y;             /* [S, out_dim] */
     long S;
+    int8_t* xq;           /* SDOT: [S, in_dim] int8 prequant */
+    float* xs;            /* SDOT: [S, in_dim/32] scales */
 } BGMVCtx;
+
+static int ty4k(const GgufTensor* t) { return (GgmlType)t->type == GGML_TYPE_Q4_K; }
+static int g_h3_sdot = -1;    /* STRATUM_H3_SDOT=1: int8 x-prequant (boundary-1
+                               * approved approximation; verified token-greedy
+                               * identical in the engine gates) */
 
 static void bgmv_range(int lo, int hi, void* arg) {
     BGMVCtx* c = (BGMVCtx*)arg;
@@ -106,9 +116,20 @@ static void bgmv_range(int lo, int hi, void* arg) {
         float* y = c->y + s * c->out_dim;
         if (ty == GGML_TYPE_Q4_K) {
             const block_q4_K* brow = (const block_q4_K*)base;
-            for (int r = lo; r < hi; r++)
-                y[r] = q4k_dot_row_neon(brow + (size_t)r * (c->in_dim / 256),
-                                        c->in_dim, x);
+            if (g_h3_sdot) {
+#if defined(__ARM_FEATURE_DOTPROD)
+                int nb32 = c->in_dim / 32;
+                int8_t* xq = c->xq + (size_t)s * c->in_dim;
+                const float* xs = c->xs + (size_t)s * nb32;
+                for (int r = lo; r < hi; r++)
+                    y[r] = q4k_dot_row_sdot(brow + (size_t)r * (c->in_dim / 256),
+                                            c->in_dim, xq, xs);
+#endif
+            } else {
+                for (int r = lo; r < hi; r++)
+                    y[r] = q4k_dot_row_neon(brow + (size_t)r * (c->in_dim / 256),
+                                            c->in_dim, x);
+            }
         } else { /* Q6_K */
             const block_q6_K* brow = (const block_q6_K*)base;
             for (int r = lo; r < hi; r++)
@@ -150,11 +171,70 @@ static void h3_par_for(int n, void (*fn)(int, int, void*), void* arg) {
     for (int t = 0; t < started; t++) pthread_join(th[t], NULL);
 }
 
-/* batched: y[s] = W @ x[s] for all S token rows, rows parallelized */
+/* batched: y[s] = W @ x[s] for all S token rows, rows parallelized.
+ * STRATUM_H3_NC=1 routes the gemv through the engine's per-tensor NoCopy
+ * Metal path (boundary 2a: per-tensor <100MB windows, never whole-model).
+ * add() failure (-1) falls back to the CPU NEON path transparently. */
+static int g_h3_nc = -1;          /* -1 = unset */
+static int g_metal_ready = 0;
+
+#ifdef STRATUM_USE_METAL
+static void h3_metal_init_once(void) {
+    const char* mlpath = getenv("STRATUM_METALLIB");
+    if (!mlpath) mlpath = "stratum_q4k.metallib";
+    if (stratum_metal_init(mlpath, NULL, 0) != 0) {
+        fprintf(stderr, "  H3 NC: metal init failed, CPU fallback\n");
+        return;
+    }
+    g_metal_ready = 1;
+}
+#endif
+
+#ifndef STRATUM_USE_METAL
+static int h3_nc_gemv(const GgufTensor* t, int in_dim, int out_dim,
+                      long S, const float* x, float* y) { (void)t;(void)in_dim;(void)out_dim;(void)S;(void)x;(void)y; return -1; }
+static void h3_metal_init_once(void) { }
+#else
+static int h3_nc_gemv(const GgufTensor* t, int in_dim, int out_dim,
+                      long S, const float* x, float* y) {
+    size_t nbytes = (size_t)t->nbytes;
+    int rc = stratum_metal_nc_batch_add((const void*)(G.mmap_base + t->offset),
+                                        nbytes, t->type, x, y,
+                                        out_dim, in_dim, (int)S);
+    return rc == 0 ? 0 : -1;   /* -2 (sync-executed) also counts as done */
+}
+#endif
+
 static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
                              long S, const float* x, float* y) {
-    BGMVCtx c = { t, in_dim, out_dim, x, y, S };
+    if (g_h3_nc < 0) {
+        const char* e = getenv("STRATUM_H3_NC");
+        g_h3_nc = e && atoi(e) ? 1 : 0;
+        if (g_h3_nc) h3_metal_init_once();
+        const char* sd = getenv("STRATUM_H3_SDOT");
+        g_h3_sdot = sd && atoi(sd) ? 1 : 0;
+    }
+#ifdef STRATUM_USE_METAL
+    if (g_h3_nc && g_metal_ready) {
+        stratum_metal_nc_batch_begin();
+        int rc = h3_nc_gemv(t, in_dim, out_dim, S, x, y);
+        stratum_metal_nc_batch_flush();
+        if (rc == 0) return;
+    }
+#endif
+    BGMVCtx c = { t, in_dim, out_dim, x, y, S, NULL, NULL };
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_h3_sdot > 0 && ty4k(t)) {
+        int nb32 = in_dim / 32;
+        c.xq = malloc(sizeof(int8_t) * (size_t)S * in_dim);
+        c.xs = malloc(sizeof(float) * (size_t)S * nb32);
+        for (long s = 0; s < S; s++)
+            q4k_quantize_x_q8(x + s * in_dim, in_dim,
+                              c.xq + s * in_dim, c.xs + s * nb32);
+    }
+#endif
     h3_par_for(out_dim, bgmv_range, &c);
+    free(c.xq); free(c.xs);
 }
 
 static double h3_now_s(void) {
@@ -327,6 +407,11 @@ int run_h3_forward_main(int argc, char** argv) {
         float* qkv = malloc(sizeof(float) * s_text * QKV);
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.qkv_proj.weight", li);
         mixed_gemv_batch(TT(nm), HID, QKV, s_text, text_cond, qkv);
+        if (li == 0 && getenv("H3_DBG_QKV")) {
+            FILE* df = fopen(getenv("H3_DBG_QKV"), "wb");
+            fwrite(qkv, 4, (size_t)s_text * QKV, df);
+            fclose(df);
+        }
         /* qk-norm only (no rope in refiner) */
         snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.q_norm.weight", li);
         const uint16_t* qw = (const uint16_t*)T(nm);
