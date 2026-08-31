@@ -210,7 +210,6 @@ static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
     if (g_h3_nc < 0) {
         const char* e = getenv("STRATUM_H3_NC");
         g_h3_nc = e && atoi(e) ? 1 : 0;
-        if (g_h3_nc) h3_metal_init_once();
         const char* sd = getenv("STRATUM_H3_SDOT");
         g_h3_sdot = sd && atoi(sd) ? 1 : 0;
     }
@@ -331,6 +330,30 @@ int run_h3_forward_main(int argc, char** argv) {
     int audio_t = argc > 6 ? atoi(argv[6]) : 4;
 
     if (gguf_open(argv[1], &G) != 0) return 1;
+
+#ifdef STRATUM_USE_METAL
+    {
+        const char* nc = getenv("STRATUM_H3_NC");
+        if (nc && atoi(nc)) {
+            h3_metal_init_once();
+            stratum_metal_set_model_base(G.mmap_base, G.mmap_size);
+            /* warm-up: first-use class init + pipeline compile before any
+             * multithreaded work (mirrors engine SOFT_WARM) */
+            {
+                size_t wnb = (size_t)5376 / 256 * 144 * 16;
+                unsigned char* wtmp = aligned_alloc(64, ((wnb + 63) / 64) * 64);
+                memset(wtmp, 0x32, wnb);
+                float xin[5376], yout[16];
+                for (int i = 0; i < 5376; i++) xin[i] = 0.01f * (i % 7);
+                stratum_metal_nc_batch_begin();
+                stratum_metal_nc_batch_add(wtmp, wnb, 12, xin, yout, 16, 5376, 1);
+                stratum_metal_nc_batch_flush();
+                free(wtmp);
+                fprintf(stderr, "  H3 NC: warm-up ok\n");
+            }
+        }
+    }
+#endif
 
     int HID = 0;
     { const GgufTensor* t = TT("final_layer.norm.weight"); HID = (int)t->dims[0]; }
