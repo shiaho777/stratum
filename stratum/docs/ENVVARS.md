@@ -218,3 +218,30 @@ switch does, follow its call sites rather than the README table.
   V-series experiments. They are read by live code but are not part of
   any documented configuration surface; treat their defaults as measured
   choices, not API.
+
+## H3 video pipeline (h3_*.c — MiniMax-H3 denoiser / VAE spikes)
+
+These switches belong to the H3 video-generation spike binaries
+(`h3_forward`, `h3_vae_decode`, `h3_audio_decode`, `te_qwen3vl_step`);
+they are read by the spike programs, not by the `stratum` engine.
+
+| Variable | Purpose | Status |
+|---|---|---|
+| `STRATUM_H3_NC` | route h3_forward gemvs through Metal per-tensor NoCopy (boundary 2a path) | sanctioned (2a), 13.8s/step at seq=84 |
+| `STRATUM_H3_SDOT` | int8 SDOT x-prequant for Q4K gemvs (boundary-1 approved approximation); H3's token refiner is numerically sensitive and NaNs under it | opt-in only, default off |
+| `H3_THREADS` | CPU worker threads for the batched gemv fallback | sanctioned |
+| `H3_ATTN_MINSEQ` | minimum seq_len to use GPU flash attention (default 512; test hook) | experimental |
+| `H3_ATTN_LAYERS` | cap GPU attention to the first N layers (debug) | experimental |
+| `H3_ATTN_CHK` | dump per-layer non-finite counters for attention inputs/outputs | experimental |
+| `H3_ATTN_DUMP` | dump per-layer Q/K/V tensors to <dir>_L<n>_{q,k,v}.bin | experimental |
+| `H3_ATTN_PROBE` | per-stage finiteness probe at layer 2 | experimental |
+| `H3_ATTN_TRIVIAL` | replace the attention kernel with a trivial copy (isolation probe) | experimental |
+| `H3_SIGMA_V` | video/text stream timestep for the packed forward | sanctioned |
+| `H3_X_IN` / `H3_X_OUT` | video patch-space state in / velocity out | sanctioned |
+| `H3_A_IN` / `H3_A_OUT` | audio patch-space state in / velocity out | sanctioned |
+| `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
+| `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
+
+Driver scripts: `h3_euler*.sh` (sampling loops), `h3_test_gate.sh`
+(boundary-3 gate: refuses to start when free+inactive < 8GB or swap
+usage >= 60%; wraps drop_page_cache.py for post-run cleanup).
