@@ -337,20 +337,6 @@ int run_h3_forward_main(int argc, char** argv) {
         if (nc && atoi(nc)) {
             h3_metal_init_once();
             stratum_metal_set_model_base(G.mmap_base, G.mmap_size);
-            /* warm-up: first-use class init + pipeline compile before any
-             * multithreaded work (mirrors engine SOFT_WARM) */
-            {
-                size_t wnb = (size_t)5376 / 256 * 144 * 16;
-                unsigned char* wtmp = aligned_alloc(64, ((wnb + 63) / 64) * 64);
-                memset(wtmp, 0x32, wnb);
-                float xin[5376], yout[16];
-                for (int i = 0; i < 5376; i++) xin[i] = 0.01f * (i % 7);
-                stratum_metal_nc_batch_begin();
-                stratum_metal_nc_batch_add(wtmp, wnb, 12, xin, yout, 16, 5376, 1);
-                stratum_metal_nc_batch_flush();
-                free(wtmp);
-                fprintf(stderr, "  H3 NC: warm-up ok\n");
-            }
         }
     }
 #endif
@@ -390,7 +376,10 @@ int run_h3_forward_main(int argc, char** argv) {
     }
 
     /* --- text conditioning: condition_proj (bf16, bias) + token_refiner --- */
-    float* trow = malloc(sizeof(float) * MAX_HID);
+    /* per-row out_proj scratch: indexed trow[s*HID] over ALL s_text rows —
+     * sized for the full sequence (was MAX_HID: ASan-caught heap overflow
+     * that silently stomped adjacent heap on every run) */
+    float* trow = malloc(sizeof(float) * (size_t)s_text * HID);
     float* text_cond = malloc(sizeof(float) * s_text * HID);
     {
         const GgufTensor* w = TT("condition_proj.weight");

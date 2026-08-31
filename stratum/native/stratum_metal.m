@@ -2674,6 +2674,36 @@ static NCBatchYTask g_ncb_ytasks[512];
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
 static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool: held until flush */
+/* Keep-alive: releasing NoCopy buffers right after flush races the driver's
+ * resource bookkeeping (IOGPU pool SIGSEGV observed at high create/destroy
+ * churn over the same mmap). Retain every window for the process lifetime —
+ * the header is small and the pages are our own mmap. */
+static id<MTLBuffer> g_ncw_keep[4096];
+static int g_ncw_keep_n = 0;
+/* Process-lifetime NoCopy pool: recreating MTLBuffers over the same mmap range in
+ * rapid cycles races the driver's weak registration of the dying buffer (observed
+ * objc weak_entry_insert fatal). Keyed by payload pointer; hits are the norm
+ * (the same ~60 tensors are encoded hundreds of times per forward). */
+static void* g_ncw_key[512];        /* (ptr,len) keys */
+static size_t g_ncw_len[512];
+static id<MTLBuffer> g_ncw_buf[512];  /* ARC manages file-scope strong arrays */
+static int g_ncw_n = 0;
+
+static id<MTLBuffer> nc_wpool_get(const void* p, size_t len) {
+    for (int i = 0; i < g_ncw_n; i++)
+        if (g_ncw_key[i] == p && g_ncw_len[i] == len)
+            return g_ncw_buf[i];
+    return nil;
+}
+
+static void nc_wpool_put(void* p, size_t len, id<MTLBuffer> buf) {
+    if (g_ncw_n < 512) {
+        g_ncw_key[g_ncw_n] = p;
+        g_ncw_len[g_ncw_n] = len;
+        g_ncw_buf[g_ncw_n] = buf;
+        g_ncw_n++;
+    }   /* else: fall through to per-flush lifetime (pool full) */
+}
 
 int stratum_metal_nc_batch_begin(void) {
     if (!g_ncb_cmd) g_ncb_cmd = [g_queue commandBuffer];
@@ -2704,11 +2734,27 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
     }
     if (!pso) return -1;
     @autoreleasepool {
-        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:(void*)wptr
-                                                         length:nbytes
+        /* newBufferWithBytesNoCopy requires a page-aligned pointer and length;
+         * GGUF tensor offsets are not page-aligned. Window the enclosing page
+         * run and compensate with the encoder's buffer offset. */
+        size_t woff = 0;
+        void* wptr_a = (void*)wptr;
+        size_t nbytes_a = nbytes;
+        {
+            long pg = sysconf(_SC_PAGESIZE);
+            uintptr_t up = (uintptr_t)wptr;
+            uintptr_t astart = up & ~((uintptr_t)pg - 1);
+            woff = up - astart;
+            uintptr_t aend = (up + nbytes + pg - 1) & ~((uintptr_t)pg - 1);
+            wptr_a = (void*)astart;
+            nbytes_a = (size_t)(aend - astart);
+        }
+        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
+                                                         length:nbytes_a
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
         if (!wbuf) return -1;
+        if (g_ncw_keep_n < 4096) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         if (g_ncb_nw < 512) g_ncb_wbufs[g_ncb_nw++] = wbuf;   /* hold until flush */
         uint32_t K_u32 = (uint32_t)K;
         /* x region: always copy fresh (caller may reuse one static buffer
@@ -2750,7 +2796,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             [enc setComputePipelineState:bpso];
-            [enc setBuffer:wbuf      offset:0  atIndex:0];
+            [enc setBuffer:wbuf      offset:woff  atIndex:0];
             [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
             [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
             [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
@@ -2763,7 +2809,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
             for (int b = 0; b < B; b++) {
                 id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
                 [enc setComputePipelineState:pso];
-                [enc setBuffer:wbuf      offset:0 atIndex:0];
+                [enc setBuffer:wbuf      offset:woff atIndex:0];
                 [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff + (size_t)b*K*sizeof(float) atIndex:1];
                 [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff + (size_t)b*N*sizeof(float) atIndex:2];
                 [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
@@ -2791,11 +2837,24 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
     }
     if (!pso) return -1;
     @autoreleasepool {
-        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:(void*)wptr
-                                                         length:nbytes
+        size_t woff = 0;
+        void* wptr_a = (void*)wptr;
+        size_t nbytes_a = nbytes;
+        {
+            long pg = sysconf(_SC_PAGESIZE);
+            uintptr_t up = (uintptr_t)wptr;
+            uintptr_t astart = up & ~((uintptr_t)pg - 1);
+            woff = up - astart;
+            uintptr_t aend = (up + nbytes + pg - 1) & ~((uintptr_t)pg - 1);
+            wptr_a = (void*)astart;
+            nbytes_a = (size_t)(aend - astart);
+        }
+        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
+                                                         length:nbytes_a
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
         if (!wbuf) return -1;
+        if (g_ncw_keep_n < 4096) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         if (g_ncb_nw < 512) g_ncb_wbufs[g_ncb_nw++] = wbuf;   /* hold until flush */
         uint32_t K_u32 = (uint32_t)K;
         int xoff;
@@ -2835,7 +2894,7 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             [enc setComputePipelineState:bpso];
-            [enc setBuffer:wbuf      offset:0  atIndex:0];
+            [enc setBuffer:wbuf      offset:woff  atIndex:0];
             [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
             [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
             [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
@@ -2848,7 +2907,7 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             for (int b = 0; b < B; b++) {
                 id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
                 [enc setComputePipelineState:pso];
-                [enc setBuffer:wbuf      offset:0 atIndex:0];
+                [enc setBuffer:wbuf      offset:woff atIndex:0];
                 [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff + (size_t)b*K*sizeof(float) atIndex:1];
                 [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff + (size_t)b*N*sizeof(float) atIndex:2];
                 [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
