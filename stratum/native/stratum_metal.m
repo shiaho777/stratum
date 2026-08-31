@@ -12,6 +12,9 @@ static id<MTLDevice>              g_device     = nil;
 static id<MTLCommandQueue>        g_queue      = nil;
 static id<MTLLibrary>             g_lib        = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv = nil;
+static id<MTLComputePipelineState> g_h3_attn = nil;
+static id<MTLLibrary> g_h3_lib = nil;
+static id<MTLCommandQueue> g_h3a_queue = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_b[33] = {nil};
 static id<MTLComputePipelineState> g_q4k_sgemv_bp = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_bp_g2 = nil;
@@ -2669,7 +2672,8 @@ int stratum_metal_qwen35_forward_full_attn(
 static id<MTLCommandBuffer> g_ncb_cmd = nil;
 static id<MTLBuffer> g_ncb_xbuf = nil, g_ncb_ybuf = nil;
 static size_t g_ncb_xcap = 0, g_ncb_ycap = 0, g_ncb_xpos = 0, g_ncb_ypos = 0;
-typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off, bytes; int B, N; int is_streams; } NCBatchYTask;
+typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off, bytes; int B, N; int is_streams;
+                 __strong id<MTLBuffer> src_buf;   /* attention outputs: copy from here, not ybuf */ } NCBatchYTask;
 static NCBatchYTask g_ncb_ytasks[512];
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
@@ -2678,7 +2682,7 @@ static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool
  * resource bookkeeping (IOGPU pool SIGSEGV observed at high create/destroy
  * churn over the same mmap). Retain every window for the process lifetime —
  * the header is small and the pages are our own mmap. */
-static id<MTLBuffer> g_ncw_keep[4096];
+static id<MTLBuffer> g_ncw_keep[8192];
 static int g_ncw_keep_n = 0;
 /* Process-lifetime NoCopy pool: recreating MTLBuffers over the same mmap range in
  * rapid cycles races the driver's weak registration of the dying buffer (observed
@@ -2754,8 +2758,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
         if (!wbuf) return -1;
-        if (g_ncw_keep_n < 4096) g_ncw_keep[g_ncw_keep_n++] = wbuf;
-        if (g_ncb_nw < 512) g_ncb_wbufs[g_ncb_nw++] = wbuf;   /* hold until flush */
+        if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         uint32_t K_u32 = (uint32_t)K;
         /* x region: always copy fresh (caller may reuse one static buffer
          * with different contents across calls — pointer identity is NOT
@@ -2790,6 +2793,8 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         g_ncb_ytasks[g_ncb_ny].B = B;
         g_ncb_ytasks[g_ncb_ny].N = N;
         g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+        g_ncb_ytasks[g_ncb_ny].src_buf = nil;   /* stale task slots must not
+                                                   inherit an attention src */
         g_ncb_ny++;
 
         if (B > 1 && bpso) {
@@ -2854,8 +2859,7 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
         if (!wbuf) return -1;
-        if (g_ncw_keep_n < 4096) g_ncw_keep[g_ncw_keep_n++] = wbuf;
-        if (g_ncb_nw < 512) g_ncb_wbufs[g_ncb_nw++] = wbuf;   /* hold until flush */
+        if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         uint32_t K_u32 = (uint32_t)K;
         int xoff;
         {
@@ -2928,6 +2932,10 @@ int stratum_metal_nc_batch_flush(void) {
     const char* ybase = (const char*)[g_ncb_ybuf contents];
     for (int i = 0; i < g_ncb_ny; i++) {
         const NCBatchYTask* t = &g_ncb_ytasks[i];
+        if (t->src_buf) {
+            memcpy(t->dst, (const char*)[t->src_buf contents] , t->bytes);
+            continue;
+        }
         if (t->is_streams) {
             for (int s2 = 0; s2 < t->B && s2 < 32; s2++)
                 memcpy(t->dst_ptrs[s2], ybase + t->off + (size_t)s2 * t->N * 4, (size_t)t->N * 4);
@@ -2939,4 +2947,153 @@ int stratum_metal_nc_batch_flush(void) {
     g_ncb_ny = 0;
     g_ncb_nw = 0;   /* release weight buffers (command buffer done) */
     return 0;
+}
+
+/* ================= H3 prefill attention (flash-style) ================= */
+
+int stratum_metal_h3_attn_init(const char* metallib_path) {
+    if (g_h3_attn) return 0;
+    if (!g_device) return -1;
+    @autoreleasepool {
+        NSError* err = nil;
+        NSString* path = [NSString stringWithUTF8String:metallib_path];
+        g_h3_lib = [g_device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&err];
+        if (!g_h3_lib) {
+            fprintf(stderr, "  H3 attn: load %s failed: %s\n", metallib_path,
+                    [[err localizedDescription] UTF8String]);
+            return -1;
+        }
+        id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill"];
+        if (!fn) { fprintf(stderr, "  H3 attn: kernel not found\n"); return -1; }
+        g_h3_attn = [g_device newComputePipelineStateWithFunction:fn error:&err];
+        if (!g_h3_attn) { fprintf(stderr, "  H3 attn: pipeline failed\n"); return -1; }
+        g_h3a_queue = [g_device newCommandQueue];
+        fprintf(stderr, "  H3 attn: kernel ready (dedicated queue)\n");
+        return 0;
+    }
+}
+
+static id<MTLBuffer> g_h3a_qkv = nil, g_h3a_o = nil;
+static size_t g_h3a_cap = 0;
+
+int stratum_metal_h3_attn(const float* Q, const float* K, const float* V,
+                          float* Out, int S, int H, int Hd, float scale) {
+    if (!g_h3_attn || !g_device) return -1;
+    @autoreleasepool {
+        size_t qb = (size_t)S * H * Hd * sizeof(float);
+        /* persistent copy-in buffer (Q|K|V packed): avoids NoCopy churn entirely */
+        if (!g_h3a_qkv || g_h3a_cap < qb) {
+            g_h3a_qkv = [g_device newBufferWithLength:qb * 3
+                options:MTLResourceStorageModeShared];
+            g_h3a_o = [g_device newBufferWithLength:qb
+                options:MTLResourceStorageModeShared];
+            if (!g_h3a_qkv || !g_h3a_o) return -1;
+            g_h3a_cap = qb;
+        }
+        char* qkvbase = (char*)[g_h3a_qkv contents];
+        memcpy(qkvbase, Q, qb);
+        memcpy(qkvbase + qb, K, qb);
+        memcpy(qkvbase + 2 * qb, V, qb);
+        id<MTLBuffer> qb_ = g_h3a_qkv;
+        id<MTLBuffer> kb_ = g_h3a_qkv;
+        id<MTLBuffer> vb_ = g_h3a_qkv;
+        id<MTLBuffer> ob_ = g_h3a_o;
+        size_t koff = qb, voff = 2 * qb, ooff = 0;
+        id<MTLCommandBuffer> cb = [g_h3a_queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:g_h3_attn];
+        [enc setBuffer:qb_ offset:0 atIndex:0];
+        [enc setBuffer:kb_ offset:koff atIndex:1];
+        [enc setBuffer:vb_ offset:voff atIndex:2];
+        [enc setBuffer:ob_ offset:ooff atIndex:3];
+        uint32_t s=S, h=H, hd=Hd;
+        [enc setBytes:&s length:4 atIndex:4];
+        [enc setBytes:&h length:4 atIndex:5];
+        [enc setBytes:&hd length:4 atIndex:6];
+        [enc setBytes:&scale length:4 atIndex:7];
+        uint qtiles = (S + 63) / 64;
+        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
+            threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        memcpy(Out, [ob_ contents], qb);
+        return 0;
+    }
+}
+
+/* Attention op encoded INTO the open nc batch (one command-buffer producer per
+ * layer — interleaving separate commit/wait cadences corrupts the IOGPU
+ * resource pool). Q|K|V copy-in staged; output copied back at flush. */
+static id<MTLBuffer> g_ncbatn_qkv = nil; static size_t g_ncbatn_cap = 0;
+
+int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
+                                float* out, int S, int H, int Hd, float scale) {
+    if (!g_h3_attn || !g_device) return -1;
+    if (!g_ncb_cmd) return -2;
+    if (g_ncb_ny >= 512) return -1;
+    @autoreleasepool {
+        size_t qb = (size_t)S * H * Hd * sizeof(float);
+        if (!g_ncbatn_qkv || g_ncbatn_cap < qb) {
+            g_ncbatn_qkv = [g_device newBufferWithLength:qb * 3
+                options:MTLResourceStorageModeShared];
+            if (!g_ncbatn_qkv) return -1;
+            g_ncbatn_cap = qb;
+        }
+        char* b = (char*)[g_ncbatn_qkv contents];
+        memcpy(b, Q, qb); memcpy(b + qb, K, qb); memcpy(b + 2 * qb, V, qb);
+        id<MTLBuffer> ob = [g_device newBufferWithLength:qb
+            options:MTLResourceStorageModeShared];
+        if (!ob) return -1;
+        id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+        if (getenv("H3_ATTN_TRIVIAL")) {
+            /* isolation probe: trivial kernel instead of attention */
+            static id<MTLFunction> tfn = nil; static id<MTLComputePipelineState> tps = nil;
+            if (!tps) {
+                id<MTLFunction> f = [g_h3_lib newFunctionWithName:@"h3_trivial"];
+                tps = [g_device newComputePipelineStateWithFunction:f error:nil];
+                tfn = f;
+            }
+            [enc setComputePipelineState:tps];
+            [enc setBuffer:g_ncbatn_qkv offset:0 atIndex:0];
+            [enc setBuffer:ob offset:0 atIndex:1];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(S*H*Hd/64),1,1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+            [enc endEncoding];
+            g_ncb_ytasks[g_ncb_ny].dst = out;
+            g_ncb_ytasks[g_ncb_ny].dsts = NULL;
+            g_ncb_ytasks[g_ncb_ny].off = 0;
+            g_ncb_ytasks[g_ncb_ny].bytes = qb;
+            g_ncb_ytasks[g_ncb_ny].B = 1;
+            g_ncb_ytasks[g_ncb_ny].N = S;
+            g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+            g_ncb_ytasks[g_ncb_ny].src_buf = ob;
+            g_ncb_ny++;
+            return 0;
+        }
+        [enc setComputePipelineState:g_h3_attn];
+        [enc setBuffer:g_ncbatn_qkv offset:0 atIndex:0];
+        [enc setBuffer:g_ncbatn_qkv offset:qb atIndex:1];
+        [enc setBuffer:g_ncbatn_qkv offset:2 * qb atIndex:2];
+        [enc setBuffer:ob offset:0 atIndex:3];
+        uint32_t s=S, h=H, hd=Hd;
+        [enc setBytes:&s length:4 atIndex:4];
+        [enc setBytes:&h length:4 atIndex:5];
+        [enc setBytes:&hd length:4 atIndex:6];
+        [enc setBytes:&scale length:4 atIndex:7];
+        uint qtiles = (uint)((S + 63) / 64);
+        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
+            threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        [enc endEncoding];
+        g_ncb_ytasks[g_ncb_ny].dst = out;
+        g_ncb_ytasks[g_ncb_ny].dsts = NULL;
+        g_ncb_ytasks[g_ncb_ny].off = 0;
+        g_ncb_ytasks[g_ncb_ny].bytes = qb;
+        g_ncb_ytasks[g_ncb_ny].B = 1;
+        g_ncb_ytasks[g_ncb_ny].N = S;
+        g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+        g_ncb_ytasks[g_ncb_ny].src_buf = ob;
+        g_ncb_ny++;
+        return 0;
+    }
 }

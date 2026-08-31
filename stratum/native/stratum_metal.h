@@ -168,6 +168,14 @@ int stratum_metal_qwen35_forward_full_attn(
     int use_internal_buffers
 );
 
+/* H3 flash-style prefill attention (Q,K,V token-major [S, H*Hd]) */
+int stratum_metal_h3_attn_init(const char* metallib_path);
+int stratum_metal_h3_attn(const float* Q, const float* K, const float* V,
+                          float* Out, int S, int H, int Hd, float scale);
+/* attention encoded INTO the currently-open nc batch */
+int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
+                                float* out, int S, int H, int Hd, float scale);
+
 #ifdef __cplusplus
 }
 #endif

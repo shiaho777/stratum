@@ -337,6 +337,10 @@ int run_h3_forward_main(int argc, char** argv) {
         if (nc && atoi(nc)) {
             h3_metal_init_once();
             stratum_metal_set_model_base(G.mmap_base, G.mmap_size);
+            {
+                const char* ml = getenv("STRATUM_H3_ATTNLIB");
+                stratum_metal_h3_attn_init(ml ? ml : "/tmp/h3_attn.metallib");
+            }
         }
     }
 #endif
@@ -781,8 +785,58 @@ int run_h3_forward_main(int argc, char** argv) {
 
         /* bidirectional attention (full packed stream) */
         float scale2 = 1.0f / sqrtf((float)HD);
+        float* lgd = NULL;   /* CPU-attention scratch; NULL on the GPU path */
+#ifdef STRATUM_USE_METAL
+        int attn_minseq = 512;
+            { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
+            if (g_h3_nc && g_metal_ready && seq_len >= attn_minseq) {
+            /* GPU flash attention: Q/K/V gathered token-major [S, H*Hd]. */
+            static float* gq = NULL; static long gq_cap = 0;
+            static float* gk = NULL; static float* gv = NULL;
+            if (gq_cap < seq_len) {
+                free(gq); free(gk); free(gv);
+                size_t nb = (size_t)seq_len * comp * sizeof(float);
+                gq = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gk = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gv = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gq_cap = seq_len;
+            }
+            for (long s = 0; s < seq_len; s++) {
+                memcpy(gq + s * comp, &qkv[s * QKV], sizeof(float) * comp);
+                memcpy(gk + s * comp, &qkv[s * QKV + comp], sizeof(float) * comp);
+                memcpy(gv + s * comp, &qkv[s * QKV + 2 * comp], sizeof(float) * comp);
+            }
+            static int attn_used = 0;
+            int attn_layer_max = 1000000;
+            { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
+            if (attn_used < attn_layer_max) {
+                attn_used++;
+                {
+                    const char* dp = getenv("H3_ATTN_DUMP");
+                    if (dp) {
+                        char pp[512];
+                        snprintf(pp, sizeof pp, "%s_L%d_q.bin", dp, li);
+                        FILE* fq = fopen(pp, "wb");
+                        if (fq) { fwrite(gq, 4, seq_len * comp, fq); fclose(fq); }
+                        snprintf(pp, sizeof pp, "%s_L%d_k.bin", dp, li);
+                        FILE* fk = fopen(pp, "wb");
+                        if (fk) { fwrite(gk, 4, seq_len * comp, fk); fclose(fk); }
+                        snprintf(pp, sizeof pp, "%s_L%d_v.bin", dp, li);
+                        FILE* fv = fopen(pp, "wb");
+                        if (fv) { fwrite(gv, 4, seq_len * comp, fv); fclose(fv); }
+                    }
+                }
+                stratum_metal_nc_batch_begin();
+                int arc = stratum_metal_nc_batch_attn(gq, gk, gv, attn,
+                                          (int)seq_len, HEADS, HD, scale2);
+                stratum_metal_nc_batch_flush();
+                if (arc == 0)
+                    goto attn_done;
+            }
+        }
+#endif
         memset(attn, 0, sizeof(float) * seq_len * comp);
-        float* lgd = malloc(sizeof(float) * seq_len);
+        lgd = malloc(sizeof(float) * seq_len);
         for (int h = 0; h < HEADS; h++)
             for (long a = 0; a < seq_len; a++) {
                 const float* qh = &qkv[a * QKV + h * HD];
@@ -810,8 +864,19 @@ int run_h3_forward_main(int argc, char** argv) {
                 }
             }
 
+        attn_done:;
         snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
         mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
+        if (getenv("H3_ATTN_PROBE") && li == 2) {
+            long b1=0; double m1=0;
+            for (long t = 0; t < seq_len * comp; t++)
+                if (!isfinite(attn[t])) b1++; else if (fabs(attn[t])>m1) m1=fabs(attn[t]);
+            long b2=0; double m2=0;
+            for (long t = 0; t < seq_len * HID; t++)
+                if (!isfinite(proj[t])) b2++; else if (fabs(proj[t])>m2) m2=fabs(proj[t]);
+            fprintf(stderr, "  [L2 probe] attn nonfinite=%ld max=%.4g | proj nonfinite=%ld max=%.4g\n",
+                    b1, m1, b2, m2);
+        }
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_msa
                            : tag[s] == 1 ? gate_msa_t : gate_msa_a;
@@ -857,7 +922,16 @@ int run_h3_forward_main(int argc, char** argv) {
         }
 
         free(lgd);
-        if (li % 10 == 0 || li == NL - 1) {
+        lgd = NULL;
+        if (getenv("H3_ATTN_CHK")) {
+            long bad = 0; double bmax = 0;
+            for (long t = 0; t < seq_len * HID; t++) {
+                if (!isfinite(stream[t])) bad++;
+                else if (fabs(stream[t]) > bmax) bmax = fabs(stream[t]);
+            }
+            fprintf(stderr, "  [li=%d] stream nonfinite=%ld max=%.4g\n", li, bad, bmax);
+        }
+        if (li % 10 == 0 || li == NL - 1 || getenv("H3_ATTN_CHK")) {
             fprintf(stderr, "  L%02d\n", li);
             act_stats("post-mlp", stream, seq_len * HID);
         }
