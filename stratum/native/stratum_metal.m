@@ -2673,7 +2673,8 @@ static id<MTLCommandBuffer> g_ncb_cmd = nil;
 static id<MTLBuffer> g_ncb_xbuf = nil, g_ncb_ybuf = nil;
 static size_t g_ncb_xcap = 0, g_ncb_ycap = 0, g_ncb_xpos = 0, g_ncb_ypos = 0;
 typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off, bytes; int B, N; int is_streams;
-                 __strong id<MTLBuffer> src_buf;   /* attention outputs: copy from here, not ybuf */ } NCBatchYTask;
+                 __strong id<MTLBuffer> src_buf;   /* attention outputs: copy from here, not ybuf */
+                 __strong id<MTLBuffer> dst_buf;   /* registered y: GPU writes dst directly, no copy-back */ } NCBatchYTask;
 static NCBatchYTask g_ncb_ytasks[512];
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
@@ -2684,6 +2685,28 @@ static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool
  * the header is small and the pages are our own mmap. */
 static id<MTLBuffer> g_ncw_keep[8192];
 static int g_ncw_keep_n = 0;
+/* y direct-write registry: recurring dst allocations (same malloc block reused
+ * across layers) register once as NoCopy MTLBuffers; the GPU writes them in
+ * place and flush skips the copy-back. Falls back to copy on any failure. */
+typedef struct { float* ptr; size_t len; __strong id<MTLBuffer> buf; } NCYReg;
+static NCYReg g_ncyr[256];
+static int g_ncyr_n = 0;
+
+static id<MTLBuffer> nc_yreg_get(float* p, size_t bytes) {
+    for (int i = 0; i < g_ncyr_n; i++)
+        if (g_ncyr[i].ptr == p && g_ncyr[i].len >= bytes)
+            return g_ncyr[i].buf;
+    long pg = sysconf(_SC_PAGESIZE);
+    if (((uintptr_t)p & (pg - 1)) != 0) return nil;
+    if (g_ncyr_n >= 256) return nil;
+    id<MTLBuffer> b = [g_device newBufferWithBytesNoCopy:p
+        length:((bytes + pg - 1) / pg) * pg
+        options:MTLResourceStorageModeShared deallocator:nil];
+    if (!b) return nil;
+    g_ncyr[g_ncyr_n].ptr = p; g_ncyr[g_ncyr_n].len = bytes;
+    g_ncyr[g_ncyr_n].buf = b; g_ncyr_n++;
+    return b;
+}
 /* Process-lifetime NoCopy pool: recreating MTLBuffers over the same mmap range in
  * rapid cycles races the driver's weak registration of the dying buffer (observed
  * objc weak_entry_insert fatal). Keyed by payload pointer; hits are the norm
@@ -2784,8 +2807,9 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
             g_ncb_ybuf = [g_device newBufferWithLength:g_ncb_ycap options:MTLResourceStorageModeShared];
             g_ncb_ypos = 0;
         }
-        int yoff = (int)g_ncb_ypos;
-        g_ncb_ypos += yb;
+        int yoff = 0;
+        id<MTLBuffer> ydirect = nc_yreg_get(y, yb);
+        if (!ydirect) { yoff = (int)g_ncb_ypos; g_ncb_ypos += yb; }
         g_ncb_ytasks[g_ncb_ny].dst = y;
         g_ncb_ytasks[g_ncb_ny].dsts = NULL;
         g_ncb_ytasks[g_ncb_ny].off = (size_t)yoff;
@@ -2795,6 +2819,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         g_ncb_ytasks[g_ncb_ny].is_streams = 0;
         g_ncb_ytasks[g_ncb_ny].src_buf = nil;   /* stale task slots must not
                                                    inherit an attention src */
+        g_ncb_ytasks[g_ncb_ny].dst_buf = ydirect;
         g_ncb_ny++;
 
         if (B > 1 && bpso) {
@@ -2803,7 +2828,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
             [enc setComputePipelineState:bpso];
             [enc setBuffer:wbuf      offset:woff  atIndex:0];
             [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
-            [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
+            [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? 0 : yoff) atIndex:2];
             [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
             [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
@@ -2816,7 +2841,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                 [enc setComputePipelineState:pso];
                 [enc setBuffer:wbuf      offset:woff atIndex:0];
                 [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff + (size_t)b*K*sizeof(float) atIndex:1];
-                [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff + (size_t)b*N*sizeof(float) atIndex:2];
+                [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? (size_t)b*N*sizeof(float) : (size_t)yoff + (size_t)b*N*sizeof(float)) atIndex:2];
                 [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
                     threadsPerThreadgroup:MTLSizeMake(64,1,1)];
@@ -2936,7 +2961,9 @@ int stratum_metal_nc_batch_flush(void) {
             memcpy(t->dst, (const char*)[t->src_buf contents] , t->bytes);
             continue;
         }
-        if (t->is_streams) {
+        if (t->dst_buf) {
+            /* GPU wrote dst directly — nothing to copy back */
+        } else if (t->is_streams) {
             for (int s2 = 0; s2 < t->B && s2 < 32; s2++)
                 memcpy(t->dst_ptrs[s2], ybase + t->off + (size_t)s2 * t->N * 4, (size_t)t->N * 4);
         } else {
