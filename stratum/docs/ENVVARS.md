@@ -405,3 +405,21 @@ into the threadgroup slab (or int8 dot) so the same 5x applies to the 23.9s of
 quantized GEMVs. The per-op cost accounting (STRATUM_NC_TIME) is the gate to
 confirm the win end-to-end.
 
+
+## Tiled Q4_K GEMM landed (qkv/out_proj 2.4x)
+
+`q4k_tile_gemm` (64x64x64 tile, threadgroup A/B slabs, 8x8 register tile) now
+replaces the per-row bparallel for Q4_K batch GEMVs where N%64==0 and K%256==0
+(the staging path — no xdirect/ydirect). End-to-end at seq=276:
+
+| stage | before | after |
+|---|---|---|
+| qkv gemv | 8.62s | 3.58s |
+| out_proj gemv | 2.83s | 1.28s |
+| forward wall | 37.9s | 31.2s |
+
+Numerics: the dequant is per-element (`nib*d_sc - dmin_m`) vs the per-row
+`d_sc*sum - dmin_m*sum`, so it matches the CPU path to max|d| 1.08e-4 (the
+per-row was 3.7e-5) — fp32 associativity, within boundary 1. The fused-MLP
+path (fc1/fc2, 13.3s) still uses the old per-row kernels and is the next target
+(a tiled mlp1, or split fc1 gate/up tiled + GPU swiglu + tiled fc2).
