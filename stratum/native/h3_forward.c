@@ -34,10 +34,22 @@
 #include "stratum_q6k_neon.h"
 #include <pthread.h>
 #include <mach/mach_time.h>
+#include <mach/mach.h>
 #ifdef STRATUM_USE_METAL
 #include "stratum_metal.h"
 #endif
 #include "stratum_q6k.h"
+
+/* phys_footprint probe: the honest wired-proxy number (counts Metal shared
+ * buffers + anon; excludes reclaimable page cache backing the weights). */
+static void h3_footprint(const char* tag) {
+    task_vm_info_data_t info;
+    mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &cnt)
+            == KERN_SUCCESS)
+        fprintf(stderr, "  [mem] %-14s phys_footprint=%.1fMB\n", tag,
+                info.phys_footprint / (1024.0 * 1024.0));
+}
 #include <Accelerate/Accelerate.h>
 #include <math.h>
 #include <stdint.h>
@@ -369,7 +381,7 @@ typedef struct {
     float* astate;      /* audio rows [n_audio, 32] or NULL */
     float* xstate;      /* video patch rows [n_video, 96] (Euler state, lives here) */
     float* xnext;       /* video velocity rows [n_video, 96] from the last step */
-    float (*adaln6)[6][6][MAX_HID];
+    void* adaln6;       /* [6][6][HID] rows for ONE layer (lazy per-layer) */
     const float* inv_freq;
     float* xres; float* qkv; float* attn; float* fc1o; float* proj;
 } H3SamState;
@@ -738,12 +750,37 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         memcpy(t_emb, g_t_emb_m[0], sizeof(float) * T_DIM);
     }
-    float (*adaln6)[6][6][MAX_HID] =
-        malloc(sizeof(float[6][6][MAX_HID]) * NL);
+    /* per-layer AdaLN rows computed lazily at the top of the block loop
+     * (was: all NL layers up front = 6*6*MAX_HID*4*NL ≈ 56 MB anon).
+     * Computing one layer just-in-time keeps only 0.74 MB live; numerics
+     * are unchanged (same rows, same fp order, just deferred). */
+    float (*adaln6)[6][6][HID] = malloc(sizeof(float[6][6][HID]));
     (void)0; /* g_adaln removed */
     double t_fw = h3_now_s();
+
+    /* --- denoiser blocks --- */
+    /* NOTE (measured, seq=276 M4 Pro, interleaved A/B): page-aligned
+     * (aligned_alloc) scratch made the NC path ~12% SLOWER (36.5s vs
+     * 32.3s), and NoCopy x/y windows over the activations were slower
+     * still (39-46s). The staging xbuf/ybuf copies inside nc_batch_add
+     * beat NoCopy windows on small buffers; malloc is intentional here. */
+    float* xres = malloc(sizeof(float) * seq_len * HID);
+    /* qkv lives in the fc1o buffer's head: QKV(21504) <= FF1(28672), and the
+     * qkv rows are fully consumed (qknorm/rope/attention) before fc1
+     * overwrites the same memory with the MLP activations. Saves one
+     * seq*QKV allocation per forward. (was 4 separate buffers) */
+    float* fc1o = malloc(sizeof(float) * seq_len * FF1);
+    float* qkv = fc1o;
+    float* attn = malloc(sizeof(float) * seq_len * comp);
+    float* proj = malloc(sizeof(float) * seq_len * HID);
+    const float* inv_freq = (const float*)T("rope.inv_freq");
+    prof_on();
+    memset(g_prof, 0, sizeof g_prof);
+    clock_t t0 = clock();
+
     for (int li = 0; li < NL; li++) {
         char nm[160];
+        /* AdaLN rows for THIS layer, computed lazily (0.74MB live table) */
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.weight", li);
         const GgufTensor* w = TT(nm);
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.bias", li);
@@ -759,50 +796,30 @@ int run_h3_forward_main(int argc, char** argv) {
                 for (int k = 0; k < T_DIM; k++)
                     acc += (double)f16v(wrow[k]) * (double)emb_row[k];
                 int chunk = cidx / HID, i = cidx % HID;
-                adaln6[li][row][chunk][i] = (float)acc;
+                adaln6[0][row][chunk][i] = (float)acc;
             }
         }
-    }
-
-    /* --- denoiser blocks --- */
-    /* NOTE (measured, seq=276 M4 Pro, interleaved A/B): page-aligned
-     * (aligned_alloc) scratch made the NC path ~12% SLOWER (36.5s vs
-     * 32.3s), and NoCopy x/y windows over the activations were slower
-     * still (39-46s). The staging xbuf/ybuf copies inside nc_batch_add
-     * beat NoCopy windows on small buffers; malloc is intentional here. */
-    float* xres = malloc(sizeof(float) * seq_len * HID);
-    float* qkv = malloc(sizeof(float) * seq_len * QKV);
-    float* attn = malloc(sizeof(float) * seq_len * comp);
-    float* fc1o = malloc(sizeof(float) * seq_len * FF1);
-    float* proj = malloc(sizeof(float) * seq_len * HID);
-    const float* inv_freq = (const float*)T("rope.inv_freq");
-    prof_on();
-    memset(g_prof, 0, sizeof g_prof);
-    clock_t t0 = clock();
-
-    for (int li = 0; li < NL; li++) {
-        char nm[160];
         /* rows: video=0 (m0 tag0), text=1 (m0 tag1), audio=5 (m1 tag2) */
         double h3p_t0 = 0; int h3p_fresh = 1; (void)h3p_t0; (void)h3p_fresh;
         PROF_BEGINSLOT(0);
-        float* shift_msa = adaln6[li][0][0];
-        float* scale_msa = adaln6[li][0][1];
-        float* gate_msa  = adaln6[li][0][2];
-        float* shift_mlp = adaln6[li][0][3];
-        float* scale_mlp = adaln6[li][0][4];
-        float* gate_mlp  = adaln6[li][0][5];
-        float* shift_msa_t = adaln6[li][1][0];
-        float* scale_msa_t = adaln6[li][1][1];
-        float* gate_msa_t  = adaln6[li][1][2];
-        float* shift_mlp_t = adaln6[li][1][3];
-        float* scale_mlp_t = adaln6[li][1][4];
-        float* gate_mlp_t  = adaln6[li][1][5];
-        float* shift_msa_a = adaln6[li][5][0];
-        float* scale_msa_a = adaln6[li][5][1];
-        float* gate_msa_a  = adaln6[li][5][2];
-        float* shift_mlp_a = adaln6[li][5][3];
-        float* scale_mlp_a = adaln6[li][5][4];
-        float* gate_mlp_a  = adaln6[li][5][5];
+        float* shift_msa = adaln6[0][0][0];
+        float* scale_msa = adaln6[0][0][1];
+        float* gate_msa  = adaln6[0][0][2];
+        float* shift_mlp = adaln6[0][0][3];
+        float* scale_mlp = adaln6[0][0][4];
+        float* gate_mlp  = adaln6[0][0][5];
+        float* shift_msa_t = adaln6[0][1][0];
+        float* scale_msa_t = adaln6[0][1][1];
+        float* gate_msa_t  = adaln6[0][1][2];
+        float* shift_mlp_t = adaln6[0][1][3];
+        float* scale_mlp_t = adaln6[0][1][4];
+        float* gate_mlp_t  = adaln6[0][1][5];
+        float* shift_msa_a = adaln6[0][5][0];
+        float* scale_msa_a = adaln6[0][5][1];
+        float* gate_msa_a  = adaln6[0][5][2];
+        float* shift_mlp_a = adaln6[0][5][3];
+        float* scale_mlp_a = adaln6[0][5][4];
+        float* gate_mlp_a  = adaln6[0][5][5];
 
         memcpy(xres, stream, sizeof(float) * seq_len * HID);
         PROF_ENDSLOT(0);
@@ -879,10 +896,18 @@ int run_h3_forward_main(int argc, char** argv) {
             static float* gk = NULL; static float* gv = NULL;
             if (gq_cap < seq_len) {
                 free(gq); free(gk); free(gv);
-                size_t nb = (size_t)seq_len * comp * sizeof(float);
-                gq = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
-                gk = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
-                gv = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                /* 16K page alignment + registered = attention kernel reads
+                 * these directly (no 30MB staging copy per layer) */
+                size_t nb = ((size_t)seq_len * comp * sizeof(float) + 16383)
+                            / 16384 * 16384;
+                gq = aligned_alloc(16384, nb);
+                gk = aligned_alloc(16384, nb);
+                gv = aligned_alloc(16384, nb);
+                if (g_metal_ready) {
+                    stratum_metal_nc_attn_direct_register(gq, nb);
+                    stratum_metal_nc_attn_direct_register(gk, nb);
+                    stratum_metal_nc_attn_direct_register(gv, nb);
+                }
                 gq_cap = seq_len;
             }
             for (long s = 0; s < seq_len; s++) {
@@ -1039,6 +1064,7 @@ int run_h3_forward_main(int argc, char** argv) {
     double elapsed = h3_now_s() - t_fw;
     fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs wall\n",
             NL, seq_len, elapsed);
+    h3_footprint("post-forward");
     if (g_h3_prof) {
         double acc = 0;
         for (int i = 1; i < 8; i++) acc += g_prof[i];
@@ -1053,7 +1079,9 @@ int run_h3_forward_main(int argc, char** argv) {
      * + video_out/audio_out F32 heads. THIS is the velocity in patch
      * space; the raw hidden state is not the model output. --- */
     {
-        float fshift[2][MAX_HID], fscale[2][MAX_HID];   /* [m][HID] */
+        /* heap (was stack [2][MAX_HID]x2 = 128KB): sized by runtime HID */
+        float (*fshift)[HID] = malloc(sizeof(float[2][HID]));
+        float (*fscale)[HID] = malloc(sizeof(float[2][HID]));
         const GgufTensor* w = TT("final_layer.adaln_proj.linear.weight");
         const GgufTensor* bts = TT("final_layer.adaln_proj.linear.bias");
         const uint16_t* wb = (const uint16_t*)(G.mmap_base + w->offset);
@@ -1123,7 +1151,7 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         printf("velocity: video %dx96, audio %dx32 -> /tmp/h3_packed_out.bin\n",
                n_video, n_audio);
-        free(vvel); free(avel);
+        free(vvel); free(avel); free(fshift); free(fscale);
     }
 
     return 0;
@@ -1386,12 +1414,13 @@ static int h3_sampler_setup(H3SamState* st, int argc, char** argv,
 
     /* ---- per-step scratch ---- */
     st->stream = malloc(sizeof(float) * seq_len * HID);
-    st->adaln6 = malloc(sizeof(float[6][6][MAX_HID]) * NL);
+    st->adaln6 = malloc(sizeof(float[6][6][HID]));   /* ONE layer (lazy per-layer) */
     st->inv_freq = (const float*)T("rope.inv_freq");
     st->xres = malloc(sizeof(float) * seq_len * HID);
-    st->qkv = malloc(sizeof(float) * seq_len * QKV);
-    st->attn = malloc(sizeof(float) * seq_len * comp);
+    /* qkv shares the fc1o buffer (QKV <= FF1; consumed before fc1 overwrites) */
     st->fc1o = malloc(sizeof(float) * seq_len * FF1);
+    st->qkv = st->fc1o;
+    st->attn = malloc(sizeof(float) * seq_len * comp);
     st->proj = malloc(sizeof(float) * seq_len * HID);
 
     /* ---- T_DIM / TBL_ROWS for the adaln table ---- */
@@ -1400,6 +1429,7 @@ static int h3_sampler_setup(H3SamState* st, int argc, char** argv,
         st->T_DIM = (int)t->dims[0]; st->TBL_ROWS = (long)t->dims[1];
     }
     prof_on();
+    h3_footprint("post-setup");
     return 0;
 }
 
@@ -1437,6 +1467,7 @@ int h3_sampler_main(int argc, char** argv) {
     memset(&st, 0, sizeof st);
     if (h3_sampler_setup(&st, argc, argv, vt, lat_h, lat_w, audio_t) != 0) return 1;
 
+    setenv("STRATUM_NC_FREESTAGING", "1", 1);   /* don't hold 64MB staging across steps */
     /* ---- Euler loop ---- */
     double dt = 1.0 / steps;
     double t_all = h3_now_s();
@@ -1450,6 +1481,7 @@ int h3_sampler_main(int argc, char** argv) {
             st.xstate[k] -= (float)(dt * st.xnext[k]);
         double t1 = h3_now_s();
         fprintf(stderr, "=== step %d/%d (sigma=%.4f) %.1fs\n", i + 1, steps, sigma, t1 - t0);
+        h3_footprint("step-end");
     }
     fprintf(stderr, "sampler: %d steps in %.1fs\n", steps, h3_now_s() - t_all);
 
@@ -1537,16 +1569,19 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                     + pf * raw[(size_t)(p0 + 1) * T_DIM + k]);
         }
     }
-    float (*adaln6)[6][6][MAX_HID] = st->adaln6;
+
+    /* ---- 50-block loop: identical sequence to run_h3_forward_main ---- */
+    float (*adaln6)[6][6][HID] = st->adaln6;
+    const int T_DIM = st->T_DIM;
     for (int li = 0; li < NL; li++) {
         char nm[160];
+        /* AdaLN rows for THIS layer, computed lazily (0.74MB live table) */
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.weight", li);
         const GgufTensor* w = TT(nm);
         snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.bias", li);
         const GgufTensor* bts = TT(nm);
         const uint16_t* wb = (const uint16_t*)(G.mmap_base + w->offset);
         const uint16_t* bb = (const uint16_t*)(G.mmap_base + bts->offset);
-        int T_DIM = st->T_DIM;
         for (int row = 0; row < 6; row++) {
             const float* emb_row = g_t_emb_m[row / 3];
             for (int cidx = 0; cidx < 6 * HID; cidx++) {
@@ -1555,35 +1590,30 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                 for (int k = 0; k < T_DIM; k++)
                     acc += (double)f16v(wrow[k]) * (double)emb_row[k];
                 int chunk = cidx / HID, i = cidx % HID;
-                adaln6[li][row][chunk][i] = (float)acc;
+                adaln6[0][row][chunk][i] = (float)acc;
             }
         }
-    }
-
-    /* ---- 50-block loop: identical sequence to run_h3_forward_main ---- */
-    for (int li = 0; li < NL; li++) {
-        char nm[160];
         /* rows: video=0 (m0 tag0), text=1 (m0 tag1), audio=5 (m1 tag2) */
         double h3p_t0 = 0; int h3p_fresh = 1; (void)h3p_t0; (void)h3p_fresh;
         PROF_BEGINSLOT(0);
-        float* shift_msa = adaln6[li][0][0];
-        float* scale_msa = adaln6[li][0][1];
-        float* gate_msa  = adaln6[li][0][2];
-        float* shift_mlp = adaln6[li][0][3];
-        float* scale_mlp = adaln6[li][0][4];
-        float* gate_mlp  = adaln6[li][0][5];
-        float* shift_msa_t = adaln6[li][1][0];
-        float* scale_msa_t = adaln6[li][1][1];
-        float* gate_msa_t  = adaln6[li][1][2];
-        float* shift_mlp_t = adaln6[li][1][3];
-        float* scale_mlp_t = adaln6[li][1][4];
-        float* gate_mlp_t  = adaln6[li][1][5];
-        float* shift_msa_a = adaln6[li][5][0];
-        float* scale_msa_a = adaln6[li][5][1];
-        float* gate_msa_a  = adaln6[li][5][2];
-        float* shift_mlp_a = adaln6[li][5][3];
-        float* scale_mlp_a = adaln6[li][5][4];
-        float* gate_mlp_a  = adaln6[li][5][5];
+        float* shift_msa = adaln6[0][0][0];
+        float* scale_msa = adaln6[0][0][1];
+        float* gate_msa  = adaln6[0][0][2];
+        float* shift_mlp = adaln6[0][0][3];
+        float* scale_mlp = adaln6[0][0][4];
+        float* gate_mlp  = adaln6[0][0][5];
+        float* shift_msa_t = adaln6[0][1][0];
+        float* scale_msa_t = adaln6[0][1][1];
+        float* gate_msa_t  = adaln6[0][1][2];
+        float* shift_mlp_t = adaln6[0][1][3];
+        float* scale_mlp_t = adaln6[0][1][4];
+        float* gate_mlp_t  = adaln6[0][1][5];
+        float* shift_msa_a = adaln6[0][5][0];
+        float* scale_msa_a = adaln6[0][5][1];
+        float* gate_msa_a  = adaln6[0][5][2];
+        float* shift_mlp_a = adaln6[0][5][3];
+        float* scale_mlp_a = adaln6[0][5][4];
+        float* gate_mlp_a  = adaln6[0][5][5];
 
         memcpy(xres, stream, sizeof(float) * seq_len * HID);
         PROF_ENDSLOT(0);
@@ -1660,10 +1690,18 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             static float* gk = NULL; static float* gv = NULL;
             if (gq_cap < seq_len) {
                 free(gq); free(gk); free(gv);
-                size_t nb = (size_t)seq_len * comp * sizeof(float);
-                gq = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
-                gk = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
-                gv = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                /* 16K page alignment + registered = attention kernel reads
+                 * these directly (no 30MB staging copy per layer) */
+                size_t nb = ((size_t)seq_len * comp * sizeof(float) + 16383)
+                            / 16384 * 16384;
+                gq = aligned_alloc(16384, nb);
+                gk = aligned_alloc(16384, nb);
+                gv = aligned_alloc(16384, nb);
+                if (g_metal_ready) {
+                    stratum_metal_nc_attn_direct_register(gq, nb);
+                    stratum_metal_nc_attn_direct_register(gk, nb);
+                    stratum_metal_nc_attn_direct_register(gv, nb);
+                }
                 gq_cap = seq_len;
             }
             for (long s = 0; s < seq_len; s++) {
@@ -1822,8 +1860,8 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
      * + video_out/audio_out F32 heads. THIS is the velocity in patch
      * space; the raw hidden state is not the model output. --- */
     {
-        float fshift[2][MAX_HID], fscale[2][MAX_HID];   /* [m][HID] */
-        const int T_DIM = st->T_DIM;
+        float (*fshift)[HID] = malloc(sizeof(float[2][HID]));
+        float (*fscale)[HID] = malloc(sizeof(float[2][HID]));
         const GgufTensor* w = TT("final_layer.adaln_proj.linear.weight");
         const GgufTensor* bts = TT("final_layer.adaln_proj.linear.bias");
         const uint16_t* wb = (const uint16_t*)(G.mmap_base + w->offset);
@@ -1871,7 +1909,7 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             }
         }
         memcpy(st->xnext, vvel, sizeof(float) * (size_t)n_video * 96);
-        free(vvel); free(avel);
+        free(vvel); free(avel); free(fshift); free(fscale);
     }
 
     return 0;

@@ -175,6 +175,14 @@ int stratum_metal_h3_attn(const float* Q, const float* K, const float* V,
 /* attention encoded INTO the currently-open nc batch */
 int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
                                 float* out, int S, int H, int Hd, float scale);
+/* strided variant: dst rows sit inside a wider caller buffer; out_stride is
+ * the dst row stride in floats (attention row itself stays H*Hd wide). */
+int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const float* V,
+                                float* out, int S, int H, int Hd, float scale,
+                                int out_stride);
+/* register a page-aligned Q/K/V gather buffer for attention direct-read
+ * (no staging copy); falls back to staging when unregistered */
+int stratum_metal_nc_attn_direct_register(const float* p, size_t bytes);
 
 #ifdef __cplusplus
 }

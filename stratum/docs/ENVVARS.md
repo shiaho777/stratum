@@ -242,8 +242,31 @@ they are read by the spike programs, not by the `stratum` engine.
 | `H3_SAMPLER_STEPS` | resident multi-step Euler sampler: run N steps in ONE process (sigma_i = 1000*(1-(i+0.5)/N)/1000, Euler update x <- x - dt*out in patch space). One-time conditioning (condition_proj + token refiner + patch projections + pos/tag) is computed once and reused across steps; per-step numerics match the single-step binary (velocity mean\|diff\| ~1e-6 verified). Steps after the first run at full 50-block speed (~33s/step at seq=276, NC) with no per-process setup overhead | sanctioned |
 | `H3_PROFILE` | per-stage wall-clock breakdown of the 50-block loop (norm1+adaln / qkv gemv / qknorm+rope / attention / out_proj / norm2 / fc1 / fc2+resid), printed after the forward | experimental |
 | `STRATUM_NC_BPTG` | threadgroup size for the NC bparallel-2D gemv dispatch (default 64; measured 64 < 128 < 256 at seq=276 — larger groups spill/reduce worse) | experimental |
+| `STRATUM_NC_FREESTAGING` | release the NC staging x/y MTLBuffers after every flush instead of holding them for the process lifetime (resident-sampler mode; re-grows on demand). Set automatically by `H3_SAMPLER_STEPS` | experimental (auto-set by the sampler) |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
+
+### H3 memory footprint (measured 2026-09-01, vt=1 seq=276, M4 Pro)
+
+The resident sampler's anonymous footprint was cut ~41% (max RSS 294 MB ->
+phys_footprint steady-state ~173 MB) with bit-exact outputs (H3_X_OUT
+byte-identical vs the pre-change binary in both single-step and sampler
+modes):
+
+- AdaLN rows were precomputed for ALL 50 layers up front (6*6*MAX_HID*4*NL =
+  56 MB anon, of which MAX_HID=8192 padded a 5376-wide model). Now computed
+  lazily at the top of each block iteration into a single 0.74 MB layer
+  table. No numerics change: same rows, same fp order, just deferred.
+- QKV activations share the fc1 buffer (QKV=21504 <= FF1=28672; the qkv
+  rows are fully consumed before fc1 overwrites them) — one seq*QKV
+  allocation removed.
+- The attention Q/K/V gather buffers are 16K-page-aligned and registered
+  for kernel direct-read (`stratum_metal_nc_attn_direct_register`), removing
+  the 30 MB per-layer staging copy-in; attention output supports strided
+  destinations (`nc_batch_attn_strided`) for callers whose rows live inside
+  a wider activation buffer.
+- `STRATUM_NC_FREESTAGING` releases the NC staging x/y buffers after each
+  flush (the sampler sets it automatically).
 
 Driver scripts: `h3_euler.sh` (per-process sampling loop — superseded by
 `H3_SAMPLER_STEPS` for production runs), `h3_test_gate.sh`
