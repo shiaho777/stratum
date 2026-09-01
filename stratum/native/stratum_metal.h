@@ -183,6 +183,14 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
 /* register a page-aligned Q/K/V gather buffer for attention direct-read
  * (no staging copy); falls back to staging when unregistered */
 int stratum_metal_nc_attn_direct_register(const float* p, size_t bytes);
+/* packed in-place attention over ONE activation buffer: row r of length
+ * rowstride floats holds Q at +qoff, K at +koff, V at +voff; attention
+ * output written at +ooff (may alias nothing). Requires a registered base
+ * (16K-aligned) for zero-copy; otherwise stages compactly and scatters. */
+int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
+                                       int qoff, int koff, int voff, int ooff,
+                                       float* out_region, int S, int H, int Hd,
+                                       float scale);
 
 #ifdef __cplusplus
 }
@@ -198,6 +206,12 @@ int stratum_metal_nc_attn_direct_register(const float* p, size_t bytes);
 int stratum_metal_nc_batch_begin(void);
 int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                                const float* x, float* y, int N, int K, int B);
+/* strided variant: x/y rows sit inside a wider caller buffer; *_stride is the
+ * row stride in floats (0 = compact). Strided y skips the staging ybuf and
+ * the flush scatters compact rows into the caller's layout. */
+int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf_type,
+                               const float* x, float* y, int N, int K, int B,
+                               int xstride, int ystride);
 /* Register a caller-owned page-aligned activation buffer for zero-copy
  * direct-read inside nc_batch_add (x registry). Call once after allocation;
  * unregistered / non-page-aligned x still takes the staging-copy path. */

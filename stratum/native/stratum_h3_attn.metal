@@ -78,3 +78,74 @@ kernel void h3_trivial(device const float* in [[buffer(0)]],
                        uint tid [[thread_position_in_grid]]) {
     out[tid] = in[tid] * 2.0f;
 }
+
+// Strided variant: Q/K/V/out are region pointers inside ONE packed activation
+// buffer (fbuf). Token row r sits at base + r*rowstride; the q/k/v/out
+// sub-regions start at qoff/koff/voff/ooff floats into the row:
+//   geom[0] = (rowstride, qoff, koff, voff), geom[1] = (orowstride, ooff, 0, 0)
+// Enables zero-copy in-place attention over the fused [q|k|v|attn-out] rows:
+// the out region of a row never overlaps its own or any other row's q/k/v.
+kernel void h3_attn_prefill_strided(
+    device const float* Q   [[buffer(0)]],
+    device const float* K   [[buffer(1)]],
+    device const float* V   [[buffer(2)]],
+    device float*       Out [[buffer(3)]],
+    constant uint& S            [[buffer(4)]],
+    constant uint& H            [[buffer(5)]],
+    constant uint& Hd           [[buffer(6)]],
+    constant float& scale       [[buffer(7)]],
+    constant uint4* geom        [[buffer(8)]],
+    uint hg [[threadgroup_position_in_grid]],   // h * q_tiles + qt
+    uint tid [[thread_position_in_threadgroup]])
+{
+    constexpr uint QT = 64;
+    uint H_ = H;
+    uint qtiles = (S + QT - 1) / QT;
+    uint h = hg / qtiles;
+    uint qt = hg % qtiles;
+    uint q0 = qt * QT;
+
+    uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
+    uint orowstride = geom[1].x, ooff = geom[1].y;
+
+    if (tid >= QT) return;
+    uint qi = tid;
+    uint qs = q0 + qi;
+    if (qs >= S) return;
+
+    device const float* qh = Q + (size_t)qs * rowstride + qoff + (size_t)h * Hd;
+
+    float acc[128];          // Hd <= 128 (H3 denoiser: 128)
+    for (uint d = 0; d < Hd; d++) acc[d] = 0.0f;
+    float m = -INFINITY, l = 0.0f;
+
+    for (uint k0 = 0; k0 < S; k0 += 256) {
+        uint ke = min(k0 + 256u, S);
+        float sc[256];
+        float tmax = -INFINITY;
+        for (uint t = k0; t < ke; t++) {
+            device const float* kt = K + (size_t)t * rowstride + koff + (size_t)h * Hd;
+            float dot = 0.0f;
+            for (uint d = 0; d < Hd; d++) dot += qh[d] * kt[d];
+            dot *= scale;
+            sc[t - k0] = dot;
+            if (dot > tmax) tmax = dot;
+        }
+        float mnew = max(m, tmax);
+        float corr = exp(m - mnew);
+        float lnew = l * corr;
+        for (uint t = k0; t < ke; t++) {
+            float p = exp(sc[t - k0] - mnew);
+            lnew += p;
+            device const float* vt = V + (size_t)t * rowstride + voff + (size_t)h * Hd;
+            for (uint d = 0; d < Hd; d++) acc[d] = acc[d] * corr + p * vt[d];
+        }
+        m = mnew; l = lnew;
+    }
+    float inv = 1.0f / l;
+    device float* op = Out + (size_t)qs * orowstride + ooff + (size_t)h * Hd;
+    for (uint d = 0; d < Hd; d++) op[d] = acc[d] * inv;
+    if (!isfinite(l) || !isfinite(m)) {
+        op[0] = m; op[1] = l;
+    }
+}

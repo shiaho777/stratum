@@ -112,6 +112,7 @@ typedef struct {
     long S;
     int8_t* xq;           /* SDOT: [S, in_dim] int8 prequant */
     float* xs;            /* SDOT: [S, in_dim/32] scales */
+    int xstride, ystride; /* row strides in floats; 0 = compact */
 } BGMVCtx;
 
 static int ty4k(const GgufTensor* t) { return (GgmlType)t->type == GGML_TYPE_Q4_K; }
@@ -123,9 +124,11 @@ static void bgmv_range(int lo, int hi, void* arg) {
     BGMVCtx* c = (BGMVCtx*)arg;
     const void* base = (const void*)(G.mmap_base + c->t->offset);
     GgmlType ty = (GgmlType)c->t->type;
+    long xr = c->xstride ? c->xstride : c->in_dim;
+    long yr = c->ystride ? c->ystride : c->out_dim;
     for (long s = 0; s < c->S; s++) {
-        const float* x = c->x + s * c->in_dim;
-        float* y = c->y + s * c->out_dim;
+        const float* x = c->x + s * xr;
+        float* y = c->y + s * yr;
         if (ty == GGML_TYPE_Q4_K) {
             const block_q4_K* brow = (const block_q4_K*)base;
             if (g_h3_sdot) {
@@ -233,7 +236,7 @@ static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
         if (rc == 0) return;
     }
 #endif
-    BGMVCtx c = { t, in_dim, out_dim, x, y, S, NULL, NULL };
+    BGMVCtx c = { t, in_dim, out_dim, x, y, S, NULL, NULL, 0, 0 };
 #if defined(__ARM_FEATURE_DOTPROD)
     if (g_h3_sdot > 0 && ty4k(t)) {
         int nb32 = in_dim / 32;
@@ -246,6 +249,33 @@ static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
 #endif
     h3_par_for(out_dim, bgmv_range, &c);
     free(c.xq); free(c.xs);
+}
+
+/* strided gemv: x/y rows inside wider caller buffers (H3 fused fbuf).
+ * Metal: nc_batch_add_strided (staged x copy-in, staged y + scatter-out).
+ * CPU: same row-parallel kernel with strided base pointers. */
+static void mixed_gemv_batch_strided(const GgufTensor* t, int in_dim, int out_dim,
+                                     long S, const float* x, float* y,
+                                     int xstride, int ystride) {
+    if (g_h3_nc < 0) {
+        const char* e = getenv("STRATUM_H3_NC");
+        g_h3_nc = e && atoi(e) ? 1 : 0;
+        const char* sd = getenv("STRATUM_H3_SDOT");
+        g_h3_sdot = sd && atoi(sd) ? 1 : 0;
+    }
+#ifdef STRATUM_USE_METAL
+    if (g_h3_nc && g_metal_ready) {
+        stratum_metal_nc_batch_begin();
+        size_t nbytes = (size_t)t->nbytes;
+        int rc = stratum_metal_nc_batch_add_strided(
+            (const void*)(G.mmap_base + t->offset), nbytes, t->type,
+            x, y, out_dim, in_dim, (int)S, xstride, ystride);
+        stratum_metal_nc_batch_flush();
+        if (rc == 0 || rc == -2) return;
+    }
+#endif
+    BGMVCtx c = { t, in_dim, out_dim, x, y, S, NULL, NULL, xstride, ystride };
+    h3_par_for(out_dim, bgmv_range, &c);
 }
 
 static double h3_now_s(void) {
@@ -765,13 +795,18 @@ int run_h3_forward_main(int argc, char** argv) {
      * still (39-46s). The staging xbuf/ybuf copies inside nc_batch_add
      * beat NoCopy windows on small buffers; malloc is intentional here. */
     float* xres = malloc(sizeof(float) * seq_len * HID);
-    /* qkv lives in the fc1o buffer's head: QKV(21504) <= FF1(28672), and the
-     * qkv rows are fully consumed (qknorm/rope/attention) before fc1
-     * overwrites the same memory with the MLP activations. Saves one
-     * seq*QKV allocation per forward. (was 4 separate buffers) */
-    float* fc1o = malloc(sizeof(float) * seq_len * FF1);
-    float* qkv = fc1o;
-    float* attn = malloc(sizeof(float) * seq_len * comp);
+    /* ONE fused activation buffer: rows of FF1 = QKV(21504) + comp(7168).
+     *   attention phase: [qkv 21504 | attn-out 7168]
+     *   mlp phase:       [fc1-out 28672] (swiglu compacts to [0,FF2))
+     * qkv/attn-out/fc1 reuse the same memory in phases; only xres, stream
+     * and proj stay live. (was 4 separate seq-sized buffers) */
+    float* fbuf = malloc(sizeof(float) * (size_t)seq_len * FF1);
+    if (((uintptr_t)fbuf & 16383) == 0 && g_metal_ready)
+        stratum_metal_nc_attn_direct_register(fbuf,
+            (size_t)seq_len * FF1 * sizeof(float));
+    float* qkv = fbuf;            /* row stride FF1, q at +0 */
+    float* attn = fbuf + QKV;     /* row stride FF1, region offset QKV */
+    float* fc1o = fbuf;
     float* proj = malloc(sizeof(float) * seq_len * HID);
     const float* inv_freq = (const float*)T("rope.inv_freq");
     prof_on();
@@ -842,9 +877,9 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
         PROF_BEGINSLOT(1);
-        mixed_gemv_batch(TT(nm), HID, QKV, seq_len, stream, qkv);
+        mixed_gemv_batch_strided(TT(nm), HID, QKV, seq_len, stream, qkv,
+                                 HID, FF1);
         PROF_ENDSLOT(1);
-
         /* fused qk-norm + split-half rope, per-tag AdaLN'd rows already in */
         snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
         const uint16_t* qw = (const uint16_t*)T(nm);
@@ -853,14 +888,14 @@ int run_h3_forward_main(int argc, char** argv) {
         PROF_BEGINSLOT(2);
         for (long s = 0; s < seq_len; s++) {
             for (int h = 0; h < HEADS; h++) {
-                float* qp = &qkv[s * QKV + h * HD];
+                float* qp = &qkv[s * FF1 + h * HD];
                 double ss = 0;
                 for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
                 float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
                 for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
             }
             for (int h = 0; h < HEADS; h++) {
-                float* kp = &qkv[s * QKV + comp + h * HD];
+                float* kp = &qkv[s * FF1 + comp + h * HD];
                 double ss = 0;
                 for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
                 float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
@@ -871,11 +906,11 @@ int run_h3_forward_main(int argc, char** argv) {
                 float ang = (float)pos[s * 3 + axis] * inv_freq[kbase];
                 float c = cosf(ang), sn = sinf(ang);
                 for (int h = 0; h < HEADS; h++) {
-                    float* qp = &qkv[s * QKV + h * HD];
+                    float* qp = &qkv[s * FF1 + h * HD];
                     float a0 = qp[j], a1 = qp[HD / 2 + j];
                     qp[j]        = a0 * c - a1 * sn;
                     qp[HD / 2 + j] = a0 * sn + a1 * c;
-                    float* kp = &qkv[s * QKV + comp + h * HD];
+                    float* kp = &qkv[s * FF1 + comp + h * HD];
                     a0 = kp[j]; a1 = kp[HD / 2 + j];
                     kp[j]        = a0 * c - a1 * sn;
                     kp[HD / 2 + j] = a0 * sn + a1 * c;
@@ -891,68 +926,35 @@ int run_h3_forward_main(int argc, char** argv) {
         int attn_minseq = 512;
             { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
             if (g_h3_nc && g_metal_ready && seq_len >= attn_minseq) {
-            /* GPU flash attention: Q/K/V gathered token-major [S, H*Hd]. */
-            static float* gq = NULL; static long gq_cap = 0;
-            static float* gk = NULL; static float* gv = NULL;
-            if (gq_cap < seq_len) {
-                free(gq); free(gk); free(gv);
-                /* 16K page alignment + registered = attention kernel reads
-                 * these directly (no 30MB staging copy per layer) */
-                size_t nb = ((size_t)seq_len * comp * sizeof(float) + 16383)
-                            / 16384 * 16384;
-                gq = aligned_alloc(16384, nb);
-                gk = aligned_alloc(16384, nb);
-                gv = aligned_alloc(16384, nb);
-                if (g_metal_ready) {
-                    stratum_metal_nc_attn_direct_register(gq, nb);
-                    stratum_metal_nc_attn_direct_register(gk, nb);
-                    stratum_metal_nc_attn_direct_register(gv, nb);
-                }
-                gq_cap = seq_len;
-            }
-            for (long s = 0; s < seq_len; s++) {
-                memcpy(gq + s * comp, &qkv[s * QKV], sizeof(float) * comp);
-                memcpy(gk + s * comp, &qkv[s * QKV + comp], sizeof(float) * comp);
-                memcpy(gv + s * comp, &qkv[s * QKV + 2 * comp], sizeof(float) * comp);
-            }
+            /* GPU flash attention IN PLACE over fbuf: kernel reads the
+             * q/k/v regions of each row and writes the attn-out region.
+             * No gather, no staging (fbuf is registered when 16K-aligned). */
             static int attn_used = 0;
             int attn_layer_max = 1000000;
             { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
             if (attn_used < attn_layer_max) {
                 attn_used++;
-                {
-                    const char* dp = getenv("H3_ATTN_DUMP");
-                    if (dp) {
-                        char pp[512];
-                        snprintf(pp, sizeof pp, "%s_L%d_q.bin", dp, li);
-                        FILE* fq = fopen(pp, "wb");
-                        if (fq) { fwrite(gq, 4, seq_len * comp, fq); fclose(fq); }
-                        snprintf(pp, sizeof pp, "%s_L%d_k.bin", dp, li);
-                        FILE* fk = fopen(pp, "wb");
-                        if (fk) { fwrite(gk, 4, seq_len * comp, fk); fclose(fk); }
-                        snprintf(pp, sizeof pp, "%s_L%d_v.bin", dp, li);
-                        FILE* fv = fopen(pp, "wb");
-                        if (fv) { fwrite(gv, 4, seq_len * comp, fv); fclose(fv); }
-                    }
-                }
                 stratum_metal_nc_batch_begin();
-                int arc = stratum_metal_nc_batch_attn(gq, gk, gv, attn,
-                                          (int)seq_len, HEADS, HD, scale2);
+                int arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
+                                    0, comp, 2 * comp, QKV, attn,
+                                    (int)seq_len, HEADS, HD, scale2);
                 stratum_metal_nc_batch_flush();
                 if (arc == 0)
                     goto attn_done;
             }
         }
 #endif
-        memset(attn, 0, sizeof(float) * seq_len * comp);
+        {   /* strided CPU attention over fbuf rows [q|k|v|out] */
+            float* att_row0 = fbuf + QKV;
+            for (long s = 0; s < seq_len; s++)
+                memset(att_row0 + s * FF1, 0, sizeof(float) * comp);
+        }
         lgd = malloc(sizeof(float) * seq_len);
         for (int h = 0; h < HEADS; h++)
             for (long a = 0; a < seq_len; a++) {
-                const float* qh = &qkv[a * QKV + h * HD];
-                float lg[4096];
-                (void)lg;
+                const float* qh = &qkv[a * FF1 + h * HD];
                 for (long b2 = 0; b2 < seq_len; b2++) {
-                    const float* kh = &qkv[b2 * QKV + comp + h * HD];
+                    const float* kh = &qkv[b2 * FF1 + comp + h * HD];
                     double dot = 0;
                     for (int d = 0; d < HD; d++)
                         dot += (double)qh[d] * kh[d];
@@ -965,10 +967,10 @@ int run_h3_forward_main(int argc, char** argv) {
                     lgd[j] -= mx; se += exp((double)lgd[j]);
                 }
                 float inv = (float)(1.0 / se);
-                float* oh = &attn[a * comp + h * HD];
+                float* oh = &attn[a * FF1 + h * HD];
                 for (long b2 = 0; b2 < seq_len; b2++) {
                     float pv = expf(lgd[b2]) * inv;
-                    const float* vh = &qkv[b2 * QKV + 2 * comp + h * HD];
+                    const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
                     for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
                 }
             }
@@ -977,13 +979,17 @@ int run_h3_forward_main(int argc, char** argv) {
         PROF_ENDSLOT(3);
         snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
         PROF_BEGINSLOT(4);
-        mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
+        mixed_gemv_batch_strided(TT(nm), comp, HID, seq_len, attn, proj,
+                                 FF1, HID);
         PROF_ENDSLOT(4);
         PROF_BEGINSLOT(0);
         if (getenv("H3_ATTN_PROBE") && li == 2) {
             long b1=0; double m1=0;
-            for (long t = 0; t < seq_len * comp; t++)
-                if (!isfinite(attn[t])) b1++; else if (fabs(attn[t])>m1) m1=fabs(attn[t]);
+            for (long s = 0; s < seq_len; s++)
+                for (int t = 0; t < comp; t++) {
+                    float v = attn[s * FF1 + t];
+                    if (!isfinite(v)) b1++; else if (fabs(v)>m1) m1=fabs(v);
+                }
             long b2=0; double m2=0;
             for (long t = 0; t < seq_len * HID; t++)
                 if (!isfinite(proj[t])) b2++; else if (fabs(proj[t])>m2) m2=fabs(proj[t]);
@@ -1022,7 +1028,8 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
         PROF_BEGINSLOT(6);
-        mixed_gemv_batch(TT(nm), HID, FF1, seq_len, stream, fc1o);
+        mixed_gemv_batch_strided(TT(nm), HID, FF1, seq_len, stream, fc1o,
+                                 HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
         for (long s = 0; s < seq_len; s++)
@@ -1034,7 +1041,8 @@ int run_h3_forward_main(int argc, char** argv) {
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(7);
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
-        mixed_gemv_batch(TT(nm), FF2, HID, seq_len, fc1o, proj);
+        mixed_gemv_batch_strided(TT(nm), FF2, HID, seq_len, fc1o, proj,
+                                 FF1, HID);
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(0);
         for (long s = 0; s < seq_len; s++) {
@@ -1417,10 +1425,14 @@ static int h3_sampler_setup(H3SamState* st, int argc, char** argv,
     st->adaln6 = malloc(sizeof(float[6][6][HID]));   /* ONE layer (lazy per-layer) */
     st->inv_freq = (const float*)T("rope.inv_freq");
     st->xres = malloc(sizeof(float) * seq_len * HID);
-    /* qkv shares the fc1o buffer (QKV <= FF1; consumed before fc1 overwrites) */
-    st->fc1o = malloc(sizeof(float) * seq_len * FF1);
-    st->qkv = st->fc1o;
-    st->attn = malloc(sizeof(float) * seq_len * comp);
+    /* ONE fused buffer: rows of FF1 = [qkv 21504 | attn-out 7168] in the
+     * attention phase, [fc1 28672] in the mlp phase. proj stays separate. */
+    st->fc1o = malloc(sizeof(float) * (size_t)seq_len * FF1);
+    if (((uintptr_t)st->fc1o & 16383) == 0 && g_metal_ready)
+        stratum_metal_nc_attn_direct_register(st->fc1o,
+            (size_t)seq_len * FF1 * sizeof(float));
+    st->qkv = st->fc1o;              /* row stride FF1 */
+    st->attn = st->fc1o + QKV;       /* row stride FF1, offset QKV */
     st->proj = malloc(sizeof(float) * seq_len * HID);
 
     /* ---- T_DIM / TBL_ROWS for the adaln table ---- */
@@ -1510,6 +1522,7 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
     const int n_video = st->n_video, n_audio = st->n_audio;
     float* stream = st->stream;
     float* xres = st->xres;
+    float* fbuf = st->fc1o;   /* fused [qkv|attn|fc1] rows of FF1 */
     float* qkv = st->qkv;
     float* attn = st->attn;
     float* fc1o = st->fc1o;
@@ -1636,9 +1649,9 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
         PROF_BEGINSLOT(1);
-        mixed_gemv_batch(TT(nm), HID, QKV, seq_len, stream, qkv);
+        mixed_gemv_batch_strided(TT(nm), HID, QKV, seq_len, stream, qkv,
+                                 HID, FF1);
         PROF_ENDSLOT(1);
-
         /* fused qk-norm + split-half rope, per-tag AdaLN'd rows already in */
         snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
         const uint16_t* qw = (const uint16_t*)T(nm);
@@ -1647,14 +1660,14 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         PROF_BEGINSLOT(2);
         for (long s = 0; s < seq_len; s++) {
             for (int h = 0; h < HEADS; h++) {
-                float* qp = &qkv[s * QKV + h * HD];
+                float* qp = &qkv[s * FF1 + h * HD];
                 double ss = 0;
                 for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
                 float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
                 for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
             }
             for (int h = 0; h < HEADS; h++) {
-                float* kp = &qkv[s * QKV + comp + h * HD];
+                float* kp = &qkv[s * FF1 + comp + h * HD];
                 double ss = 0;
                 for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
                 float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
@@ -1665,11 +1678,11 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                 float ang = (float)pos[s * 3 + axis] * inv_freq[kbase];
                 float c = cosf(ang), sn = sinf(ang);
                 for (int h = 0; h < HEADS; h++) {
-                    float* qp = &qkv[s * QKV + h * HD];
+                    float* qp = &qkv[s * FF1 + h * HD];
                     float a0 = qp[j], a1 = qp[HD / 2 + j];
                     qp[j]        = a0 * c - a1 * sn;
                     qp[HD / 2 + j] = a0 * sn + a1 * c;
-                    float* kp = &qkv[s * QKV + comp + h * HD];
+                    float* kp = &qkv[s * FF1 + comp + h * HD];
                     a0 = kp[j]; a1 = kp[HD / 2 + j];
                     kp[j]        = a0 * c - a1 * sn;
                     kp[HD / 2 + j] = a0 * sn + a1 * c;
@@ -1685,68 +1698,33 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         int attn_minseq = 512;
             { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
             if (g_h3_nc && g_metal_ready && seq_len >= attn_minseq) {
-            /* GPU flash attention: Q/K/V gathered token-major [S, H*Hd]. */
-            static float* gq = NULL; static long gq_cap = 0;
-            static float* gk = NULL; static float* gv = NULL;
-            if (gq_cap < seq_len) {
-                free(gq); free(gk); free(gv);
-                /* 16K page alignment + registered = attention kernel reads
-                 * these directly (no 30MB staging copy per layer) */
-                size_t nb = ((size_t)seq_len * comp * sizeof(float) + 16383)
-                            / 16384 * 16384;
-                gq = aligned_alloc(16384, nb);
-                gk = aligned_alloc(16384, nb);
-                gv = aligned_alloc(16384, nb);
-                if (g_metal_ready) {
-                    stratum_metal_nc_attn_direct_register(gq, nb);
-                    stratum_metal_nc_attn_direct_register(gk, nb);
-                    stratum_metal_nc_attn_direct_register(gv, nb);
-                }
-                gq_cap = seq_len;
-            }
-            for (long s = 0; s < seq_len; s++) {
-                memcpy(gq + s * comp, &qkv[s * QKV], sizeof(float) * comp);
-                memcpy(gk + s * comp, &qkv[s * QKV + comp], sizeof(float) * comp);
-                memcpy(gv + s * comp, &qkv[s * QKV + 2 * comp], sizeof(float) * comp);
-            }
+            /* GPU flash attention IN PLACE over fbuf (no gather/staging) */
             static int attn_used = 0;
             int attn_layer_max = 1000000;
             { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
             if (attn_used < attn_layer_max) {
                 attn_used++;
-                {
-                    const char* dp = getenv("H3_ATTN_DUMP");
-                    if (dp) {
-                        char pp[512];
-                        snprintf(pp, sizeof pp, "%s_L%d_q.bin", dp, li);
-                        FILE* fq = fopen(pp, "wb");
-                        if (fq) { fwrite(gq, 4, seq_len * comp, fq); fclose(fq); }
-                        snprintf(pp, sizeof pp, "%s_L%d_k.bin", dp, li);
-                        FILE* fk = fopen(pp, "wb");
-                        if (fk) { fwrite(gk, 4, seq_len * comp, fk); fclose(fk); }
-                        snprintf(pp, sizeof pp, "%s_L%d_v.bin", dp, li);
-                        FILE* fv = fopen(pp, "wb");
-                        if (fv) { fwrite(gv, 4, seq_len * comp, fv); fclose(fv); }
-                    }
-                }
                 stratum_metal_nc_batch_begin();
-                int arc = stratum_metal_nc_batch_attn(gq, gk, gv, attn,
-                                          (int)seq_len, HEADS, HD, scale2);
+                int arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
+                                    0, comp, 2 * comp, QKV, attn,
+                                    (int)seq_len, HEADS, HD, scale2);
                 stratum_metal_nc_batch_flush();
                 if (arc == 0)
                     goto attn_done;
             }
         }
 #endif
-        memset(attn, 0, sizeof(float) * seq_len * comp);
+        {   /* strided CPU attention over fbuf rows [q|k|v|out] */
+            float* att_row0 = fbuf + QKV;
+            for (long s = 0; s < seq_len; s++)
+                memset(att_row0 + s * FF1, 0, sizeof(float) * comp);
+        }
         lgd = malloc(sizeof(float) * seq_len);
         for (int h = 0; h < HEADS; h++)
             for (long a = 0; a < seq_len; a++) {
-                const float* qh = &qkv[a * QKV + h * HD];
-                float lg[4096];
-                (void)lg;
+                const float* qh = &qkv[a * FF1 + h * HD];
                 for (long b2 = 0; b2 < seq_len; b2++) {
-                    const float* kh = &qkv[b2 * QKV + comp + h * HD];
+                    const float* kh = &qkv[b2 * FF1 + comp + h * HD];
                     double dot = 0;
                     for (int d = 0; d < HD; d++)
                         dot += (double)qh[d] * kh[d];
@@ -1759,10 +1737,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                     lgd[j] -= mx; se += exp((double)lgd[j]);
                 }
                 float inv = (float)(1.0 / se);
-                float* oh = &attn[a * comp + h * HD];
+                float* oh = &attn[a * FF1 + h * HD];
                 for (long b2 = 0; b2 < seq_len; b2++) {
                     float pv = expf(lgd[b2]) * inv;
-                    const float* vh = &qkv[b2 * QKV + 2 * comp + h * HD];
+                    const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
                     for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
                 }
             }
@@ -1771,13 +1749,17 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         PROF_ENDSLOT(3);
         snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
         PROF_BEGINSLOT(4);
-        mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
+        mixed_gemv_batch_strided(TT(nm), comp, HID, seq_len, attn, proj,
+                                 FF1, HID);
         PROF_ENDSLOT(4);
         PROF_BEGINSLOT(0);
         if (getenv("H3_ATTN_PROBE") && li == 2) {
             long b1=0; double m1=0;
-            for (long t = 0; t < seq_len * comp; t++)
-                if (!isfinite(attn[t])) b1++; else if (fabs(attn[t])>m1) m1=fabs(attn[t]);
+            for (long s = 0; s < seq_len; s++)
+                for (int t = 0; t < comp; t++) {
+                    float v = attn[s * FF1 + t];
+                    if (!isfinite(v)) b1++; else if (fabs(v)>m1) m1=fabs(v);
+                }
             long b2=0; double m2=0;
             for (long t = 0; t < seq_len * HID; t++)
                 if (!isfinite(proj[t])) b2++; else if (fabs(proj[t])>m2) m2=fabs(proj[t]);
@@ -1816,7 +1798,8 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
         PROF_BEGINSLOT(6);
-        mixed_gemv_batch(TT(nm), HID, FF1, seq_len, stream, fc1o);
+        mixed_gemv_batch_strided(TT(nm), HID, FF1, seq_len, stream, fc1o,
+                                 HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
         for (long s = 0; s < seq_len; s++)
@@ -1828,7 +1811,8 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(7);
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
-        mixed_gemv_batch(TT(nm), FF2, HID, seq_len, fc1o, proj);
+        mixed_gemv_batch_strided(TT(nm), FF2, HID, seq_len, fc1o, proj,
+                                 FF1, HID);
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(0);
         for (long s = 0; s < seq_len; s++) {

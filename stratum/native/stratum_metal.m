@@ -2675,7 +2675,9 @@ static size_t g_ncb_xcap = 0, g_ncb_ycap = 0, g_ncb_xpos = 0, g_ncb_ypos = 0;
 typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off, bytes; int B, N; int is_streams;
                  __strong id<MTLBuffer> src_buf;   /* attention outputs: copy from here, not ybuf */
                  __strong id<MTLBuffer> dst_buf;   /* registered y: GPU writes dst directly, no copy-back */
-                 int out_stride;   /* dst row stride in floats (0 = compact) */ } NCBatchYTask;
+                 int out_stride;   /* dst row stride in floats (0 = compact) */
+                 int rows;         /* 0 = single contiguous block; >0 = per-row scatter */
+                 size_t rowbytes;  /* bytes per row when rows > 0 */ } NCBatchYTask;
 static NCBatchYTask g_ncb_ytasks[512];
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
@@ -2783,8 +2785,17 @@ int stratum_metal_nc_batch_begin(void) {
     return 0;
 }
 
+int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf_type,
+                               const float* x, float* y, int N, int K, int B,
+                               int xstride, int ystride);
 int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                                const float* x, float* y, int N, int K, int B) {
+    return stratum_metal_nc_batch_add_strided(wptr, nbytes, gguf_type, x, y, N, K, B, 0, 0);
+}
+
+int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf_type,
+                               const float* x, float* y, int N, int K, int B,
+                               int xstride, int ystride) {
     if (!wptr || nbytes == 0 || !g_device) return -1;
     if (g_ncb_ny >= 512) return -1;
     if (getenv("STRATUM_NC_DEBUG")) fprintf(stderr, "  [nc] add type=%d N=%d K=%d B=%d cmd=%p\n", gguf_type, N, K, B, g_ncb_cmd);
@@ -2853,7 +2864,8 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
          * different contents across calls — pointer identity alone is NOT
          * a valid reuse key, so registry hits are the only zero-copy path) */
         int xoff;
-        id<MTLBuffer> xdirect = nc_xreg_get(x, (size_t)K * B * sizeof(float));
+        id<MTLBuffer> xdirect = (xstride || K * (long)B > (1L<<26))
+            ? nil : nc_xreg_get(x, (size_t)K * B * sizeof(float));
         if (xdirect) {
             xoff = 0;
         } else {
@@ -2865,20 +2877,43 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                 g_ncb_xpos = 0;
             }
             xoff = (int)g_ncb_xpos;
-            memcpy((char*)[g_ncb_xbuf contents] + xoff, x, xb);
+            if (xstride == 0) {
+                memcpy((char*)[g_ncb_xbuf contents] + xoff, x, xb);
+            } else {
+                /* strided source rows (H3 fbuf: qkv region inside FF1 rows) */
+                char* xb_ = (char*)[g_ncb_xbuf contents] + xoff;
+                for (int r = 0; r < B; r++)
+                    memcpy(xb_ + (size_t)r * K * 4, x + (size_t)r * xstride,
+                           (size_t)K * 4);
+            }
             g_ncb_xpos += xb;
         }
-        /* y region */
+        /* y region: strided y skips staging entirely (the GPU writes a
+         * compact slab; flush scatters rows into the caller's layout) */
         size_t yb = (size_t)N * B * sizeof(float);
-        if (g_ncb_ypos + yb > g_ncb_ycap) {
-            g_ncb_ycap = (g_ncb_ycap ? g_ncb_ycap * 2 : (4u << 20));
-            while (g_ncb_ypos + yb > g_ncb_ycap) g_ncb_ycap *= 2;
-            g_ncb_ybuf = [g_device newBufferWithLength:g_ncb_ycap options:MTLResourceStorageModeShared];
-            g_ncb_ypos = 0;
-        }
+        id<MTLBuffer> ydirect = (ystride || K * (long)B > (1L<<26))
+            ? nil : nc_yreg_get(y, yb);
         int yoff = 0;
-        id<MTLBuffer> ydirect = nc_yreg_get(y, yb);
-        if (!ydirect) { yoff = (int)g_ncb_ypos; g_ncb_ypos += yb; }
+        if (!ydirect && ystride == 0) {
+            if (g_ncb_ypos + yb > g_ncb_ycap) {
+                g_ncb_ycap = (g_ncb_ycap ? g_ncb_ycap * 2 : (4u << 20));
+                while (g_ncb_ypos + yb > g_ncb_ycap) g_ncb_ycap *= 2;
+                g_ncb_ybuf = [g_device newBufferWithLength:g_ncb_ycap options:MTLResourceStorageModeShared];
+                g_ncb_ypos = 0;
+            }
+            yoff = (int)g_ncb_ypos;
+            g_ncb_ypos += yb;
+        } else if (ystride != 0) {
+            /* always a fresh staging slab per strided task */
+            if (g_ncb_ypos + yb > g_ncb_ycap) {
+                g_ncb_ycap = (g_ncb_ycap ? g_ncb_ycap * 2 : (4u << 20));
+                while (g_ncb_ypos + yb > g_ncb_ycap) g_ncb_ycap *= 2;
+                g_ncb_ybuf = [g_device newBufferWithLength:g_ncb_ycap options:MTLResourceStorageModeShared];
+                g_ncb_ypos = 0;
+            }
+            yoff = (int)g_ncb_ypos;
+            g_ncb_ypos += yb;
+        }
         g_ncb_ytasks[g_ncb_ny].dst = y;
         g_ncb_ytasks[g_ncb_ny].dsts = NULL;
         g_ncb_ytasks[g_ncb_ny].off = (size_t)yoff;
@@ -2889,6 +2924,13 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         g_ncb_ytasks[g_ncb_ny].src_buf = nil;   /* stale task slots must not
                                                    inherit an attention src */
         g_ncb_ytasks[g_ncb_ny].dst_buf = ydirect;
+        g_ncb_ytasks[g_ncb_ny].rows = ystride ? B : 0;
+        g_ncb_ytasks[g_ncb_ny].rowbytes = (size_t)N * 4;
+        if (ystride) {
+            /* the generic flush path would memcpy t->bytes from ybase; strided
+             * rows must go through the rows>0 scatter instead */
+            g_ncb_ytasks[g_ncb_ny].out_stride = ystride;
+        }
         g_ncb_ny++;
 
         if (use_bp2d) {
@@ -3057,12 +3099,17 @@ int stratum_metal_nc_batch_flush(void) {
     for (int i = 0; i < g_ncb_ny; i++) {
         const NCBatchYTask* t = &g_ncb_ytasks[i];
         if (t->src_buf) {
-            if (t->out_stride == 0) {
-                memcpy(t->dst, (const char*)[t->src_buf contents] , t->bytes);
+            const char* sb = (const char*)[t->src_buf contents];
+            if (t->rows > 0) {
+                /* per-row scatter: src rows are t->rowbytes apart, dst rows
+                 * t->out_stride floats apart (dst may be nil when dst_buf
+                 * took the direct-write path — nothing to copy then) */
+                for (int r = 0; r < t->rows; r++)
+                    memcpy(t->dst + (size_t)r * t->out_stride,
+                           sb + (size_t)r * t->rowbytes, t->rowbytes);
+            } else if (t->out_stride == 0) {
+                memcpy(t->dst, sb, t->bytes);
             } else {
-                /* attention dst rows sit inside a wider caller buffer
-                 * (H3 fbuf: row = QKV|attn|...): scatter per row */
-                const float* sb = (const float*)[t->src_buf contents];
                 for (int r = 0; r < t->N; r++)
                     memcpy(t->dst + (size_t)r * t->out_stride,
                            sb + (size_t)r * (t->bytes / 4 / t->N),
@@ -3075,6 +3122,10 @@ int stratum_metal_nc_batch_flush(void) {
         } else if (t->is_streams) {
             for (int s2 = 0; s2 < t->B && s2 < 32; s2++)
                 memcpy(t->dst_ptrs[s2], ybase + t->off + (size_t)s2 * t->N * 4, (size_t)t->N * 4);
+        } else if (t->rows > 0) {
+            for (int r = 0; r < t->rows; r++)
+                memcpy(t->dst + (size_t)r * t->out_stride,
+                       ybase + t->off + (size_t)r * t->rowbytes, t->rowbytes);
         } else {
             memcpy(t->dst, ybase + t->off, t->bytes);
         }
@@ -3293,4 +3344,113 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
 int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
                                 float* out, int S, int H, int Hd, float scale) {
     return stratum_metal_nc_batch_attn_strided(Q, K, V, out, S, H, Hd, scale, 0);
+}
+
+/* Packed in-place attention: Q/K/V/out are four regions of ONE buffer with
+ * per-row stride `rowstride` floats and region offsets qoff/koff/voff/ooff.
+ * Uses the h3_attn_prefill_strided kernel; output rows are scattered back
+ * (rows/rowbytes ytask) or, when the out region is a registered NoCopy
+ * window, written directly by the kernel. */
+int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
+                                       int qoff, int koff, int voff, int ooff,
+                                       float* out_region, int S, int H, int Hd,
+                                       float scale) {
+    if (!g_h3_attn || !g_device) return -1;
+    if (!g_ncb_cmd) return -2;
+    if (g_ncb_ny >= 512) return -1;
+    static id<MTLComputePipelineState> spso = nil;
+    static uint gHd = 0;
+    @autoreleasepool {
+        if (!spso || gHd != (uint)Hd) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill_strided"];
+            if (!fn) return -1;
+            spso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+            if (!spso) return -1;
+            gHd = (uint)Hd;
+        }
+        size_t qb = (size_t)S * H * Hd * sizeof(float);
+        id<MTLBuffer> bdir = ncar_get(base, (size_t)S * rowstride * sizeof(float));
+        id<MTLBuffer> ob = nil; size_t ooff_b = 0;
+        id<MTLBuffer> src = nil;
+        if (bdir && out_region >= base &&
+            (uintptr_t)out_region >= (uintptr_t)base) {
+            size_t obyte = (uintptr_t)out_region - (uintptr_t)base;
+            if ((obyte & 16383) == 0) {
+                ob = bdir;
+                ooff_b = obyte;
+            }
+        }
+        /* compact staging fallback: copy q|k|v regions in, scatter rows out */
+        id<MTLBuffer> stage = nil;
+        if (!bdir) {
+            if (!g_ncbatn_qkv || g_ncbatn_cap < qb) {
+                g_ncbatn_qkv = [g_device newBufferWithLength:qb * 3
+                    options:MTLResourceStorageModeShared];
+                g_ncbatn_cap = qb;
+            }
+            if (!g_ncbatn_qkv) return -1;
+            char* b = (char*)[g_ncbatn_qkv contents];
+            for (int r = 0; r < S; r++) {
+                memcpy(b + (size_t)r * qb / S,
+                       base + (size_t)r * rowstride + qoff, (size_t)H * Hd * 4);
+                memcpy(b + qb + (size_t)r * (qb / S),
+                       base + (size_t)r * rowstride + koff, (size_t)H * Hd * 4);
+                memcpy(b + 2 * qb + (size_t)r * (qb / S),
+                       base + (size_t)r * rowstride + voff, (size_t)H * Hd * 4);
+            }
+            stage = g_ncbatn_qkv;
+        }
+        static id<MTLBuffer> obuf = nil; static size_t obuf_cap = 0;
+        if (!ob) {
+            if (obuf_cap < qb) {
+                obuf = [g_device newBufferWithLength:qb
+                    options:MTLResourceStorageModeShared];
+                obuf_cap = qb;
+            }
+            if (!obuf) return -1;
+            ob = obuf;
+        }
+        id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+        [enc setComputePipelineState:spso];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 2 * qb : 0) atIndex:2];
+        [enc setBuffer:ob offset:(NSUInteger)ooff_b atIndex:3];
+        uint32_t s=S, h=H, hd=Hd;
+        [enc setBytes:&s length:4 atIndex:4];
+        [enc setBytes:&h length:4 atIndex:5];
+        [enc setBytes:&hd length:4 atIndex:6];
+        [enc setBytes:&scale length:4 atIndex:7];
+        if (stage) {
+            /* staging slab is token-major compact [S, H*Hd]: row stride =
+             * H*Hd (kernel is the strided variant bound to compact slabs) */
+            uint32_t g0[4] = { (uint)(H * Hd), 0, 0, 0 },
+                     g1[4] = { (uint)(H * Hd), 0, 0, 0 };
+            [enc setBytes:&g0 length:16 atIndex:8];
+            [enc setBytes:&g1 length:16 atIndex:9];
+        } else {
+            uint32_t g0[4] = { (uint)rowstride, (uint)qoff, (uint)koff, (uint)voff };
+            uint32_t g1[4] = { (uint)rowstride, (uint)ooff, 0, 0 };
+            [enc setBytes:&g0 length:16 atIndex:8];
+            [enc setBytes:&g1 length:16 atIndex:9];
+        }
+        uint qtiles = (uint)((S + 63) / 64);
+        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
+            threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        [enc endEncoding];
+        g_ncb_ytasks[g_ncb_ny].dst = out_region;
+        g_ncb_ytasks[g_ncb_ny].dsts = NULL;
+        g_ncb_ytasks[g_ncb_ny].off = 0;
+        g_ncb_ytasks[g_ncb_ny].bytes = qb;
+        g_ncb_ytasks[g_ncb_ny].B = 1;
+        g_ncb_ytasks[g_ncb_ny].N = S;
+        g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+        g_ncb_ytasks[g_ncb_ny].rows = (ob == obuf) ? S : 0;
+        g_ncb_ytasks[g_ncb_ny].rowbytes = (size_t)H * Hd * 4;
+        g_ncb_ytasks[g_ncb_ny].out_stride = rowstride;
+        g_ncb_ytasks[g_ncb_ny].src_buf = (ob == obuf) ? obuf : nil;
+        g_ncb_ytasks[g_ncb_ny].dst_buf = (ob == obuf) ? nil : ob;
+        g_ncb_ny++;
+        return 0;
+    }
 }
