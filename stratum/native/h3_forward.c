@@ -1040,6 +1040,7 @@ int run_h3_forward_main(int argc, char** argv) {
         if (fused_en && g_h3_nc && g_metal_ready &&
             (t_fc1->type == 12 || t_fc1->type == 14) &&
             t_fc2->type == t_fc1->type) {
+            PROF_BEGINSLOT(6);
             stratum_metal_nc_batch_begin();
             int rc = stratum_metal_nc_mlp_fused(
                 (const void*)(G.mmap_base + t_fc1->offset), (size_t)t_fc1->nbytes,
@@ -1047,6 +1048,7 @@ int run_h3_forward_main(int argc, char** argv) {
                 (const void*)(G.mmap_base + t_fc2->offset), (size_t)t_fc2->nbytes,
                 stream, fc1o, FF1, proj, (int)seq_len, HID, FF2);
             stratum_metal_nc_batch_flush();
+            PROF_ENDSLOT(6);
             mlp_fused = (rc == 0);
         }
 #endif
@@ -1840,6 +1842,7 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         if (fused_en && g_h3_nc && g_metal_ready &&
             (t_fc1->type == 12 || t_fc1->type == 14) &&
             t_fc2->type == t_fc1->type) {
+            PROF_BEGINSLOT(6);
             stratum_metal_nc_batch_begin();
             int rc = stratum_metal_nc_mlp_fused(
                 (const void*)(G.mmap_base + t_fc1->offset), (size_t)t_fc1->nbytes,
@@ -1847,6 +1850,7 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                 (const void*)(G.mmap_base + t_fc2->offset), (size_t)t_fc2->nbytes,
                 stream, fc1o, FF1, proj, (int)seq_len, HID, FF2);
             stratum_metal_nc_batch_flush();
+            PROF_ENDSLOT(6);
             mlp_fused = (rc == 0);
         }
 #endif

@@ -323,24 +323,28 @@ Measured notes (seq=276, M4 Pro, hot page cache):
 
 ## Bottleneck profile (seq=276, M4 Pro, hot cache, measured with STRATUM_NC_TIME + H3_PROFILE)
 
-A per-op cost accounting run (commit 65fac4f + `STRATUM_NC_TIME=1`) split the
-37.4s single step into its true components and overturned two prior guesses:
+A per-op cost accounting run split the 37.0s single step into its true
+components. **Note the H3_PROFILE `norm1+adaln` slot (slot 0) is "everything not
+named" — it historically swallowed the fused-MLP GPU time (unaccounted), which
+made the elementwise look 100x more expensive than it is.** The fused path now
+charges its GPU work to slot 6, so slot 0 is really the elementwise:
 
 | component | time | share | nature |
 |---|---|---|---|
-| norm1+adaln (norm2 too) | 13.3s | 36% | pure-CPU scalar elementwise (rmsnorm double-accum + adaln), ~5.5M elem/s |
-| attention (seq<512) | 12.8s | 34% | CPU O(S^2) two-pass double softmax (GPU flash-attn gated off at minseq=512) |
-| qkv gemv | 8.5s | 23% | GPU (NoCopy weight read) |
-| fused MLP (fc1+swiglu+fc2) | ~13.4s | — | GPU, hidden inside adjacent profile slots |
+| qkv gemv | 8.3s | 22% | GPU (NoCopy weight read) |
 | out_proj gemv | 2.7s | 7% | GPU |
-| NoCopy registration | **0.003s** | ~0% | 108 regs x 23.9us — NOT a bottleneck (contradicts an earlier hypothesis) |
+| fused MLP (fc1+swiglu+fc2) | 13.0s | 35% | GPU |
+| attention (seq<512) | 12.8s | 35% | CPU O(S^2) two-pass double softmax |
+| norm1+adaln + norm2 + qknorm+rope | 0.26s | <1% | CPU elementwise — NOT a bottleneck |
+| NoCopy registration | **0.003s** | ~0% | 108 regs x ~25us |
 
-The split is ~26s CPU (70%) vs ~24.6s GPU commit+wait (30%), i.e. the GPU sits
-idle for the two CPU elementwise/attention windows. Effective weight throughput
-is 11.4GB / 24.6s ~= 460 MB/s — the GEMVs are NOT NoCopy-bound (registration is
-3ms total) but the CPU windows are the wall-clock floor.
+The real split is **~23.9s GPU GEMV (65%) vs ~12.8s CPU attention (35%)**; the
+CPU elementwise is effectively free (0.26s). Effective weight throughput is
+11.4GB / 23.9s ~= 480 MB/s — far below the 273GB/s unified-memory peak, and
+NOT explained by NoCopy registration (3ms total). The GEMV's ~480MB/s is the
+open question to attack next.
 
-Two things this profile rules IN / OUT:
+Rulings:
 
 - **attention -> GPU is blocked by boundary 1.** Forcing `H3_ATTN_MINSEQ=1` at
   seq=276 cuts the step 37.4s -> 25.6s (-32%) but the final velocity shifts
@@ -348,11 +352,13 @@ Two things this profile rules IN / OUT:
   the CPU's two-pass double softmax, i.e. lowering softmax precision — the
   exact thing boundary 1 forbids. Not enabled until the flash-attn kernel
   accumulates in double (or is proven bit-equivalent).
-- **norm1+adaln is the safe, largest lever.** It is pure elementwise with a
-  double-accumulated rmsnorm; NEON/GPU vectorization that keeps double (or a
-  validated fp32 sum) should drop 13.3s to ~1s without touching the model's
-  numerics. This is the next attack, ahead of q*-style GPU/CPU row-splitting
-  (which only pays once the CPU is no longer the floor).
+- **NEON-vectorizing the norm+adaln is a dead end** — measured: clang
+  -O3 -ffast-math already auto-vectorizes the scalar loop (0.2ns/elem L1
+  bound); a hand-written float64x2 sum-of-squares was bit-exact but 0.33x
+  the compiler's version. The elementwise is 0.26s total anyway. Reverted.
+- **The next attack is the GEMV's ~480MB/s**, not the elementwise and not
+  the q*-style CPU/GPU row-split (the CPU is free, the GPU is the floor).
 
 `STRATUM_NC_TIME=1` prints the NoCopy-vs-commit+wait accounting after a forward;
 it is the FreeToken-style "measure once, then optimize" hook kept permanent.
+
