@@ -190,6 +190,14 @@ int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
 int stratum_metal_nc_batch_begin(void);
 int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                                const float* x, float* y, int N, int K, int B);
+/* Register a caller-owned page-aligned activation buffer for zero-copy
+ * direct-read inside nc_batch_add (x registry). Call once after allocation;
+ * unregistered / non-page-aligned x still takes the staging-copy path. */
+int stratum_metal_nc_xreg_register(const float* p, size_t bytes);
+/* y-side direct-write registry (same contract as the x registry): register a
+ * page-aligned destination buffer once; nc_batch_add then lets the GPU write
+ * it in place and flush skips the copy-back. */
+int stratum_metal_nc_yreg_register(float* p, size_t bytes);
 int stratum_metal_nc_batch_flush(void);
 
 /* V54.4b: batch_add with per-stream y targets (multix ys[] array). The

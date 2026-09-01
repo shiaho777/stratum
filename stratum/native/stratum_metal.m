@@ -2692,20 +2692,62 @@ typedef struct { float* ptr; size_t len; __strong id<MTLBuffer> buf; } NCYReg;
 static NCYReg g_ncyr[256];
 static int g_ncyr_n = 0;
 
+/* lookup only — registration happens via stratum_metal_nc_yreg_register
+ * (eager, at allocation time). Keeping the hot path lookup-only removes a
+ * sysconf + page-align branch from every add. */
 static id<MTLBuffer> nc_yreg_get(float* p, size_t bytes) {
     for (int i = 0; i < g_ncyr_n; i++)
         if (g_ncyr[i].ptr == p && g_ncyr[i].len >= bytes)
             return g_ncyr[i].buf;
+    return nil;
+}
+
+int stratum_metal_nc_yreg_register(float* p, size_t bytes) {
+    if (!g_device || !p || bytes == 0) return -1;
+    if (g_ncyr_n >= 256) return -1;
     long pg = sysconf(_SC_PAGESIZE);
-    if (((uintptr_t)p & (pg - 1)) != 0) return nil;
-    if (g_ncyr_n >= 256) return nil;
+    if (((uintptr_t)p & (pg - 1)) != 0) return -1;
+    for (int i = 0; i < g_ncyr_n; i++)
+        if (g_ncyr[i].ptr == p && g_ncyr[i].len >= bytes) return 0;
     id<MTLBuffer> b = [g_device newBufferWithBytesNoCopy:p
         length:((bytes + pg - 1) / pg) * pg
         options:MTLResourceStorageModeShared deallocator:nil];
-    if (!b) return nil;
+    if (!b) return -1;
     g_ncyr[g_ncyr_n].ptr = p; g_ncyr[g_ncyr_n].len = bytes;
     g_ncyr[g_ncyr_n].buf = b; g_ncyr_n++;
-    return b;
+    return 0;
+}
+
+/* x direct-read registry: same idea as the y direct-write registry, for the
+ * caller-owned activation operand. Callers whose x buffers are page-aligned
+ * (aligned_alloc) and stable across calls register once; nc_batch_add then
+ * encodes against the caller's memory directly instead of memcpy-ing x into
+ * the staging xbuf. Falls back to staging copy on any mismatch. */
+typedef struct { float* ptr; size_t len; __strong id<MTLBuffer> buf; } NCXReg;
+static NCXReg g_ncxr[64];
+static int g_ncxr_n = 0;
+
+static id<MTLBuffer> nc_xreg_get(const float* p, size_t bytes) {
+    for (int i = 0; i < g_ncxr_n; i++)
+        if (g_ncxr[i].ptr == p && g_ncxr[i].len >= bytes)
+            return g_ncxr[i].buf;
+    return nil;
+}
+
+int stratum_metal_nc_xreg_register(const float* p, size_t bytes) {
+    if (!g_device || !p || bytes == 0) return -1;
+    if (g_ncxr_n >= 64) return -1;
+    long pg = sysconf(_SC_PAGESIZE);
+    if (((uintptr_t)p & (pg - 1)) != 0) return -1;
+    for (int i = 0; i < g_ncxr_n; i++)
+        if (g_ncxr[i].ptr == p && g_ncxr[i].len >= bytes) return 0;
+    id<MTLBuffer> b = [g_device newBufferWithBytesNoCopy:(void*)p
+        length:((bytes + pg - 1) / pg) * pg
+        options:MTLResourceStorageModeShared deallocator:nil];
+    if (!b) return -1;
+    g_ncxr[g_ncxr_n].ptr = (float*)p; g_ncxr[g_ncxr_n].len = bytes;
+    g_ncxr[g_ncxr_n].buf = b; g_ncxr_n++;
+    return 0;
 }
 /* Process-lifetime NoCopy pool: recreating MTLBuffers over the same mmap range in
  * rapid cycles races the driver's weak registration of the dying buffer (observed
@@ -2752,14 +2794,35 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         return stratum_metal_nc_sgemv2(wptr, nbytes, gguf_type, x, y, N, K, B) == 0 ? -2 : -1;
     }
     id<MTLComputePipelineState> pso, bpso;
-    switch (gguf_type) {
-        case 10: pso = g_q2k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q2k_sgemv_b[B] : nil; break;
-        case 12: pso = g_q4k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q4k_sgemv_b[B] : nil; break;
-        case 13: pso = g_q5k_sgemv;  bpso = nil; break;
-        case 14: pso = g_q6k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q6k_sgemv_b[B] : nil; break;
-        default: return -1;
+    /* 2D row-bparallel kernels: one threadgroup per (row, b-chunk), weight
+     * row decoded ONCE and reused across all B columns — the batch scaling
+     * path. Works for any B (odd B: last chunk guards b1idx < B), so the
+     * old B<=32 ceiling and per-b encoder loops are both gone.
+     * MEASURED (H3 seq=276, M4 Pro): the b1 specialization (_b[B]) wins at
+     * B<=32 (interleaved A/B: 32.8s vs 37.6s — the bparallel kernels are
+     * unmasked-overhead but the row-loop re-walks x per column pair and the
+     * b1 kernels keep the whole x row in registers). bparallel is therefore
+     * gated to B>32 where batched_b can't run in one dispatch at all. */
+    int use_bp2d = 0;
+    id<MTLComputePipelineState> bppso = nil;
+    int bpp_g2 = 0;
+    if (B > 32) {
+        if (gguf_type == 12 && g_q4k_sgemv_bp) { bppso = g_q4k_sgemv_bp; use_bp2d = 1; }
+        else if (gguf_type == 14) {
+            if (g_q6k_sgemv_bp_v4) { bppso = g_q6k_sgemv_bp_v4; use_bp2d = 1; }
+            else if (g_q6k_sgemv_bp) { bppso = g_q6k_sgemv_bp; use_bp2d = 1; }
+        }
     }
-    if (!pso) return -1;
+    if (!use_bp2d) {
+        switch (gguf_type) {
+            case 10: pso = g_q2k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q2k_sgemv_b[B] : nil; break;
+            case 12: pso = g_q4k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q4k_sgemv_b[B] : nil; break;
+            case 13: pso = g_q5k_sgemv;  bpso = nil; break;
+            case 14: pso = g_q6k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q6k_sgemv_b[B] : nil; break;
+            default: return -1;
+        }
+        if (!pso) return -1;
+    }
     @autoreleasepool {
         /* newBufferWithBytesNoCopy requires a page-aligned pointer and length;
          * GGUF tensor offsets are not page-aligned. Window the enclosing page
@@ -2783,11 +2846,16 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         if (!wbuf) return -1;
         if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         uint32_t K_u32 = (uint32_t)K;
-        /* x region: always copy fresh (caller may reuse one static buffer
-         * with different contents across calls — pointer identity is NOT
-         * a valid reuse key) */
+        /* x region: direct-read via the x registry when the caller's buffer
+         * is page-aligned and registered (zero-copy); otherwise copy into
+         * the staging xbuf (caller may reuse one static buffer with
+         * different contents across calls — pointer identity alone is NOT
+         * a valid reuse key, so registry hits are the only zero-copy path) */
         int xoff;
-        {
+        id<MTLBuffer> xdirect = nc_xreg_get(x, (size_t)K * B * sizeof(float));
+        if (xdirect) {
+            xoff = 0;
+        } else {
             size_t xb = (size_t)K * B * sizeof(float);
             if (g_ncb_xpos + xb > g_ncb_xcap) {
                 g_ncb_xcap = (g_ncb_xcap ? g_ncb_xcap * 2 : (4u << 20));
@@ -2822,25 +2890,25 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
         g_ncb_ytasks[g_ncb_ny].dst_buf = ydirect;
         g_ncb_ny++;
 
-        if (B > 1 && bpso) {
+        if (use_bp2d) {
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-            [enc setComputePipelineState:bpso];
+            [enc setComputePipelineState:bppso];
             [enc setBuffer:wbuf      offset:woff  atIndex:0];
-            [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
+            [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf) offset:xoff atIndex:1];
             [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? 0 : yoff) atIndex:2];
             [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
             [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
-            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
             [enc endEncoding];
-        } else {
+        } else if (B > 1 && bpso) {
             for (int b = 0; b < B; b++) {
                 id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
                 [enc setComputePipelineState:pso];
                 [enc setBuffer:wbuf      offset:woff atIndex:0];
-                [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff + (size_t)b*K*sizeof(float) atIndex:1];
+                [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf) offset:(xdirect ? (size_t)b*K*sizeof(float) : (size_t)xoff + (size_t)b*K*sizeof(float)) atIndex:1];
                 [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? (size_t)b*N*sizeof(float) : (size_t)yoff + (size_t)b*N*sizeof(float)) atIndex:2];
                 [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
@@ -2857,15 +2925,28 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
     if (!wptr || nbytes == 0 || !g_device) return -1;
     if (g_ncb_ny >= 512) return -1;
     if (!g_ncb_cmd) return -2;   /* caller falls back to sync nc_sgemv2 */
-    id<MTLComputePipelineState> pso, bpso;
-    switch (gguf_type) {
-        case 10: pso = g_q2k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q2k_sgemv_b[B] : nil; break;
-        case 12: pso = g_q4k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q4k_sgemv_b[B] : nil; break;
-        case 13: pso = g_q5k_sgemv;  bpso = nil; break;
-        case 14: pso = g_q6k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q6k_sgemv_b[B] : nil; break;
-        default: return -1;
+    /* 2D bparallel path mirrors nc_batch_add: only for B>32, where the
+     * per-b batched_b specialization has no PSO (same measured cutoff) */
+    int use_bp2d = 0;
+    id<MTLComputePipelineState> bppso = nil;
+    if (B > 32) {
+        if (gguf_type == 12 && g_q4k_sgemv_bp) { bppso = g_q4k_sgemv_bp; use_bp2d = 1; }
+        else if (gguf_type == 14) {
+            if (g_q6k_sgemv_bp_v4) { bppso = g_q6k_sgemv_bp_v4; use_bp2d = 1; }
+            else if (g_q6k_sgemv_bp) { bppso = g_q6k_sgemv_bp; use_bp2d = 1; }
+        }
     }
-    if (!pso) return -1;
+    id<MTLComputePipelineState> pso, bpso;
+    if (!use_bp2d) {
+        switch (gguf_type) {
+            case 10: pso = g_q2k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q2k_sgemv_b[B] : nil; break;
+            case 12: pso = g_q4k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q4k_sgemv_b[B] : nil; break;
+            case 13: pso = g_q5k_sgemv;  bpso = nil; break;
+            case 14: pso = g_q6k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q6k_sgemv_b[B] : nil; break;
+            default: return -1;
+        }
+        if (!pso) return -1;
+    }
     @autoreleasepool {
         size_t woff = 0;
         void* wptr_a = (void*)wptr;
@@ -2919,7 +3000,20 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
         g_ncb_ytasks[g_ncb_ny].is_streams = 1;
         g_ncb_ny++;
 
-        if (B > 1 && bpso) {
+        if (use_bp2d) {
+            uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            [enc setComputePipelineState:bppso];
+            [enc setBuffer:wbuf      offset:woff  atIndex:0];
+            [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
+            [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
+            [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+            [enc endEncoding];
+        } else if (B > 1 && bpso) {
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             [enc setComputePipelineState:bpso];
