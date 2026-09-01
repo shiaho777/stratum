@@ -246,6 +246,27 @@ they are read by the spike programs, not by the `stratum` engine.
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
 
+### H3 fused activation buffer + fc2 row-stride fix (2026-09-01, a9ec089)
+
+The attention and MLP phases now share ONE fused buffer (fbuf, rows of
+FF1 = QKV+comp): the flash-attention kernel (`h3_attn_prefill_strided`)
+reads q/k/v regions in place and writes the attn-out region; fc1 overwrites
+the whole row; fc2 reads the swiglu-compacted head via
+`nc_batch_add_strided`. The gather (gq/gk/gv) and separate attn/qkv buffers
+are gone. Activations at 768p scale (seq~7440): ~2.1GB -> ~1.3GB.
+
+BUG FIX: the fc2 gemv had always consumed rows at stride FF2 while swiglu
+compacts at stride FF1 — rows s>=1 of every layer read the wrong
+activations (verified by standalone recomputation against h3_step.c's
+validated [S,FF2] semantics). Outputs differ from all prior binaries; with
+the fix velocity stays finite and sane (max|v|=4.03 at vt=1 sigma=0.5) and
+NC-vs-CPU agree to 1.7e-5.
+
+GPU-vs-CPU attention: the flash kernel (float online softmax) vs CPU
+(double two-pass) differs ~1e-1 per model on real activations — unit-tested
+side-by-side with the OLD compact kernel, which shows the same gap; GPU
+attention was simply never exercised below seq=512 before.
+
 ### H3 memory footprint (measured 2026-09-01, vt=1 seq=276, M4 Pro)
 
 The resident sampler's anonymous footprint was cut ~41% (max RSS 294 MB ->
