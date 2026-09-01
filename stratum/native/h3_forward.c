@@ -242,6 +242,29 @@ static double h3_now_s(void) {
     return mach_absolute_time() * tb.numer / tb.denom / 1e9;
 }
 
+/* H3_PROFILE=1: per-stage wall-clock accumulation across the 50 blocks.
+ * Reveals where a step actually spends time (gemv vs attention vs norms
+ * vs copies) without changing any numerics. */
+static int g_h3_prof = -1;
+static double g_prof[8];
+static const char* g_prof_nm[8] = {
+    "norm1+adaln", "qkv gemv", "qknorm+rope", "attention",
+    "out_proj gemv", "norm2", "fc1 gemv", "fc2+resid"
+};
+static inline void prof_on(void) {
+    if (g_h3_prof < 0) g_h3_prof = getenv("H3_PROFILE") ? 1 : 0;
+}
+#define PROF_ENTER(do_reset) \
+    double h3p_t0 = 0; int h3p_fresh = 1; \
+    if (g_h3_prof) { h3p_t0 = h3_now_s(); h3p_fresh = 0; } \
+    (void)h3p_t0; (void)h3p_fresh; (void)do_reset
+#define PROF_EXIT(slot) \
+    if (g_h3_prof) g_prof[slot] += h3_now_s() - h3p_t0
+#define PROF_BEGINSLOT(slot) \
+    if (g_h3_prof) { h3p_t0 = h3_now_s(); h3p_fresh = 0; }
+#define PROF_ENDSLOT(slot) \
+    if (g_h3_prof) { g_prof[slot] += h3_now_s() - h3p_t0; h3p_fresh = 1; }
+
 static void mixed_gemv(const GgufTensor* t, int in_dim, int out_dim,
                        const float* x, float* y) {
     int nbpr = in_dim / 256;
@@ -283,6 +306,11 @@ static void f32_gemv(const void* w, int in_dim, int out_dim,
 static double g_sigma_v = 0.0;   /* M4 driver sets these per step */
 static double g_sigma_a = 0.0;
 
+/* page-aligned allocation for NC zero-copy x/y windows (needs page-rounded
+ * size; used by stream + block scratch buffers) */
+#define H3_ALIGNED_FLOATS(n) ((float*)aligned_alloc(4096, \
+    (((size_t)(n) * sizeof(float) + 4095) / 4096) * 4096))
+
 static double env_sigma_default(void) {
     const char* e = getenv("H3_SIGMA_V");
     double sv = e ? atof(e) : 0.0;
@@ -314,9 +342,51 @@ static long g_seq_len; static int g_tag_sel;
 
 int run_h3_forward_main(int argc, char** argv);   /* old main */
 
+/* ================= resident multi-step sampler =================
+ * The Euler driver used to spawn ONE PROCESS PER STEP (h3_euler.sh ->
+ * ./h3_forward), re-doing per step: gguf header parse, Metal device init,
+ * condition_proj, the 2-block token refiner, both patch projections and
+ * the pos/tag table — all of which are IDENTICAL across steps (only
+ * sigma and the video latent change). With H3_SAMPLER_STEPS=N the same
+ * process instead:
+ *   1. runs the one-time conditioning once,
+ *   2. loops N sigma steps: refresh AdaLN rows from the new sigma, run
+ *      the 50-block denoiser, apply the Euler update in patch space.
+ * Audio latent state is carried the same way (H3_A_IN -> per-step rows).
+ * Numerics per step are identical to the single-step binary: same code
+ * path, same fp order; the sampler only skips re-doing step-invariant
+ * work. Sampling-loop timing now equals 50-block time + epsilon. */
+
+/* state that is step-invariant, captured after one-time setup */
+typedef struct {
+    long seq_len; int s_text, n_audio, n_video;
+    int HID, HD, HEADS, QKV, comp, FF1, FF2, NL, T_DIM;
+    long TBL_ROWS;
+    float* stream;      /* [seq_len, HID] — video/audio rows re-embedded per step */
+    double* pos;        /* [seq_len, 3] */
+    int* tag;           /* [seq_len] */
+    float* text_cond;   /* refined text rows [s_text, HID] — copied into stream each step */
+    float* astate;      /* audio rows [n_audio, 32] or NULL */
+    float* xstate;      /* video patch rows [n_video, 96] (Euler state, lives here) */
+    float* xnext;       /* video velocity rows [n_video, 96] from the last step */
+    float (*adaln6)[6][6][MAX_HID];
+    const float* inv_freq;
+    float* xres; float* qkv; float* attn; float* fc1o; float* proj;
+} H3SamState;
+
+static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc);
+int h3_sampler_main(int argc, char** argv);
+static int h3_sampler_setup(H3SamState* st, int argc, char** argv,
+                            int vt, int lat_h, int lat_w, int audio_t);
+
 /* M4 driver: Euler loop lives in h3_sample_main below; the packed
  * forward itself is parameterized by sigma through g_t_emb_*. */
-int main(int argc, char** argv) { return run_h3_forward_main(argc, argv); }
+static int g_resident_sampler = 0;
+int main(int argc, char** argv) {
+    if (getenv("H3_SAMPLER_STEPS")) g_resident_sampler = atoi(getenv("H3_SAMPLER_STEPS"));
+    if (g_resident_sampler > 0) return h3_sampler_main(argc, argv);
+    return run_h3_forward_main(argc, argv);
+}
 
 int run_h3_forward_main(int argc, char** argv) {
     if (argc < 3) {
@@ -695,17 +765,26 @@ int run_h3_forward_main(int argc, char** argv) {
     }
 
     /* --- denoiser blocks --- */
+    /* NOTE (measured, seq=276 M4 Pro, interleaved A/B): page-aligned
+     * (aligned_alloc) scratch made the NC path ~12% SLOWER (36.5s vs
+     * 32.3s), and NoCopy x/y windows over the activations were slower
+     * still (39-46s). The staging xbuf/ybuf copies inside nc_batch_add
+     * beat NoCopy windows on small buffers; malloc is intentional here. */
     float* xres = malloc(sizeof(float) * seq_len * HID);
     float* qkv = malloc(sizeof(float) * seq_len * QKV);
     float* attn = malloc(sizeof(float) * seq_len * comp);
     float* fc1o = malloc(sizeof(float) * seq_len * FF1);
     float* proj = malloc(sizeof(float) * seq_len * HID);
     const float* inv_freq = (const float*)T("rope.inv_freq");
+    prof_on();
+    memset(g_prof, 0, sizeof g_prof);
     clock_t t0 = clock();
 
     for (int li = 0; li < NL; li++) {
         char nm[160];
         /* rows: video=0 (m0 tag0), text=1 (m0 tag1), audio=5 (m1 tag2) */
+        double h3p_t0 = 0; int h3p_fresh = 1; (void)h3p_t0; (void)h3p_fresh;
+        PROF_BEGINSLOT(0);
         float* shift_msa = adaln6[li][0][0];
         float* scale_msa = adaln6[li][0][1];
         float* gate_msa  = adaln6[li][0][2];
@@ -726,6 +805,7 @@ int run_h3_forward_main(int argc, char** argv) {
         float* gate_mlp_a  = adaln6[li][5][5];
 
         memcpy(xres, stream, sizeof(float) * seq_len * HID);
+        PROF_ENDSLOT(0);
         snprintf(nm, sizeof nm, "blocks.%d.norm1.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
@@ -744,13 +824,16 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
+        PROF_BEGINSLOT(1);
         mixed_gemv_batch(TT(nm), HID, QKV, seq_len, stream, qkv);
+        PROF_ENDSLOT(1);
 
         /* fused qk-norm + split-half rope, per-tag AdaLN'd rows already in */
         snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
         const uint16_t* qw = (const uint16_t*)T(nm);
         snprintf(nm, sizeof nm, "blocks.%d.attn.k_norm.weight", li);
         const uint16_t* kw = (const uint16_t*)T(nm);
+        PROF_BEGINSLOT(2);
         for (long s = 0; s < seq_len; s++) {
             for (int h = 0; h < HEADS; h++) {
                 float* qp = &qkv[s * QKV + h * HD];
@@ -784,6 +867,7 @@ int run_h3_forward_main(int argc, char** argv) {
         }
 
         /* bidirectional attention (full packed stream) */
+        PROF_ENDSLOT(2);
         float scale2 = 1.0f / sqrtf((float)HD);
         float* lgd = NULL;   /* CPU-attention scratch; NULL on the GPU path */
 #ifdef STRATUM_USE_METAL
@@ -865,8 +949,12 @@ int run_h3_forward_main(int argc, char** argv) {
             }
 
         attn_done:;
+        PROF_ENDSLOT(3);
         snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
+        PROF_BEGINSLOT(4);
         mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
+        PROF_ENDSLOT(4);
+        PROF_BEGINSLOT(0);
         if (getenv("H3_ATTN_PROBE") && li == 2) {
             long b1=0; double m1=0;
             for (long t = 0; t < seq_len * comp; t++)
@@ -883,9 +971,13 @@ int run_h3_forward_main(int argc, char** argv) {
             for (int i = 0; i < HID; i++)
                 stream[s * HID + i] = xres[s * HID + i] + g[i] * proj[s * HID + i];
         }
+        PROF_ENDSLOT(0);
 
         /* mlp */
+        PROF_BEGINSLOT(0);
         memcpy(xres, stream, sizeof(float) * seq_len * HID);
+        PROF_ENDSLOT(0);
+        PROF_BEGINSLOT(5);
         snprintf(nm, sizeof nm, "blocks.%d.norm2.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
@@ -904,15 +996,22 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
+        PROF_BEGINSLOT(6);
         mixed_gemv_batch(TT(nm), HID, FF1, seq_len, stream, fc1o);
+        PROF_ENDSLOT(6);
+        PROF_BEGINSLOT(7);
         for (long s = 0; s < seq_len; s++)
             for (int i = 0; i < FF2; i++) {
                 float gv = fc1o[s * FF1 + i];
                 fc1o[s * FF1 + i] =
                     (gv / (1.0f + expf(-gv))) * fc1o[s * FF1 + FF2 + i];
             }
+        PROF_ENDSLOT(7);
+        PROF_BEGINSLOT(7);
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
         mixed_gemv_batch(TT(nm), FF2, HID, seq_len, fc1o, proj);
+        PROF_ENDSLOT(7);
+        PROF_BEGINSLOT(0);
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_mlp
                            : tag[s] == 1 ? gate_mlp_t : gate_mlp_a;
@@ -920,6 +1019,7 @@ int run_h3_forward_main(int argc, char** argv) {
                 stream[s * HID + i] =
                     xres[s * HID + i] + g[i] * proj[s * HID + i];
         }
+        PROF_ENDSLOT(0);
 
         free(lgd);
         lgd = NULL;
@@ -939,6 +1039,15 @@ int run_h3_forward_main(int argc, char** argv) {
     double elapsed = h3_now_s() - t_fw;
     fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs wall\n",
             NL, seq_len, elapsed);
+    if (g_h3_prof) {
+        double acc = 0;
+        for (int i = 1; i < 8; i++) acc += g_prof[i];
+        g_prof[0] = elapsed - acc;   /* slot 0 = everything not named */
+        fprintf(stderr, "  profile:");
+        for (int i = 0; i < 8; i++)
+            fprintf(stderr, " %s %.2fs", g_prof_nm[i], g_prof[i]);
+        fprintf(stderr, "\n");
+    }
 
     /* --- M4b: final_layer — norm + its own AdaLN (expand=2, modalities=1)
      * + video_out/audio_out F32 heads. THIS is the velocity in patch
@@ -1014,6 +1123,754 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         printf("velocity: video %dx96, audio %dx32 -> /tmp/h3_packed_out.bin\n",
                n_video, n_audio);
+        free(vvel); free(avel);
+    }
+
+    return 0;
+}
+
+/* ================= resident multi-step sampler (H3_SAMPLER_STEPS) ================= */
+
+static const char* g_te_dump_path = NULL;
+
+/* One-time conditioning + buffers, shared verbatim with run_h3_forward_main:
+ * text_states load -> condition_proj -> token_refiner(2 blocks) -> final_norm
+ * -> audio/video patch projections (with initial or carried state) -> pos/tag.
+ * Everything produced here is step-invariant except the latent state itself. */
+static int h3_sampler_setup(H3SamState* st, int argc, char** argv,
+                            int vt, int lat_h, int lat_w, int audio_t) {
+    (void)argc; (void)argv;
+    /* ---- dims (same probes as run_h3_forward_main) ---- */
+    int HID = 0;
+    { const GgufTensor* t = TT("final_layer.norm.weight"); HID = (int)t->dims[0]; }
+    int HD = 0, HEADS, QKV, FF1, FF2, NL = 0;
+    { const GgufTensor* t = TT("blocks.0.attn.q_norm.weight"); HD = (int)t->dims[0]; }
+    { const GgufTensor* t = TT("blocks.0.attn.qkv_proj.weight");
+      QKV = (int)t->dims[1]; HEADS = QKV / 3 / HD; }
+    { const GgufTensor* t = TT("blocks.0.mlp.fc1.weight"); FF1 = (int)t->dims[1]; }
+    { const GgufTensor* t = TT("blocks.0.mlp.fc2.weight"); FF2 = (int)t->dims[0]; }
+    for (uint64_t i = 0; i < G.n_tensors; i++) {
+        if (!strncmp(G.tensors[i].name, "blocks.", 7)) {
+            int bi = atoi(G.tensors[i].name + 7);
+            if (bi + 1 > NL) NL = bi + 1;
+        }
+    }
+    int comp = QKV / 3;
+    st->HID = HID; st->HD = HD; st->HEADS = HEADS; st->QKV = QKV;
+    st->comp = comp; st->FF1 = FF1; st->FF2 = FF2; st->NL = NL;
+
+    /* ---- text_states dump ---- */
+    long s_text = 0; int te_hid = 0;
+    float* text_states = NULL;
+    {
+        FILE* f = fopen(g_te_dump_path, "rb");
+        char magic[8]; uint32_t meta[3];
+        if (!f || fread(magic, 1, 8, f) != 8 || memcmp(magic, "Q3TE0001", 8)) {
+            fprintf(stderr, "bad text_states dump\n"); return 1;
+        }
+        if (fread(meta, 4, 3, f) != 3) return 1;
+        s_text = meta[0]; te_hid = (int)meta[1];
+        if (te_hid != 5120) { fprintf(stderr, "text_states hid %d?\n", te_hid); return 1; }
+        text_states = malloc(sizeof(float) * s_text * te_hid);
+        if (fread(text_states, 4, s_text * te_hid, f) != (size_t)(s_text * te_hid))
+            return 1;
+        fclose(f);
+    }
+    st->s_text = (int)s_text;
+
+    /* ---- condition_proj (bf16) ---- */
+    float* trow = malloc(sizeof(float) * (size_t)s_text * HID);
+    float* text_cond = malloc(sizeof(float) * s_text * HID);
+    {
+        const GgufTensor* w = TT("condition_proj.weight");
+        const GgufTensor* b = TT("condition_proj.bias");
+        const uint16_t* wr = (const uint16_t*)(G.mmap_base + w->offset);
+        const uint16_t* br = (const uint16_t*)(G.mmap_base + b->offset);
+        for (long s = 0; s < s_text; s++) {
+            for (int r = 0; r < HID; r++) {
+                const uint16_t* row = wr + (size_t)r * te_hid;
+                double acc = (double)bfv(br[r]);
+                for (int c = 0; c < te_hid; c++)
+                    acc += (double)bfv(row[c]) * (double)text_states[s * te_hid + c];
+                text_cond[s * HID + r] = (float)acc;
+            }
+        }
+    }
+    free(text_states);
+
+    /* ---- token refiner (2 blocks) + final_norm: identical to
+     * run_h3_forward_main's refiner section; runs ONCE for the whole
+     * sampling loop (its output does not depend on sigma or the latent) ---- */
+    for (int li = 0; li < 2; li++) {
+        char nm[160];
+        float* xr = malloc(sizeof(float) * s_text * HID);
+        memcpy(xr, text_cond, sizeof(float) * s_text * HID);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.norm1.weight", li);
+        {
+            const uint16_t* g16 = (const uint16_t*)T(nm);
+            for (long s = 0; s < s_text; s++) {
+                float* r = &text_cond[s * HID];
+                double ss = 0;
+                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+                for (int i = 0; i < HID; i++) r[i] *= sc * bfv(g16[i]);
+            }
+        }
+        float* qkv = malloc(sizeof(float) * s_text * QKV);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.qkv_proj.weight", li);
+        mixed_gemv_batch(TT(nm), HID, QKV, s_text, text_cond, qkv);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.q_norm.weight", li);
+        const uint16_t* qw = (const uint16_t*)T(nm);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.k_norm.weight", li);
+        const uint16_t* kw = (const uint16_t*)T(nm);
+        for (long s = 0; s < s_text; s++) {
+            for (int h = 0; h < HEADS; h++) {
+                float* qp = &qkv[s * QKV + h * HD];
+                double ss = 0;
+                for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
+                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
+                for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
+            }
+            for (int h = 0; h < HEADS; h++) {
+                float* kp = &qkv[s * QKV + comp + h * HD];
+                double ss = 0;
+                for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
+                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
+                for (int d = 0; d < HD; d++) kp[d] *= sc * bfv(kw[d]);
+            }
+        }
+        float* attn = calloc((size_t)s_text * comp, sizeof(float));
+        float scale = 1.0f / sqrtf((float)HD);
+        for (int h = 0; h < HEADS; h++)
+            for (int a = 0; a < s_text; a++) {
+                const float* qh = &qkv[a * QKV + h * HD];
+                float lg[4096];
+                for (int b2 = 0; b2 < s_text; b2++) {
+                    const float* kh = &qkv[b2 * QKV + comp + h * HD];
+                    double dot = 0;
+                    for (int d = 0; d < HD; d++) dot += (double)qh[d] * kh[d];
+                    lg[b2] = (float)(dot * scale);
+                }
+                float mx = lg[0];
+                for (int j = 1; j < s_text; j++) if (lg[j] > mx) mx = lg[j];
+                double se = 0;
+                for (int j = 0; j < s_text; j++) { lg[j] -= mx; se += exp((double)lg[j]); }
+                float inv = (float)(1.0 / se);
+                float* oh = &attn[a * comp + h * HD];
+                for (int b2 = 0; b2 < s_text; b2++) {
+                    float pv = expf(lg[b2]) * inv;
+                    const float* vh = &qkv[b2 * QKV + 2 * comp + h * HD];
+                    for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
+                }
+            }
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.attn.out_proj.weight", li);
+        mixed_gemv_batch(TT(nm), comp, HID, s_text, attn, trow);
+        for (long i = 0; i < s_text * HID; i++) text_cond[i] = xr[i] + trow[i];
+        free(qkv); free(attn);
+
+        memcpy(xr, text_cond, sizeof(float) * s_text * HID);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.norm2.weight", li);
+        {
+            const uint16_t* g16 = (const uint16_t*)T(nm);
+            for (long s = 0; s < s_text; s++) {
+                float* r = &text_cond[s * HID];
+                double ss = 0;
+                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+                for (int i = 0; i < HID; i++) r[i] *= sc * bfv(g16[i]);
+            }
+        }
+        float* f1 = malloc(sizeof(float) * s_text * FF1);
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.mlp.fc1.weight", li);
+        mixed_gemv_batch(TT(nm), HID, FF1, s_text, text_cond, f1);
+        float* fa = malloc(sizeof(float) * s_text * FF2);
+        for (long s = 0; s < s_text; s++)
+            for (int i = 0; i < FF2; i++) {
+                float gv = f1[s * FF1 + i];
+                fa[s * FF2 + i] = (gv / (1.0f + expf(-gv))) * f1[s * FF1 + FF2 + i];
+            }
+        snprintf(nm, sizeof nm, "token_refiner.blocks.%d.mlp.fc2.weight", li);
+        mixed_gemv_batch(TT(nm), FF2, HID, s_text, fa, trow);
+        for (long i = 0; i < s_text * HID; i++) text_cond[i] = xr[i] + trow[i];
+        free(xr); free(f1); free(fa);
+    }
+    {
+        const uint16_t* g16 = (const uint16_t*)T("token_refiner.final_norm.weight");
+        for (long s = 0; s < s_text; s++) {
+            float* r = &text_cond[s * HID];
+            double ss = 0;
+            for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+            float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+            for (int i = 0; i < HID; i++) r[i] *= sc * bfv(g16[i]);
+        }
+    }
+    free(trow);
+    st->text_cond = text_cond;
+
+    /* ---- audio state ---- */
+    int nh = lat_h / 2, nw = lat_w / 2;
+    int frame_rows = nh * nw;
+    int n_audio = audio_t * 2;
+    int n_video = vt * frame_rows;
+    long seq_len = s_text + n_audio + n_video;
+    st->n_audio = n_audio; st->n_video = n_video; st->seq_len = seq_len;
+    fprintf(stderr, "packed: text=%ld audio=%d video=%d seq=%ld\n",
+            s_text, n_audio, n_video, seq_len);
+
+    st->astate = NULL;
+    {
+        const char* ain = getenv("H3_A_IN");
+        if (ain) {
+            FILE* af = fopen(ain, "rb");
+            st->astate = malloc(sizeof(float) * (size_t)n_audio * AUDIO_ROW_DIM);
+            if (!af || fread(st->astate, 4, (size_t)n_audio * AUDIO_ROW_DIM, af)
+                    != (size_t)n_audio * AUDIO_ROW_DIM) {
+                fprintf(stderr, "H3_A_IN unreadable\n"); return 1;
+            }
+            fclose(af);
+        }
+    }
+
+    /* ---- video latent state: initial noise or H3_X_IN, patch rows [n_video, 96] ---- */
+    st->xstate = malloc(sizeof(float) * (size_t)n_video * 96);
+    st->xnext = malloc(sizeof(float) * (size_t)n_video * 96);
+    {
+        const char* xin = getenv("H3_X_IN");
+        if (xin) {
+            FILE* xf = fopen(xin, "rb");
+            if (!xf || fread(st->xstate, sizeof(float), (size_t)n_video * 96, xf)
+                    != (size_t)n_video * 96) {
+                fprintf(stderr, "H3_X_IN unreadable\n"); return 1;
+            }
+            fclose(xf);
+        } else {
+            /* deterministic pure noise in [-1,1) — same LCG as h3_euler.sh */
+            unsigned state = 12345;
+            long ln = (long)n_video * 96;
+            for (long i = 0; i < ln; i++) {
+                state = (1103515245u * state + 12345u) & 0x7FFFFFFFu;
+                st->xstate[i] = (float)((double)state / 0x40000000 - 1.0);
+            }
+        }
+    }
+
+    /* ---- pos/tag tables (step-invariant) ---- */
+    st->pos = calloc((size_t)seq_len * 3, sizeof(double));
+    st->tag = malloc(sizeof(int) * seq_len);
+    for (long s = 0; s < s_text; s++) {
+        st->pos[s * 3 + 0] = (double)s;
+        st->tag[s] = 1;
+    }
+    {
+        double w_low = axis_val(lat_w, 2, 0, sqrt((double)lat_h * lat_w));
+        double w_high = axis_val(lat_w, 2, nw - 1, sqrt((double)lat_h * lat_w));
+        long r = s_text;
+        for (int t = 0; t < audio_t; t++)
+            for (int c = 0; c < 2; c++) {
+                st->pos[r * 3 + 0] = (double)s_text + t;
+                st->pos[r * 3 + 2] = c == 0 ? w_low : w_high;
+                st->tag[r] = 2;
+                r++;
+            }
+        double sqrt_area = sqrt((double)lat_h * lat_w);
+        for (int t = 0; t < vt; t++)
+            for (int hh = 0; hh < nh; hh++)
+                for (int ww = 0; ww < nw; ww++) {
+                    st->pos[r * 3 + 0] = video_t_at(t, (double)s_text);
+                    st->pos[r * 3 + 1] = axis_val(lat_h, 2, hh, sqrt_area);
+                    st->pos[r * 3 + 2] = axis_val(lat_w, 2, ww, sqrt_area);
+                    st->tag[r] = 0;
+                    r++;
+                }
+    }
+
+    /* ---- per-step scratch ---- */
+    st->stream = malloc(sizeof(float) * seq_len * HID);
+    st->adaln6 = malloc(sizeof(float[6][6][MAX_HID]) * NL);
+    st->inv_freq = (const float*)T("rope.inv_freq");
+    st->xres = malloc(sizeof(float) * seq_len * HID);
+    st->qkv = malloc(sizeof(float) * seq_len * QKV);
+    st->attn = malloc(sizeof(float) * seq_len * comp);
+    st->fc1o = malloc(sizeof(float) * seq_len * FF1);
+    st->proj = malloc(sizeof(float) * seq_len * HID);
+
+    /* ---- T_DIM / TBL_ROWS for the adaln table ---- */
+    {
+        const GgufTensor* t = TT("adaln_t_table");
+        st->T_DIM = (int)t->dims[0]; st->TBL_ROWS = (long)t->dims[1];
+    }
+    prof_on();
+    return 0;
+}
+
+int h3_sampler_main(int argc, char** argv) {
+    int steps = atoi(getenv("H3_SAMPLER_STEPS"));
+    if (argc < 3) {
+        fprintf(stderr, "usage: %s <denoiser.gguf> <text_states.bin> "
+                        "[vt=1 lat_h=32 lat_w=32 audio_t=4]\n", argv[0]);
+        return 1;
+    }
+    int vt = argc > 3 ? atoi(argv[3]) : 1;
+    int lat_h = argc > 4 ? atoi(argv[4]) : 32;
+    int lat_w = argc > 5 ? atoi(argv[5]) : 32;
+    int audio_t = argc > 6 ? atoi(argv[6]) : 4;
+
+    if (gguf_open(argv[1], &G) != 0) return 1;
+#ifdef STRATUM_USE_METAL
+    {
+        const char* nc = getenv("STRATUM_H3_NC");
+        if (nc && atoi(nc)) {
+            h3_metal_init_once();
+            stratum_metal_set_model_base(G.mmap_base, G.mmap_size);
+            {
+                const char* ml = getenv("STRATUM_H3_ATTNLIB");
+                stratum_metal_h3_attn_init(ml ? ml : "/tmp/h3_attn.metallib");
+            }
+        }
+    }
+#endif
+    /* argv[2] is the text_states dump path used by setup */
+    g_te_dump_path = argv[2];
+
+    /* ---- one-time setup (identical code path to run_h3_forward_main) ---- */
+    H3SamState st;
+    memset(&st, 0, sizeof st);
+    if (h3_sampler_setup(&st, argc, argv, vt, lat_h, lat_w, audio_t) != 0) return 1;
+
+    /* ---- Euler loop ---- */
+    double dt = 1.0 / steps;
+    double t_all = h3_now_s();
+    for (int i = 0; i < steps; i++) {
+        double sigma = 1000.0 * (1.0 - (i + 0.5) / steps) / 1000.0;
+        double t0 = h3_now_s();
+        if (h3_sampler_step(&st, sigma, NULL) != 0) return 1;
+        /* Euler update against the flow ODE: the model returns -v in x0
+         * space, so x <- x - dt * out (h3_euler.sh contract). */
+        for (long k = 0; k < (long)st.n_video * 96; k++)
+            st.xstate[k] -= (float)(dt * st.xnext[k]);
+        double t1 = h3_now_s();
+        fprintf(stderr, "=== step %d/%d (sigma=%.4f) %.1fs\n", i + 1, steps, sigma, t1 - t0);
+    }
+    fprintf(stderr, "sampler: %d steps in %.1fs\n", steps, h3_now_s() - t_all);
+
+    /* final latent: video patch-space rows, same layout as h3_euler.sh output */
+    const char* xout = getenv("H3_X_OUT");
+    FILE* xo = xout ? fopen(xout, "wb") : fopen("/tmp/h3_x_final.bin", "wb");
+    if (xo) {
+        fwrite(st.xstate, sizeof(float), (size_t)st.n_video * 96, xo);
+        fclose(xo);
+        fprintf(stderr, "final latent: %s\n", xout ? xout : "/tmp/h3_x_final.bin");
+    }
+    return 0;
+}
+
+/* One denoiser pass at the given sigma, byte-for-byte the same op order and
+ * fp sequence as the block loop in run_h3_forward_main — the sampler only
+ * re-embeds the (changed) latent rows and refreshes the sigma-dependent
+ * AdaLN rows. The velocity output lands in st->xnext (and st->anext). */
+static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
+    (void)xsrc;
+    const int HID = st->HID, QKV = st->QKV, comp = st->comp;
+    const int FF1 = st->FF1, FF2 = st->FF2, NL = st->NL;
+    const int HEADS = st->HEADS, HD = st->HD;
+    const long seq_len = st->seq_len;
+    const long s_text = st->s_text;
+    const int n_video = st->n_video, n_audio = st->n_audio;
+    float* stream = st->stream;
+    float* xres = st->xres;
+    float* qkv = st->qkv;
+    float* attn = st->attn;
+    float* fc1o = st->fc1o;
+    float* proj = st->proj;
+    const float* inv_freq = st->inv_freq;
+    const double* pos = st->pos;
+    const int* tag = st->tag;
+
+    /* ---- stream: text rows from cached refiner output, audio rows from
+     * astate (fixed), video rows re-projected from the Euler state ---- */
+    memcpy(stream, st->text_cond, sizeof(float) * (size_t)s_text * HID);
+    {
+        float arow[AUDIO_ROW_DIM];
+        long r = s_text;
+        for (int t = 0; t < n_audio / 2; t++)
+            for (int c = 0; c < 2; c++) {
+                if (st->astate)
+                    memcpy(arow, st->astate + (size_t)(t * 2 + c) * AUDIO_ROW_DIM,
+                           sizeof(float) * AUDIO_ROW_DIM);
+                else
+                    for (int i = 0; i < AUDIO_ROW_DIM; i++)
+                        arow[i] = (float)(((i * 7 + t * 3 + c) % 29) * 0.05 - 0.7);
+                f32_gemv(T("audio_patch_proj.weight"), AUDIO_ROW_DIM, HID,
+                         arow, &stream[r * HID]);
+                for (int i = 0; i < HID; i++)
+                    stream[r * HID + i] += ((const float*)T("audio_patch_proj.bias"))[i];
+                r++;
+            }
+    }
+    {
+        float* prow = malloc(sizeof(float) * VIDEO_ROW_DIM);
+        long r = s_text + n_audio;
+        for (int k = 0; k < n_video; k++) {
+            for (int i = 0; i < VIDEO_ROW_DIM; i++) prow[i] = st->xstate[k * 96 + i];
+            f32_gemv(T("video_patch_proj.weight"), VIDEO_ROW_DIM, HID,
+                     prow, &stream[r * HID]);
+            for (int i = 0; i < HID; i++)
+                stream[r * HID + i] += ((const float*)T("video_patch_proj.bias"))[i];
+            r++;
+        }
+        free(prow);
+    }
+
+    /* ---- sigma-dependent t-embeddings + AdaLN rows ---- */
+    {
+        double sigma_a = shift_map(sigma_v, 12.0, 3.0);
+        double t_arr[2] = { 1.0 - sigma_v, 1.0 - sigma_a };
+        const float* raw = (const float*)T("adaln_t_table");
+        int T_DIM = st->T_DIM; long TBL_ROWS = st->TBL_ROWS;
+        for (int m = 0; m < 2; m++) {
+            double pv = t_arr[m] * ((double)TBL_ROWS - 1.0);
+            int p0 = (int)pv; if (p0 > (int)TBL_ROWS - 2) p0 = (int)TBL_ROWS - 2;
+            double pf = pv - p0;
+            for (int k = 0; k < T_DIM; k++)
+                g_t_emb_m[m][k] = (float)(
+                    (1.0 - pf) * raw[(size_t)p0 * T_DIM + k]
+                    + pf * raw[(size_t)(p0 + 1) * T_DIM + k]);
+        }
+    }
+    float (*adaln6)[6][6][MAX_HID] = st->adaln6;
+    for (int li = 0; li < NL; li++) {
+        char nm[160];
+        snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.weight", li);
+        const GgufTensor* w = TT(nm);
+        snprintf(nm, sizeof nm, "blocks.%d.adaln_proj.linear.bias", li);
+        const GgufTensor* bts = TT(nm);
+        const uint16_t* wb = (const uint16_t*)(G.mmap_base + w->offset);
+        const uint16_t* bb = (const uint16_t*)(G.mmap_base + bts->offset);
+        int T_DIM = st->T_DIM;
+        for (int row = 0; row < 6; row++) {
+            const float* emb_row = g_t_emb_m[row / 3];
+            for (int cidx = 0; cidx < 6 * HID; cidx++) {
+                const uint16_t* wrow = wb + (size_t)cidx * T_DIM;
+                double acc = (double)f16v(bb[cidx]);
+                for (int k = 0; k < T_DIM; k++)
+                    acc += (double)f16v(wrow[k]) * (double)emb_row[k];
+                int chunk = cidx / HID, i = cidx % HID;
+                adaln6[li][row][chunk][i] = (float)acc;
+            }
+        }
+    }
+
+    /* ---- 50-block loop: identical sequence to run_h3_forward_main ---- */
+    for (int li = 0; li < NL; li++) {
+        char nm[160];
+        /* rows: video=0 (m0 tag0), text=1 (m0 tag1), audio=5 (m1 tag2) */
+        double h3p_t0 = 0; int h3p_fresh = 1; (void)h3p_t0; (void)h3p_fresh;
+        PROF_BEGINSLOT(0);
+        float* shift_msa = adaln6[li][0][0];
+        float* scale_msa = adaln6[li][0][1];
+        float* gate_msa  = adaln6[li][0][2];
+        float* shift_mlp = adaln6[li][0][3];
+        float* scale_mlp = adaln6[li][0][4];
+        float* gate_mlp  = adaln6[li][0][5];
+        float* shift_msa_t = adaln6[li][1][0];
+        float* scale_msa_t = adaln6[li][1][1];
+        float* gate_msa_t  = adaln6[li][1][2];
+        float* shift_mlp_t = adaln6[li][1][3];
+        float* scale_mlp_t = adaln6[li][1][4];
+        float* gate_mlp_t  = adaln6[li][1][5];
+        float* shift_msa_a = adaln6[li][5][0];
+        float* scale_msa_a = adaln6[li][5][1];
+        float* gate_msa_a  = adaln6[li][5][2];
+        float* shift_mlp_a = adaln6[li][5][3];
+        float* scale_mlp_a = adaln6[li][5][4];
+        float* gate_mlp_a  = adaln6[li][5][5];
+
+        memcpy(xres, stream, sizeof(float) * seq_len * HID);
+        PROF_ENDSLOT(0);
+        snprintf(nm, sizeof nm, "blocks.%d.norm1.weight", li);
+        {
+            const uint16_t* g16 = (const uint16_t*)T(nm);
+            for (long s = 0; s < seq_len; s++) {
+                float* r = &stream[s * HID];
+                double ss = 0;
+                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+                for (int i = 0; i < HID; i++)
+                    r[i] = r[i] * sc * bfv(g16[i])
+                         * (1.0f + (tag[s] == 0 ? scale_msa[i]
+                                  : tag[s] == 1 ? scale_msa_t[i]
+                                  : scale_msa_a[i]))
+                         + (tag[s] == 0 ? shift_msa[i]
+                            : tag[s] == 1 ? shift_msa_t[i] : shift_msa_a[i]);
+            }
+        }
+        snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
+        PROF_BEGINSLOT(1);
+        mixed_gemv_batch(TT(nm), HID, QKV, seq_len, stream, qkv);
+        PROF_ENDSLOT(1);
+
+        /* fused qk-norm + split-half rope, per-tag AdaLN'd rows already in */
+        snprintf(nm, sizeof nm, "blocks.%d.attn.q_norm.weight", li);
+        const uint16_t* qw = (const uint16_t*)T(nm);
+        snprintf(nm, sizeof nm, "blocks.%d.attn.k_norm.weight", li);
+        const uint16_t* kw = (const uint16_t*)T(nm);
+        PROF_BEGINSLOT(2);
+        for (long s = 0; s < seq_len; s++) {
+            for (int h = 0; h < HEADS; h++) {
+                float* qp = &qkv[s * QKV + h * HD];
+                double ss = 0;
+                for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
+                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
+                for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
+            }
+            for (int h = 0; h < HEADS; h++) {
+                float* kp = &qkv[s * QKV + comp + h * HD];
+                double ss = 0;
+                for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
+                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
+                for (int d = 0; d < HD; d++) kp[d] *= sc * bfv(kw[d]);
+            }
+            for (int j = 0; j < ROT_PAIRS; j++) {
+                int axis = j / 16, kbase = j % 16;
+                float ang = (float)pos[s * 3 + axis] * inv_freq[kbase];
+                float c = cosf(ang), sn = sinf(ang);
+                for (int h = 0; h < HEADS; h++) {
+                    float* qp = &qkv[s * QKV + h * HD];
+                    float a0 = qp[j], a1 = qp[HD / 2 + j];
+                    qp[j]        = a0 * c - a1 * sn;
+                    qp[HD / 2 + j] = a0 * sn + a1 * c;
+                    float* kp = &qkv[s * QKV + comp + h * HD];
+                    a0 = kp[j]; a1 = kp[HD / 2 + j];
+                    kp[j]        = a0 * c - a1 * sn;
+                    kp[HD / 2 + j] = a0 * sn + a1 * c;
+                }
+            }
+        }
+
+        /* bidirectional attention (full packed stream) */
+        PROF_ENDSLOT(2);
+        float scale2 = 1.0f / sqrtf((float)HD);
+        float* lgd = NULL;   /* CPU-attention scratch; NULL on the GPU path */
+#ifdef STRATUM_USE_METAL
+        int attn_minseq = 512;
+            { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
+            if (g_h3_nc && g_metal_ready && seq_len >= attn_minseq) {
+            /* GPU flash attention: Q/K/V gathered token-major [S, H*Hd]. */
+            static float* gq = NULL; static long gq_cap = 0;
+            static float* gk = NULL; static float* gv = NULL;
+            if (gq_cap < seq_len) {
+                free(gq); free(gk); free(gv);
+                size_t nb = (size_t)seq_len * comp * sizeof(float);
+                gq = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gk = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gv = aligned_alloc(4096, ((nb + 4095) / 4096) * 4096);
+                gq_cap = seq_len;
+            }
+            for (long s = 0; s < seq_len; s++) {
+                memcpy(gq + s * comp, &qkv[s * QKV], sizeof(float) * comp);
+                memcpy(gk + s * comp, &qkv[s * QKV + comp], sizeof(float) * comp);
+                memcpy(gv + s * comp, &qkv[s * QKV + 2 * comp], sizeof(float) * comp);
+            }
+            static int attn_used = 0;
+            int attn_layer_max = 1000000;
+            { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
+            if (attn_used < attn_layer_max) {
+                attn_used++;
+                {
+                    const char* dp = getenv("H3_ATTN_DUMP");
+                    if (dp) {
+                        char pp[512];
+                        snprintf(pp, sizeof pp, "%s_L%d_q.bin", dp, li);
+                        FILE* fq = fopen(pp, "wb");
+                        if (fq) { fwrite(gq, 4, seq_len * comp, fq); fclose(fq); }
+                        snprintf(pp, sizeof pp, "%s_L%d_k.bin", dp, li);
+                        FILE* fk = fopen(pp, "wb");
+                        if (fk) { fwrite(gk, 4, seq_len * comp, fk); fclose(fk); }
+                        snprintf(pp, sizeof pp, "%s_L%d_v.bin", dp, li);
+                        FILE* fv = fopen(pp, "wb");
+                        if (fv) { fwrite(gv, 4, seq_len * comp, fv); fclose(fv); }
+                    }
+                }
+                stratum_metal_nc_batch_begin();
+                int arc = stratum_metal_nc_batch_attn(gq, gk, gv, attn,
+                                          (int)seq_len, HEADS, HD, scale2);
+                stratum_metal_nc_batch_flush();
+                if (arc == 0)
+                    goto attn_done;
+            }
+        }
+#endif
+        memset(attn, 0, sizeof(float) * seq_len * comp);
+        lgd = malloc(sizeof(float) * seq_len);
+        for (int h = 0; h < HEADS; h++)
+            for (long a = 0; a < seq_len; a++) {
+                const float* qh = &qkv[a * QKV + h * HD];
+                float lg[4096];
+                (void)lg;
+                for (long b2 = 0; b2 < seq_len; b2++) {
+                    const float* kh = &qkv[b2 * QKV + comp + h * HD];
+                    double dot = 0;
+                    for (int d = 0; d < HD; d++)
+                        dot += (double)qh[d] * kh[d];
+                    lgd[b2] = (float)(dot * scale2);
+                }
+                float mx = lgd[0];
+                for (long j = 1; j < seq_len; j++) if (lgd[j] > mx) mx = lgd[j];
+                double se = 0;
+                for (long j = 0; j < seq_len; j++) {
+                    lgd[j] -= mx; se += exp((double)lgd[j]);
+                }
+                float inv = (float)(1.0 / se);
+                float* oh = &attn[a * comp + h * HD];
+                for (long b2 = 0; b2 < seq_len; b2++) {
+                    float pv = expf(lgd[b2]) * inv;
+                    const float* vh = &qkv[b2 * QKV + 2 * comp + h * HD];
+                    for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
+                }
+            }
+
+        attn_done:;
+        PROF_ENDSLOT(3);
+        snprintf(nm, sizeof nm, "blocks.%d.attn.out_proj.weight", li);
+        PROF_BEGINSLOT(4);
+        mixed_gemv_batch(TT(nm), comp, HID, seq_len, attn, proj);
+        PROF_ENDSLOT(4);
+        PROF_BEGINSLOT(0);
+        if (getenv("H3_ATTN_PROBE") && li == 2) {
+            long b1=0; double m1=0;
+            for (long t = 0; t < seq_len * comp; t++)
+                if (!isfinite(attn[t])) b1++; else if (fabs(attn[t])>m1) m1=fabs(attn[t]);
+            long b2=0; double m2=0;
+            for (long t = 0; t < seq_len * HID; t++)
+                if (!isfinite(proj[t])) b2++; else if (fabs(proj[t])>m2) m2=fabs(proj[t]);
+            fprintf(stderr, "  [L2 probe] attn nonfinite=%ld max=%.4g | proj nonfinite=%ld max=%.4g\n",
+                    b1, m1, b2, m2);
+        }
+        for (long s = 0; s < seq_len; s++) {
+            const float* g = tag[s] == 0 ? gate_msa
+                           : tag[s] == 1 ? gate_msa_t : gate_msa_a;
+            for (int i = 0; i < HID; i++)
+                stream[s * HID + i] = xres[s * HID + i] + g[i] * proj[s * HID + i];
+        }
+        PROF_ENDSLOT(0);
+
+        /* mlp */
+        PROF_BEGINSLOT(0);
+        memcpy(xres, stream, sizeof(float) * seq_len * HID);
+        PROF_ENDSLOT(0);
+        PROF_BEGINSLOT(5);
+        snprintf(nm, sizeof nm, "blocks.%d.norm2.weight", li);
+        {
+            const uint16_t* g16 = (const uint16_t*)T(nm);
+            for (long s = 0; s < seq_len; s++) {
+                float* r = &stream[s * HID];
+                double ss = 0;
+                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+                for (int i = 0; i < HID; i++)
+                    r[i] = r[i] * sc * bfv(g16[i])
+                         * (1.0f + (tag[s] == 0 ? scale_mlp[i]
+                                  : tag[s] == 1 ? scale_mlp_t[i]
+                                  : scale_mlp_a[i]))
+                         + (tag[s] == 0 ? shift_mlp[i]
+                            : tag[s] == 1 ? shift_mlp_t[i] : shift_mlp_a[i]);
+            }
+        }
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
+        PROF_BEGINSLOT(6);
+        mixed_gemv_batch(TT(nm), HID, FF1, seq_len, stream, fc1o);
+        PROF_ENDSLOT(6);
+        PROF_BEGINSLOT(7);
+        for (long s = 0; s < seq_len; s++)
+            for (int i = 0; i < FF2; i++) {
+                float gv = fc1o[s * FF1 + i];
+                fc1o[s * FF1 + i] =
+                    (gv / (1.0f + expf(-gv))) * fc1o[s * FF1 + FF2 + i];
+            }
+        PROF_ENDSLOT(7);
+        PROF_BEGINSLOT(7);
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
+        mixed_gemv_batch(TT(nm), FF2, HID, seq_len, fc1o, proj);
+        PROF_ENDSLOT(7);
+        PROF_BEGINSLOT(0);
+        for (long s = 0; s < seq_len; s++) {
+            const float* g = tag[s] == 0 ? gate_mlp
+                           : tag[s] == 1 ? gate_mlp_t : gate_mlp_a;
+            for (int i = 0; i < HID; i++)
+                stream[s * HID + i] =
+                    xres[s * HID + i] + g[i] * proj[s * HID + i];
+        }
+        PROF_ENDSLOT(0);
+
+        free(lgd);
+        lgd = NULL;
+        if (getenv("H3_ATTN_CHK")) {
+            long bad = 0; double bmax = 0;
+            for (long t = 0; t < seq_len * HID; t++) {
+                if (!isfinite(stream[t])) bad++;
+                else if (fabs(stream[t]) > bmax) bmax = fabs(stream[t]);
+            }
+            fprintf(stderr, "  [li=%d] stream nonfinite=%ld max=%.4g\n", li, bad, bmax);
+        }
+        if (li % 10 == 0 || li == NL - 1 || getenv("H3_ATTN_CHK")) {
+            fprintf(stderr, "  L%02d\n", li);
+            act_stats("post-mlp", stream, seq_len * HID);
+        }
+    }
+
+    /* --- M4b: final_layer — norm + its own AdaLN (expand=2, modalities=1)
+     * + video_out/audio_out F32 heads. THIS is the velocity in patch
+     * space; the raw hidden state is not the model output. --- */
+    {
+        float fshift[2][MAX_HID], fscale[2][MAX_HID];   /* [m][HID] */
+        const int T_DIM = st->T_DIM;
+        const GgufTensor* w = TT("final_layer.adaln_proj.linear.weight");
+        const GgufTensor* bts = TT("final_layer.adaln_proj.linear.bias");
+        const uint16_t* wb = (const uint16_t*)(G.mmap_base + w->offset);
+        const uint16_t* bb = (const uint16_t*)(G.mmap_base + bts->offset);
+        for (int m = 0; m < 2; m++) {
+            for (int cidx = 0; cidx < 2 * HID; cidx++) {
+                const uint16_t* wrow = wb + (size_t)cidx * T_DIM;
+                double acc = (double)f16v(bb[cidx]);
+                for (int k = 0; k < T_DIM; k++)
+                    acc += (double)f16v(wrow[k]) * (double)g_t_emb_m[m][k];
+                int chunk = cidx / HID, i = cidx % HID;
+                if (chunk == 0) fshift[m][i] = (float)acc;
+                else fscale[m][i] = (float)acc;
+            }
+        }
+        const uint16_t* g16 = (const uint16_t*)T("final_layer.norm.weight");
+        /* video rows (m=0) then audio rows (m=1) */
+        float* vvel = malloc(sizeof(float) * (size_t)n_video * 96);
+        float* avel = malloc(sizeof(float) * (size_t)n_audio * 32);
+        long vrow = 0, arow2 = 0;
+        for (long s = 0; s < seq_len; s++) {
+            if (tag[s] != 0 && tag[s] != 2) continue;
+            float* r = &stream[s * HID];
+            double ss = 0;
+            for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
+            float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
+            int m = tag[s] == 0 ? 0 : 1;
+            for (int i = 0; i < HID; i++)
+                r[i] = r[i] * sc * bfv(g16[i]) * (1.0f + fscale[m][i])
+                     + fshift[m][i];
+            if (tag[s] == 0) {
+                f32_gemv(T("final_layer.video_out.weight"), HID, 96, r,
+                         &vvel[vrow * 96]);
+                for (int i = 0; i < 96; i++)
+                    vvel[vrow * 96 + i] +=
+                        ((const float*)T("final_layer.video_out.bias"))[i];
+                vrow++;
+            } else {
+                f32_gemv(T("final_layer.audio_out.weight"), HID, 32, r,
+                         &avel[arow2 * 32]);
+                for (int i = 0; i < 32; i++)
+                    avel[arow2 * 32 + i] +=
+                        ((const float*)T("final_layer.audio_out.bias"))[i];
+                arow2++;
+            }
+        }
+        memcpy(st->xnext, vvel, sizeof(float) * (size_t)n_video * 96);
         free(vvel); free(avel);
     }
 

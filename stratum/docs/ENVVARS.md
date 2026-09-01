@@ -237,11 +237,23 @@ they are read by the spike programs, not by the `stratum` engine.
 | `H3_ATTN_PROBE` | per-stage finiteness probe at layer 2 | experimental |
 | `H3_ATTN_TRIVIAL` | replace the attention kernel with a trivial copy (isolation probe) | experimental |
 | `H3_SIGMA_V` | video/text stream timestep for the packed forward | sanctioned |
-| `H3_X_IN` / `H3_X_OUT` | video patch-space state in / velocity out | sanctioned |
+| `H3_X_IN` / `H3_X_OUT` | video patch-space state in / velocity out (with `H3_SAMPLER_STEPS`: initial latent in / final latent out) | sanctioned |
 | `H3_A_IN` / `H3_A_OUT` | audio patch-space state in / velocity out | sanctioned |
+| `H3_SAMPLER_STEPS` | resident multi-step Euler sampler: run N steps in ONE process (sigma_i = 1000*(1-(i+0.5)/N)/1000, Euler update x <- x - dt*out in patch space). One-time conditioning (condition_proj + token refiner + patch projections + pos/tag) is computed once and reused across steps; per-step numerics match the single-step binary (velocity mean\|diff\| ~1e-6 verified). Steps after the first run at full 50-block speed (~33s/step at seq=276, NC) with no per-process setup overhead | sanctioned |
+| `H3_PROFILE` | per-stage wall-clock breakdown of the 50-block loop (norm1+adaln / qkv gemv / qknorm+rope / attention / out_proj / norm2 / fc1 / fc2+resid), printed after the forward | experimental |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
 
-Driver scripts: `h3_euler*.sh` (sampling loops), `h3_test_gate.sh`
+Driver scripts: `h3_euler.sh` (per-process sampling loop — superseded by
+`H3_SAMPLER_STEPS` for production runs), `h3_test_gate.sh`
 (boundary-3 gate: refuses to start when free+inactive < 8GB or swap
 usage >= 60%; wraps drop_page_cache.py for post-run cleanup).
+
+Measured notes (seq=276, M4 Pro, hot page cache):
+- `STRATUM_H3_NC=1` 32-33s/step vs 82s CPU-only (2.5x).
+- The NC bparallel-2D gemv kernels win only at B>32 (768p-scale
+  sequences); at B<=32 the per-row batched_b kernels are ~12% faster
+  (32.8s vs 37.6s, interleaved A/B) and remain the default route.
+- NoCopy x/y windows over activation scratch are SLOWER than the
+  staging-buffer path at seq=276 (39-46s); h3_forward intentionally
+  keeps plain malloc'd activations.
