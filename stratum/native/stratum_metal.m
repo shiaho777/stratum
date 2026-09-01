@@ -2679,6 +2679,8 @@ typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off
                  int rows;         /* 0 = single contiguous block; >0 = per-row scatter */
                  size_t rowbytes;  /* bytes per row when rows > 0 */ } NCBatchYTask;
 static NCBatchYTask g_ncb_ytasks[512];
+static id<MTLBuffer> g_ncb_hbuf = nil;   /* fused-MLP h slab (freed with staging) */
+static size_t g_ncb_hcap = 0;
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
 static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool: held until flush */
@@ -3098,6 +3100,11 @@ int stratum_metal_nc_batch_flush(void) {
     const char* ybase = (const char*)[g_ncb_ybuf contents];
     for (int i = 0; i < g_ncb_ny; i++) {
         const NCBatchYTask* t = &g_ncb_ytasks[i];
+        if (getenv("STRATUM_NC_YDEBUG"))
+            fprintf(stderr, "  [yt%d] dst=%p src_buf=%p dst_buf=%p rows=%d os=%d rb=%zu bytes=%zu N=%d B=%d isstr=%d off=%zu\n",
+                    i, (void*)t->dst, (__bridge void*)t->src_buf, (__bridge void*)t->dst_buf,
+                    t->rows, t->out_stride, t->rowbytes, t->bytes, t->N, t->B,
+                    t->is_streams, t->off);
         if (t->src_buf) {
             const char* sb = (const char*)[t->src_buf contents];
             if (t->rows > 0) {
@@ -3140,6 +3147,7 @@ int stratum_metal_nc_batch_flush(void) {
         g_ncb_xbuf = nil; g_ncb_ybuf = nil;
         g_ncb_xcap = 0;   g_ncb_ycap = 0;
         g_ncb_xpos = 0;   g_ncb_ypos = 0;
+        g_ncb_hbuf = nil; g_ncb_hcap = 0;   /* fused-MLP h slab too */
     }
     return 0;
 }
@@ -3344,6 +3352,159 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
 int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
                                 float* out, int S, int H, int Hd, float scale) {
     return stratum_metal_nc_batch_attn_strided(Q, K, V, out, S, H, Hd, scale, 0);
+}
+
+/* H3 fused MLP into the open nc batch: stage 1 = fc1 gate/up (one fused Q4_K
+ * or Q6_K weight, rows [0,FF2) gate / [FF2,FF1) up) + swiglu -> h rows at
+ * hstride (GPU-resident, no copy-back); stage 2 = fc2 gemv reading h strided,
+ * writing proj compact. proj copy-back is a normal compact ytask. Saves the
+ * fc1 copy-back (seq*FF1), the CPU swiglu pass, and the fc2 copy-in. */
+int stratum_metal_nc_mlp_fused(const void* w1, size_t w1bytes, int wtype,
+                               const void* w2, size_t w2bytes,
+                               const float* x, float* h, int hstride,
+                               float* y, int B, int K, int N) {
+    if (!g_device || !g_ncb_cmd) return -2;
+    if (wtype != 12 && wtype != 14) return -1;
+    static id<MTLComputePipelineState> p1q4 = nil, p2q4 = nil;
+    static id<MTLComputePipelineState> p1q6 = nil, p2q6 = nil;
+    @autoreleasepool {
+        if (wtype == 12 && (!p1q4 || !p2q4)) {
+            id<MTLFunction> f1 = [g_lib newFunctionWithName:@"q4k_h3_mlp1_swiglu"];
+            id<MTLFunction> f2 = [g_lib newFunctionWithName:@"q4k_h3_mlp2_ostride"];
+            if (!f1 || !f2) return -1;
+            p1q4 = [g_device newComputePipelineStateWithFunction:f1 error:nil];
+            p2q4 = [g_device newComputePipelineStateWithFunction:f2 error:nil];
+            if (!p1q4 || !p2q4) return -1;
+        }
+        if (wtype == 14 && (!p1q6 || !p2q6)) {
+            id<MTLFunction> f1 = [g_lib newFunctionWithName:@"q6k_h3_mlp1_swiglu"];
+            id<MTLFunction> f2 = [g_lib newFunctionWithName:@"q6k_h3_mlp2_ostride"];
+            if (!f1 || !f2) return -1;
+            p1q6 = [g_device newComputePipelineStateWithFunction:f1 error:nil];
+            p2q6 = [g_device newComputePipelineStateWithFunction:f2 error:nil];
+            if (!p1q6 || !p2q6) return -1;
+        }
+        id<MTLComputePipelineState> p1 = (wtype == 12) ? p1q4 : p1q6;
+        id<MTLComputePipelineState> p2 = (wtype == 12) ? p2q4 : p2q6;
+
+        /* weight windows: page-align like nc_batch_add */
+        long pg = sysconf(_SC_PAGESIZE);
+        id<MTLBuffer> w1b = nil, w2b = nil; size_t w1o = 0, w2o = 0;
+        {
+            uintptr_t up1 = (uintptr_t)w1;
+            uintptr_t a1 = up1 & ~((uintptr_t)pg - 1);
+            uintptr_t e1 = (up1 + w1bytes + pg - 1) & ~((uintptr_t)pg - 1);
+            w1b = [g_device newBufferWithBytesNoCopy:(void*)a1
+                length:(size_t)(e1 - a1)
+                options:MTLResourceStorageModeShared deallocator:nil];
+            if (!w1b) return -1;
+            if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = w1b;
+            w1o = up1 - a1;
+            uintptr_t up2 = (uintptr_t)w2;
+            uintptr_t a2 = up2 & ~((uintptr_t)pg - 1);
+            uintptr_t e2 = (up2 + w2bytes + pg - 1) & ~((uintptr_t)pg - 1);
+            w2b = [g_device newBufferWithBytesNoCopy:(void*)a2
+                length:(size_t)(e2 - a2)
+                options:MTLResourceStorageModeShared deallocator:nil];
+            if (!w2b) return -1;
+            if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = w2b;
+            w2o = up2 - a2;
+        }
+
+        /* fc1 halves: rows [0,N) gate / [N,2N) up.
+         * block_q4_K = 144 B, block_q6_K = 210 B; row pitch = (K/256)*bsize */
+        size_t bsize = (wtype == 12) ? 144 : 210;
+        size_t rowpitch = (size_t)(K / 256) * bsize;
+        size_t gate_bytes = (size_t)N * rowpitch;
+
+        /* x staging copy (compact [B,K]) */
+        size_t xb = (size_t)K * B * sizeof(float);
+        if (g_ncb_xpos + xb > g_ncb_xcap) {
+            g_ncb_xcap = (g_ncb_xcap ? g_ncb_xcap * 2 : (4u << 20));
+            while (g_ncb_xpos + xb > g_ncb_xcap) g_ncb_xcap *= 2;
+            g_ncb_xbuf = [g_device newBufferWithLength:g_ncb_xcap
+                options:MTLResourceStorageModeShared];
+            g_ncb_xpos = 0;
+        }
+        int xoff = (int)g_ncb_xpos;
+        memcpy((char*)[g_ncb_xbuf contents] + xoff, x, xb);
+        g_ncb_xpos += xb;
+
+        /* h: GPU-resident staging slab (compact [B,N]); fc2 reads it directly.
+         * g_ncb_hbuf is file-scope so flush() can release it in
+         * resident-sampler (FREESTAGING) mode — at 768p it is ~427MB. */
+        id<MTLBuffer> hbuf = g_ncb_hbuf;
+        size_t hcap = g_ncb_hcap;
+        size_t hb = (size_t)N * B * sizeof(float);
+        if (hcap < hb) {
+            hbuf = [g_device newBufferWithLength:hb
+                options:MTLResourceStorageModeShared];
+            hcap = hb;
+            g_ncb_hbuf = hbuf; g_ncb_hcap = hcap;
+        }
+        if (!hbuf) return -1;
+
+        uint32_t Ku = (uint32_t)K, Nu = (uint32_t)N, Bu = (uint32_t)B;
+        /* stage 1: grid (N, ceil(B/2)), tg 64 (STRATUM_NC_BPTG-consistent) */
+        NSUInteger bptg = 64;
+        { const char* e = getenv("STRATUM_NC_BPTG"); if (e) bptg = (NSUInteger)atoi(e); }
+        id<MTLComputeCommandEncoder> e1 = [g_ncb_cmd computeCommandEncoder];
+        [e1 setComputePipelineState:p1];
+        [e1 setBuffer:w1b offset:w1o atIndex:0];
+        [e1 setBuffer:w1b offset:w1o + gate_bytes atIndex:1];
+        [e1 setBuffer:g_ncb_xbuf offset:xoff atIndex:2];
+        [e1 setBuffer:hbuf offset:0 atIndex:3];
+        [e1 setBytes:&Ku length:4 atIndex:4];
+        [e1 setBytes:&Nu length:4 atIndex:5];
+        [e1 setBytes:&Bu length:4 atIndex:6];
+        [e1 setBytes:&Nu length:4 atIndex:7];   /* hstride = N (compact slab) */
+        [e1 dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)((B + 1) / 2), 1)
+            threadsPerThreadgroup:MTLSizeMake(bptg, 1, 1)];
+        [e1 endEncoding];
+        /* reserve the y slab BEFORE encoding stage 2 (offset must be stable).
+         * Stage-2 output rows = K (fc2 out width = fc1 in width = HID). */
+        size_t yb2 = (size_t)K * B * sizeof(float);
+        if (g_ncb_ypos + yb2 > g_ncb_ycap) {
+            g_ncb_ycap = (g_ncb_ycap ? g_ncb_ycap * 2 : (4u << 20));
+            while (g_ncb_ypos + yb2 > g_ncb_ycap) g_ncb_ycap *= 2;
+            g_ncb_ybuf = [g_device newBufferWithLength:g_ncb_ycap
+                options:MTLResourceStorageModeShared];
+            g_ncb_ypos = 0;
+        }
+        size_t yoff2 = g_ncb_ypos;
+        g_ncb_ypos += yb2;
+
+        /* stage 2: grid (HID rows, B) reading h (compact), writing y compact */
+        id<MTLComputeCommandEncoder> e2 = [g_ncb_cmd computeCommandEncoder];
+        [e2 setComputePipelineState:p2];
+        [e2 setBuffer:w2b offset:w2o atIndex:0];
+        [e2 setBuffer:hbuf offset:0 atIndex:1];
+        [e2 setBuffer:g_ncb_ybuf offset:yoff2 atIndex:2];
+        uint32_t K2u = (uint32_t)N;                  /* K = FF2 */
+        uint32_t N2u = (uint32_t)K;                  /* N(out) = HID */
+        [e2 setBytes:&K2u length:4 atIndex:3];
+        [e2 setBytes:&N2u length:4 atIndex:4];
+        [e2 setBytes:&Bu length:4 atIndex:5];
+        [e2 setBytes:&Nu length:4 atIndex:6];        /* h row stride = FF2 (compact) */
+        [e2 dispatchThreadgroups:MTLSizeMake((NSUInteger)K, (NSUInteger)B, 1)
+            threadsPerThreadgroup:MTLSizeMake(bptg, 1, 1)];
+        [e2 endEncoding];
+        /* y copy-back task: compact HID*B rows from ybuf at yoff2 */
+        g_ncb_ytasks[g_ncb_ny].dst = y;
+        g_ncb_ytasks[g_ncb_ny].dsts = NULL;
+        g_ncb_ytasks[g_ncb_ny].off = yoff2;
+        g_ncb_ytasks[g_ncb_ny].bytes = yb2;
+        g_ncb_ytasks[g_ncb_ny].B = B;
+        g_ncb_ytasks[g_ncb_ny].N = K;
+        g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+        g_ncb_ytasks[g_ncb_ny].src_buf = nil;
+        g_ncb_ytasks[g_ncb_ny].dst_buf = nil;
+        g_ncb_ytasks[g_ncb_ny].rows = 0;
+        g_ncb_ytasks[g_ncb_ny].rowbytes = 0;
+        g_ncb_ytasks[g_ncb_ny].out_stride = 0;
+        g_ncb_ny++;
+        return 0;
+    }
 }
 
 /* Packed in-place attention: Q/K/V/out are four regions of ONE buffer with

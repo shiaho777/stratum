@@ -241,6 +241,9 @@ they are read by the spike programs, not by the `stratum` engine.
 | `H3_A_IN` / `H3_A_OUT` | audio patch-space state in / velocity out | sanctioned |
 | `H3_SAMPLER_STEPS` | resident multi-step Euler sampler: run N steps in ONE process (sigma_i = 1000*(1-(i+0.5)/N)/1000, Euler update x <- x - dt*out in patch space). One-time conditioning (condition_proj + token refiner + patch projections + pos/tag) is computed once and reused across steps; per-step numerics match the single-step binary (velocity mean\|diff\| ~1e-6 verified). Steps after the first run at full 50-block speed (~33s/step at seq=276, NC) with no per-process setup overhead | sanctioned |
 | `H3_PROFILE` | per-stage wall-clock breakdown of the 50-block loop (norm1+adaln / qkv gemv / qknorm+rope / attention / out_proj / norm2 / fc1 / fc2+resid), printed after the forward | experimental |
+| `H3_MLP_FUSED` | fused MLP: fc1 gate/up gemv + in-kernel swiglu (q4k_h3_mlp1_swiglu) into a GPU-resident h slab, then fc2 (q4k_h3_mlp2_ostride) reading it — ONE nc-batch (single GPU wait) instead of three; the fc1 copy-back, CPU swiglu pass and fc2 copy-in are eliminated. Default on; `=0` falls back to the strided-gemv path. Validated vs the CPU path (L0 proj max\|d\| 7.3e-4, final velocity max\|d\| 2.7e-5 — fp32 order level). Q4_K only (Q6_K kernels compiled but untested) | experimental |
+| `H3_MLP_PROBE` | dump the L0 MLP output (proj, post-fc2 pre-residual) to /tmp/mlp_proj_probe.bin for path-vs-path comparison | experimental |
+| `STRATUM_NC_YDEBUG` | print every NC flush ytask (dst/src_buf/rows/out_stride/bytes) — copy-back debugging | experimental |
 | `STRATUM_NC_BPTG` | threadgroup size for the NC bparallel-2D gemv dispatch (default 64; measured 64 < 128 < 256 at seq=276 — larger groups spill/reduce worse) | experimental |
 | `STRATUM_NC_FREESTAGING` | release the NC staging x/y MTLBuffers after every flush instead of holding them for the process lifetime (resident-sampler mode; re-grows on demand). Set automatically by `H3_SAMPLER_STEPS` | experimental (auto-set by the sampler) |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
@@ -307,3 +310,13 @@ Measured notes (seq=276, M4 Pro, hot page cache):
 - NoCopy x/y windows over activation scratch are SLOWER than the
   staging-buffer path at seq=276 (39-46s); h3_forward intentionally
   keeps plain malloc'd activations.
+- Fused MLP (`H3_MLP_FUSED`): 38.1s vs 39.7s single-step at seq=276
+  (~4%) — at this sequence length the intermediate copies it removes
+  (47MB/layer) are small next to the 130MB/layer weight streaming.
+  The structural win is at 768p (seq~7.4k): the fused path's staging
+  peak is ~855MB (x 214 + h 427 + y 214) vs ~1.5GB for the strided
+  path (fc1 y-slab 854 + fc2 x-staging 427 + fc2 y 214), plus
+  ~1.3GB/layer of memcpy traffic eliminated. The h slab is released
+  under `STRATUM_NC_FREESTAGING` (note: Metal's allocator caches the
+  freed 16MB slab at 512p; at 768p the 427MB slab may stay cached —
+  watch footprint there).

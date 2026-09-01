@@ -183,6 +183,13 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
 /* register a page-aligned Q/K/V gather buffer for attention direct-read
  * (no staging copy); falls back to staging when unregistered */
 int stratum_metal_nc_attn_direct_register(const float* p, size_t bytes);
+/* H3 fused MLP into the open nc batch: fc1(gate|up fused Q4_K/Q6_K weight)
+ * + swiglu -> GPU-resident h, then fc2 -> compact y. wtype: 12=Q4_K, 14=Q6_K.
+ * K=in_dim(HID), N=FF2, hstride=HID (fc2 out rows); y receives [B, HID]. */
+int stratum_metal_nc_mlp_fused(const void* w1, size_t w1bytes, int wtype,
+                               const void* w2, size_t w2bytes,
+                               const float* x, float* h, int hstride,
+                               float* y, int B, int K, int N);
 /* packed in-place attention over ONE activation buffer: row r of length
  * rowstride floats holds Q at +qoff, K at +koff, V at +voff; attention
  * output written at +ooff (may alias nothing). Requires a registered base

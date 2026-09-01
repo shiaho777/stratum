@@ -1027,8 +1027,32 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
+        const GgufTensor* t_fc1 = TT(nm);
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
+        const GgufTensor* t_fc2 = TT(nm);
+        int mlp_fused = 0;
+#ifdef STRATUM_USE_METAL
+        static int fused_en = -1;
+        if (fused_en < 0) {
+            const char* e = getenv("H3_MLP_FUSED");
+            fused_en = (e && atoi(e) == 0) ? 0 : 1;
+        }
+        if (fused_en && g_h3_nc && g_metal_ready &&
+            (t_fc1->type == 12 || t_fc1->type == 14) &&
+            t_fc2->type == t_fc1->type) {
+            stratum_metal_nc_batch_begin();
+            int rc = stratum_metal_nc_mlp_fused(
+                (const void*)(G.mmap_base + t_fc1->offset), (size_t)t_fc1->nbytes,
+                (int)t_fc1->type,
+                (const void*)(G.mmap_base + t_fc2->offset), (size_t)t_fc2->nbytes,
+                stream, fc1o, FF1, proj, (int)seq_len, HID, FF2);
+            stratum_metal_nc_batch_flush();
+            mlp_fused = (rc == 0);
+        }
+#endif
+        if (!mlp_fused) {
         PROF_BEGINSLOT(6);
-        mixed_gemv_batch_strided(TT(nm), HID, FF1, seq_len, stream, fc1o,
+        mixed_gemv_batch_strided(t_fc1, HID, FF1, seq_len, stream, fc1o,
                                  HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
@@ -1044,6 +1068,11 @@ int run_h3_forward_main(int argc, char** argv) {
         mixed_gemv_batch_strided(TT(nm), FF2, HID, seq_len, fc1o, proj,
                                  FF1, HID);
         PROF_ENDSLOT(7);
+        }
+        if (getenv("H3_MLP_PROBE") && li == 0) {
+            FILE* fp = fopen("/tmp/mlp_proj_probe.bin", "wb");
+            if (fp) { fwrite(proj, 4, (size_t)seq_len * HID, fp); fclose(fp); }
+        }
         PROF_BEGINSLOT(0);
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_mlp
@@ -1797,8 +1826,32 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             }
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
+        const GgufTensor* t_fc1 = TT(nm);
+        snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
+        const GgufTensor* t_fc2 = TT(nm);
+        int mlp_fused = 0;
+#ifdef STRATUM_USE_METAL
+        static int fused_en = -1;
+        if (fused_en < 0) {
+            const char* e = getenv("H3_MLP_FUSED");
+            fused_en = (e && atoi(e) == 0) ? 0 : 1;
+        }
+        if (fused_en && g_h3_nc && g_metal_ready &&
+            (t_fc1->type == 12 || t_fc1->type == 14) &&
+            t_fc2->type == t_fc1->type) {
+            stratum_metal_nc_batch_begin();
+            int rc = stratum_metal_nc_mlp_fused(
+                (const void*)(G.mmap_base + t_fc1->offset), (size_t)t_fc1->nbytes,
+                (int)t_fc1->type,
+                (const void*)(G.mmap_base + t_fc2->offset), (size_t)t_fc2->nbytes,
+                stream, fc1o, FF1, proj, (int)seq_len, HID, FF2);
+            stratum_metal_nc_batch_flush();
+            mlp_fused = (rc == 0);
+        }
+#endif
+        if (!mlp_fused) {
         PROF_BEGINSLOT(6);
-        mixed_gemv_batch_strided(TT(nm), HID, FF1, seq_len, stream, fc1o,
+        mixed_gemv_batch_strided(t_fc1, HID, FF1, seq_len, stream, fc1o,
                                  HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
@@ -1814,6 +1867,11 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         mixed_gemv_batch_strided(TT(nm), FF2, HID, seq_len, fc1o, proj,
                                  FF1, HID);
         PROF_ENDSLOT(7);
+        }
+        if (getenv("H3_MLP_PROBE") && li == 0) {
+            FILE* fp = fopen("/tmp/mlp_proj_probe.bin", "wb");
+            if (fp) { fwrite(proj, 4, (size_t)seq_len * HID, fp); fclose(fp); }
+        }
         PROF_BEGINSLOT(0);
         for (long s = 0; s < seq_len; s++) {
             const float* g = tag[s] == 0 ? gate_mlp
