@@ -2892,6 +2892,10 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
 
         if (use_bp2d) {
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+            NSUInteger bptg = 64;   /* STRATUM_NC_BPTG=128/256: more threads
+                                       per (row,col) shortens the sb-stride
+                                       loop; kernel reduces via nsimd */
+            { const char* e = getenv("STRATUM_NC_BPTG"); if (e) bptg = (NSUInteger)atoi(e); }
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             [enc setComputePipelineState:bppso];
             [enc setBuffer:wbuf      offset:woff  atIndex:0];
@@ -2901,7 +2905,7 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
             [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
             [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
-                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+                threadsPerThreadgroup:MTLSizeMake(bptg,1,1)];
             [enc endEncoding];
         } else if (B > 1 && bpso) {
             for (int b = 0; b < B; b++) {

@@ -241,6 +241,7 @@ they are read by the spike programs, not by the `stratum` engine.
 | `H3_A_IN` / `H3_A_OUT` | audio patch-space state in / velocity out | sanctioned |
 | `H3_SAMPLER_STEPS` | resident multi-step Euler sampler: run N steps in ONE process (sigma_i = 1000*(1-(i+0.5)/N)/1000, Euler update x <- x - dt*out in patch space). One-time conditioning (condition_proj + token refiner + patch projections + pos/tag) is computed once and reused across steps; per-step numerics match the single-step binary (velocity mean\|diff\| ~1e-6 verified). Steps after the first run at full 50-block speed (~33s/step at seq=276, NC) with no per-process setup overhead | sanctioned |
 | `H3_PROFILE` | per-stage wall-clock breakdown of the 50-block loop (norm1+adaln / qkv gemv / qknorm+rope / attention / out_proj / norm2 / fc1 / fc2+resid), printed after the forward | experimental |
+| `STRATUM_NC_BPTG` | threadgroup size for the NC bparallel-2D gemv dispatch (default 64; measured 64 < 128 < 256 at seq=276 — larger groups spill/reduce worse) | experimental |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
 
@@ -251,9 +252,14 @@ usage >= 60%; wraps drop_page_cache.py for post-run cleanup).
 
 Measured notes (seq=276, M4 Pro, hot page cache):
 - `STRATUM_H3_NC=1` 32-33s/step vs 82s CPU-only (2.5x).
-- The NC bparallel-2D gemv kernels win only at B>32 (768p-scale
-  sequences); at B<=32 the per-row batched_b kernels are ~12% faster
-  (32.8s vs 37.6s, interleaved A/B) and remain the default route.
+- At B>32 (768p-scale sequences) the NC bparallel-2D kernels take over;
+  at B<=32 the per-row batched_b kernels are ~12% faster (32.8s vs
+  37.6s, interleaved A/B) and remain the default route.
+- Rejected alternatives, measured: chunked batched_b (ceil(B/32)
+  dispatches of exact _b[cb] PSOs) is 2.2x SLOWER at B=276 (75s) —
+  each chunk re-reads the whole weight tensor (9x total traffic),
+  which dominates any dequant savings; bparallel threadgroup 128/256
+  are 9%/72% slower than 64.
 - NoCopy x/y windows over activation scratch are SLOWER than the
   staging-buffer path at seq=276 (39-46s); h3_forward intentionally
   keeps plain malloc'd activations.
