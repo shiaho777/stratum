@@ -362,3 +362,29 @@ Rulings:
 `STRATUM_NC_TIME=1` prints the NoCopy-vs-commit+wait accounting after a forward;
 it is the FreeToken-style "measure once, then optimize" hook kept permanent.
 
+
+## Why the H3 GEMV is slow: a micro-benchmark autopsy (seq=276, M4 Pro)
+
+The 23.9s GPU GEMV (qkv 8.3 + out_proj 2.7 + fused MLP 13.0) was traced with
+three standalone Metal micro-benchmarks; each hypothesis was measured and
+killed until only the kernel *shape* remained:
+
+| hypothesis | test | result |
+|---|---|---|
+| NoCopy mmap read is slow | 256MB sum-reduce, NoCopy-vs-private | both ~55GB/s — not it |
+| weight traffic is the wall (weights re-read B times) | `g2` kernel (reuse weight row across 2 tokens) | bit-exact but NO speedup — not it |
+| threadgroup dispatch is the wall | empty kernel, grid (21504,276) | 9.4ms vs 166ms real — 6% — not it |
+| Q4K unpack ALU is the wall | pure-f32 GEMV, same grid | 0.34 vs 0.38 TFLOP/s — not it |
+| activation traffic is the wall | row-major reuse (one tg = G rows) | 0.14 TFLOP/s, slower — not it |
+
+The pure-f32 GEMV over the same `(N=21504, B=276)` grid also runs at 0.34
+TFLOP/s (4% of the ~9 TFLOP/s peak). A per-row GEMV has arithmetic intensity
+~0.25 FLOP/byte, so at this batch it is latency-bound: each threadgroup does
+one 5376-length dot (too little work to hide the ~24KB of loads). This is the
+GEMV shape, not quantization, not memory path, not dispatch.
+
+The fix is structural, not a knob: the batch GEMV ([276,5376]×[5376,21504]) is
+really a small GEMM and needs a tiled GEMM kernel (or MPS/cblas for the fp32
+head / a tiled int-dot kernel for the quantized path) so each threadgroup does
+G×T output tiles instead of one row. This is the next, larger piece of work;
+the micro-benchmarks live in /tmp (gpu_bw.m, empty_tg.m, gemv_cmp.m).
