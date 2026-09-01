@@ -2681,6 +2681,13 @@ typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off
 static NCBatchYTask g_ncb_ytasks[512];
 static id<MTLBuffer> g_ncb_hbuf = nil;   /* fused-MLP h slab (freed with staging) */
 static size_t g_ncb_hcap = 0;
+
+/* NC-path cost accounting (STRATUM_NC_TIME=1): isolate per-op NoCopy
+ * registration from commit+wait latency so the real bottleneck is
+ * measurable instead of guessed. */
+static double g_t_nocopy = 0.0, g_t_commit = 0.0;
+static long   g_n_nocopy = 0,   g_n_commit = 0;
+static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
 static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool: held until flush */
@@ -2853,10 +2860,12 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
             wptr_a = (void*)astart;
             nbytes_a = (size_t)(aend - astart);
         }
+        double _tnc0 = now_s();
         id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
                                                          length:nbytes_a
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
+        g_t_nocopy += now_s() - _tnc0; g_n_nocopy++;
         if (!wbuf) return -1;
         if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         uint32_t K_u32 = (uint32_t)K;
@@ -3009,10 +3018,12 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             wptr_a = (void*)astart;
             nbytes_a = (size_t)(aend - astart);
         }
+        double _tnc0 = now_s();
         id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
                                                          length:nbytes_a
                                                         options:MTLResourceStorageModeShared
                                                     deallocator:nil];
+        g_t_nocopy += now_s() - _tnc0; g_n_nocopy++;
         if (!wbuf) return -1;
         if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
         uint32_t K_u32 = (uint32_t)K;
@@ -3095,8 +3106,10 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
 int stratum_metal_nc_batch_flush(void) {
     if (!g_ncb_cmd) return 0;
     if (getenv("STRATUM_NC_DEBUG")) fprintf(stderr, "  [nc] flush cmd ny=%d\n", g_ncb_ny);
+    double _tc0 = now_s();
     [g_ncb_cmd commit];
     [g_ncb_cmd waitUntilCompleted];
+    g_t_commit += now_s() - _tc0; g_n_commit++;
     const char* ybase = (const char*)[g_ncb_ybuf contents];
     for (int i = 0; i < g_ncb_ny; i++) {
         const NCBatchYTask* t = &g_ncb_ytasks[i];
@@ -3150,6 +3163,14 @@ int stratum_metal_nc_batch_flush(void) {
         g_ncb_hbuf = nil; g_ncb_hcap = 0;   /* fused-MLP h slab too */
     }
     return 0;
+}
+
+void stratum_metal_nc_time_report(void) {
+    if (!g_n_commit) return;
+    fprintf(stderr,
+        "  [nc-time] NoCopy reg: %ld x %.1f us = %.3f s | commit+wait: %ld x %.1f us = %.3f s\n",
+        g_n_nocopy, g_n_nocopy ? g_t_nocopy / g_n_nocopy * 1e6 : 0.0, g_t_nocopy,
+        g_n_commit, g_t_commit / g_n_commit * 1e6, g_t_commit);
 }
 
 /* ================= H3 prefill attention (flash-style) ================= */

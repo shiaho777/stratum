@@ -1101,6 +1101,7 @@ int run_h3_forward_main(int argc, char** argv) {
     double elapsed = h3_now_s() - t_fw;
     fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs wall\n",
             NL, seq_len, elapsed);
+    if (getenv("STRATUM_NC_TIME")) stratum_metal_nc_time_report();
     h3_footprint("post-forward");
     if (g_h3_prof) {
         double acc = 0;

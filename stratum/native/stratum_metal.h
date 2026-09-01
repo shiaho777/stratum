@@ -228,6 +228,9 @@ int stratum_metal_nc_xreg_register(const float* p, size_t bytes);
  * it in place and flush skips the copy-back. */
 int stratum_metal_nc_yreg_register(float* p, size_t bytes);
 int stratum_metal_nc_batch_flush(void);
+/* STRATUM_NC_TIME diagnostic: print accumulated NoCopy-registration vs
+ * commit+wait wall time for the NC batch path. No-op when never called. */
+void stratum_metal_nc_time_report(void);
 
 /* V54.4b: batch_add with per-stream y targets (multix ys[] array). The
  * continuous-buffer form (batch_add) breaks when several matmuls in one

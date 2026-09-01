@@ -320,3 +320,39 @@ Measured notes (seq=276, M4 Pro, hot page cache):
   under `STRATUM_NC_FREESTAGING` (note: Metal's allocator caches the
   freed 16MB slab at 512p; at 768p the 427MB slab may stay cached —
   watch footprint there).
+
+## Bottleneck profile (seq=276, M4 Pro, hot cache, measured with STRATUM_NC_TIME + H3_PROFILE)
+
+A per-op cost accounting run (commit 65fac4f + `STRATUM_NC_TIME=1`) split the
+37.4s single step into its true components and overturned two prior guesses:
+
+| component | time | share | nature |
+|---|---|---|---|
+| norm1+adaln (norm2 too) | 13.3s | 36% | pure-CPU scalar elementwise (rmsnorm double-accum + adaln), ~5.5M elem/s |
+| attention (seq<512) | 12.8s | 34% | CPU O(S^2) two-pass double softmax (GPU flash-attn gated off at minseq=512) |
+| qkv gemv | 8.5s | 23% | GPU (NoCopy weight read) |
+| fused MLP (fc1+swiglu+fc2) | ~13.4s | — | GPU, hidden inside adjacent profile slots |
+| out_proj gemv | 2.7s | 7% | GPU |
+| NoCopy registration | **0.003s** | ~0% | 108 regs x 23.9us — NOT a bottleneck (contradicts an earlier hypothesis) |
+
+The split is ~26s CPU (70%) vs ~24.6s GPU commit+wait (30%), i.e. the GPU sits
+idle for the two CPU elementwise/attention windows. Effective weight throughput
+is 11.4GB / 24.6s ~= 460 MB/s — the GEMVs are NOT NoCopy-bound (registration is
+3ms total) but the CPU windows are the wall-clock floor.
+
+Two things this profile rules IN / OUT:
+
+- **attention -> GPU is blocked by boundary 1.** Forcing `H3_ATTN_MINSEQ=1` at
+  seq=276 cuts the step 37.4s -> 25.6s (-32%) but the final velocity shifts
+  mean|d|=0.85 (velocity mean 1.03 -> 0.57). That is float online-softmax vs
+  the CPU's two-pass double softmax, i.e. lowering softmax precision — the
+  exact thing boundary 1 forbids. Not enabled until the flash-attn kernel
+  accumulates in double (or is proven bit-equivalent).
+- **norm1+adaln is the safe, largest lever.** It is pure elementwise with a
+  double-accumulated rmsnorm; NEON/GPU vectorization that keeps double (or a
+  validated fp32 sum) should drop 13.3s to ~1s without touching the model's
+  numerics. This is the next attack, ahead of q*-style GPU/CPU row-splitting
+  (which only pays once the CPU is no longer the floor).
+
+`STRATUM_NC_TIME=1` prints the NoCopy-vs-commit+wait accounting after a forward;
+it is the FreeToken-style "measure once, then optimize" hook kept permanent.
