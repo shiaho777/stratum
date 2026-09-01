@@ -388,3 +388,20 @@ really a small GEMM and needs a tiled GEMM kernel (or MPS/cblas for the fp32
 head / a tiled int-dot kernel for the quantized path) so each threadgroup does
 G×T output tiles instead of one row. This is the next, larger piece of work;
 the micro-benchmarks live in /tmp (gpu_bw.m, empty_tg.m, gemv_cmp.m).
+
+### Tiled GEMM verified (bench_tile_gemm.m)
+
+The tiled direction is confirmed measured, same M/N/K:
+
+| kernel | TFLOP/s | note |
+|---|---|---|
+| per-row GEMV (current) | 0.34 | latency-bound, 4% peak |
+| tiled GEMM BM=BN=64 BK=32 | 1.39 | 4.1x |
+| tiled GEMM BK=64 + float4 loads | 1.88 | 5.5x |
+
+`bench_tile_gemm.m` (stratum/native) holds the working f32 tiled kernel; the
+next step is the quantized twin — load the Q4_K weight tile by unpacking it
+into the threadgroup slab (or int8 dot) so the same 5x applies to the 23.9s of
+quantized GEMVs. The per-op cost accounting (STRATUM_NC_TIME) is the gate to
+confirm the win end-to-end.
+
