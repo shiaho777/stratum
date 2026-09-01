@@ -17,6 +17,7 @@ static id<MTLLibrary> g_h3_lib = nil;
 static id<MTLCommandQueue> g_h3a_queue = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_b[33] = {nil};
 static id<MTLComputePipelineState> g_q4k_sgemv_bp = nil;
+static id<MTLComputePipelineState> g_q4k_tile_gemm = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_bp_g2 = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_bp_g2_add = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_bp_add = nil;
@@ -224,6 +225,13 @@ int stratum_metal_init(const char* metallib_path,
             g_q4k_sgemv_bp = [g_device newComputePipelineStateWithFunction:fnbp error:&err];
             if (!g_q4k_sgemv_bp)
                 fprintf(stderr, "Metal: q4k batch-parallel pipeline failed: %s\n",
+                        [[err localizedDescription] UTF8String]);
+        }
+        id<MTLFunction> fntile = [g_lib newFunctionWithName:@"q4k_tile_gemm"];
+        if (fntile) {
+            g_q4k_tile_gemm = [g_device newComputePipelineStateWithFunction:fntile error:&err];
+            if (!g_q4k_tile_gemm)
+                fprintf(stderr, "Metal: q4k tile gemm pipeline failed: %s\n",
                         [[err localizedDescription] UTF8String]);
         }
         id<MTLFunction> fnbpg2 = [g_lib newFunctionWithName:@"q4k_sgemv_row_bparallel_g2"];
@@ -2951,15 +2959,30 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
                                        loop; kernel reduces via nsimd */
             { const char* e = getenv("STRATUM_NC_BPTG"); if (e) bptg = (NSUInteger)atoi(e); }
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-            [enc setComputePipelineState:bppso];
-            [enc setBuffer:wbuf      offset:woff  atIndex:0];
-            [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf) offset:xoff atIndex:1];
-            [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? 0 : yoff) atIndex:2];
-            [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
-            [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
-            [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
-            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
-                threadsPerThreadgroup:MTLSizeMake(bptg,1,1)];
+            if (gguf_type == 12 && g_q4k_tile_gemm && !xdirect && !ydirect &&
+                (N % 64 == 0) && (K % 256 == 0)) {
+                /* tiled batch GEMM: ~5.5x the per-row bparallel at seq=276.
+                 * M=B, N=N, K=K; writes the same compact [B,N] staging slab. */
+                [enc setComputePipelineState:g_q4k_tile_gemm];
+                [enc setBuffer:wbuf       offset:woff atIndex:0];
+                [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
+                [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
+                [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:3];
+                [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+                [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:5];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 63) / 64), (NSUInteger)((B + 63) / 64), 1)
+                    threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+            } else {
+                [enc setComputePipelineState:bppso];
+                [enc setBuffer:wbuf      offset:woff  atIndex:0];
+                [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf) offset:xoff atIndex:1];
+                [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? 0 : yoff) atIndex:2];
+                [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
+                [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+                [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
+                    threadsPerThreadgroup:MTLSizeMake(bptg,1,1)];
+            }
             [enc endEncoding];
         } else if (B > 1 && bpso) {
             for (int b = 0; b < B; b++) {
@@ -3064,7 +3087,7 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             [enc setComputePipelineState:bppso];
-            [enc setBuffer:wbuf      offset:woff  atIndex:0];
+            [enc setBuffer:wbuf       offset:woff atIndex:0];
             [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
             [enc setBuffer:g_ncb_ybuf offset:yoff atIndex:2];
             [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];

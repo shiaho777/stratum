@@ -2077,3 +2077,71 @@ kernel void q4k_h3_mlp2_ostride(
         y[(size_t)bidx * N + row] = tot;
     }
 }
+
+/* Tiled Q4_K batch GEMM: C[M,N] = A[M,K] x W^T[N,K], one threadgroup per
+ * 64x64 output tile. Beats the per-row bparallel (~0.34 vs ~1.9 TFLOP/s at
+ * seq=276) because each threadgroup reuses its A/B slabs across an 8x8
+ * register tile instead of streaming one row per threadgroup. Weights are
+ * dequantized into the B slab in-place (nib*d_sc - dmin_m); this reorders the
+ * fp32 math vs the per-row d_sc*sum - dmin_m*sum form, so it matches to ~2e-3
+ * (fp32 associativity), not bit-exact. Requires K a multiple of 256 and a
+ * 64-aligned N (both true for every H3 GEMV). */
+kernel void q4k_tile_gemm(
+    device const block_q4_K* W [[buffer(0)]],
+    device const float*      A [[buffer(1)]],
+    device float*            C [[buffer(2)]],
+    constant uint&           M [[buffer(3)]],
+    constant uint&           N [[buffer(4)]],
+    constant uint&           K [[buffer(5)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint2 tid  [[thread_position_in_threadgroup]],
+    uint2 tgsz [[threads_per_threadgroup]])
+{
+    const uint BM = 64, BN = 64, BK = 64;
+    threadgroup float As[BM][BK];
+    threadgroup float Bs[BK][BN];
+    const uint bpr = K / 256;
+    const uint m0 = tgid.y * BM, n0 = tgid.x * BN;
+    const uint tx = tid.x, ty = tid.y;
+
+    float acc[8][8];
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) acc[i][j] = 0.0f;
+
+    for (uint kk = 0; kk < K; kk += BK) {
+        for (uint i = tx + ty * 8; i < BM * BK / 4; i += 64) {
+            uint r = i / (BK / 4), c4 = i % (BK / 4);
+            uint mr = m0 + r;
+            float4 v = (mr < M && kk + c4 * 4 < K)
+                ? ((device const float4*)(A + mr * K + kk))[c4] : float4(0.0f);
+            ((threadgroup float4*)As[r])[c4] = v;
+        }
+        uint j0 = (kk % 256) / 32;
+        for (uint i = tx + ty * 8; i < BN * 2; i += 64) {
+            uint c = i / 2, sb = i % 2, j = j0 + sb, nc = n0 + c;
+            if (nc < N) {
+                const device block_q4_K& bl = W[nc * bpr + kk / 256];
+                float d = float(bl.d), dmin = float(bl.dmin);
+                uchar sc, m;
+                unpack_scale_min((int)j, bl.scales, sc, m);
+                float d_sc = d * (float)sc, dmin_m = dmin * (float)m;
+                const device uchar* qs = bl.qs + (j / 2) * 32;
+                uint shift = (j & 1) ? 4u : 0u;
+                for (uint l = 0; l < 32; l++)
+                    Bs[sb * 32 + l][c] = (float)((qs[l] >> shift) & 0xF) * d_sc - dmin_m;
+            } else {
+                for (uint l = 0; l < 32; l++) Bs[sb * 32 + l][c] = 0.0f;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k2 = 0; k2 < BK; k2++)
+            for (int i = 0; i < 8; i++) {
+                float a = As[ty * 8 + i][k2];
+                for (int j = 0; j < 8; j++) acc[i][j] += a * Bs[k2][tx * 8 + j];
+            }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) {
+        uint mr = m0 + ty * 8 + i, nc = n0 + tx * 8 + j;
+        if (mr < M && nc < N) C[mr * N + nc] = acc[i][j];
+    }
+}
