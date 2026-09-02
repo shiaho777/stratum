@@ -440,3 +440,21 @@ drops the fc1 copy-back + fc2 copy-in, which matters at 768p (intermediate
 traffic x27). Final seq=276 profile: GPU gemv 12.5s (qkv 3.7 + fc1 4.8 + fc2 2.6
 + out_proj 1.4) ~= attention 13.0s (CPU double softmax, boundary-1 blocked from
 GPU). Those two are now the co-equal targets.
+
+## Attention parallelized over the (head, query) grid (11.2x, bit-exact)
+
+The serial CPU attention (double dot + double two-pass softmax + float output)
+was the last CPU hotspot. It is embarrassingly parallel, so it is now split
+across the pthread pool (`h3_par_for`) with per-worker scratch — keeping the
+exact numerics, so it is bit-exact (max|d| 0.0), unlike the GPU float
+online-softmax (mean|d| 0.85, boundary-1 violation).
+
+| stage | before | after |
+|---|---|---|
+| attention | 12.96s | 1.16s (11.2x) |
+| forward wall | 25.7s | 14.0s |
+
+Final seq=276 profile: GPU gemv 12.6s (qkv 3.7 + fc1 4.9 + fc2 2.7 + out_proj
+1.3) is ~90% of the step; the only remaining lever is the tiled gemv itself
+(BK=128, double-buffered slab loads, or int8 dot — the CPU now has spare
+threads for a q*-style row split).
