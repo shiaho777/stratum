@@ -423,3 +423,20 @@ Numerics: the dequant is per-element (`nib*d_sc - dmin_m`) vs the per-row
 per-row was 3.7e-5) — fp32 associativity, within boundary 1. The fused-MLP
 path (fc1/fc2, 13.3s) still uses the old per-row kernels and is the next target
 (a tiled mlp1, or split fc1 gate/up tiled + GPU swiglu + tiled fc2).
+
+## Fused MLP is opt-in now (tiled fallback wins)
+
+With the tiled GEMM in place, the plain fallback (tile fc1 + CPU swiglu + tile
+fc2) beats the fused per-row kernels end-to-end at seq=276, and is closer to the
+CPU reference:
+
+| path | fc1/fc2 | wall | max\|d\| vs CPU |
+|---|---|---|---|
+| fused (per-row mlp1/mlp2) | 13.31s | 31.2s | 1.08e-4 |
+| fallback (tiled) | 4.78 + 2.62 = 7.40s | 25.7s | 7.98e-5 |
+
+`H3_MLP_FUSED` defaults to 0 (opt-in `=1`); the fused path stays because it still
+drops the fc1 copy-back + fc2 copy-in, which matters at 768p (intermediate
+traffic x27). Final seq=276 profile: GPU gemv 12.5s (qkv 3.7 + fc1 4.8 + fc2 2.6
++ out_proj 1.4) ~= attention 13.0s (CPU double softmax, boundary-1 blocked from
+GPU). Those two are now the co-equal targets.
