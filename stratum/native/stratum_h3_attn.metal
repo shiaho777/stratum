@@ -152,15 +152,31 @@ kernel void h3_attn_prefill_strided(
     }
 }
 
+/* Float4 dot shared by both passes of the two-pass kernel. Kept as a single
+ * static inline so the Metal backend emits IDENTICAL code for the pass-1 max
+ * pass and the pass-2 sum/PV pass — the score must be bit-identical on both
+ * passes or a max found on pass 1 can be exceeded by a re-computed score on
+ * pass 2, overflowing exp() into inf→NaN. */
+static inline float qk_dot4(const device float* qh, const device float* kh, uint Hd) {
+    float4 ss = float4(0.0f);
+    for (uint d = 0; d < Hd; d += 4)
+        ss += float4(qh[d], qh[d+1], qh[d+2], qh[d+3]) * float4(kh[d], kh[d+1], kh[d+2], kh[d+3]);
+    return (ss.x + ss.y) + (ss.z + ss.w);
+}
+
 /* Two-pass (non-online) softmax attention, fp32 throughout — the standard
  * PyTorch numeric contract, unlike the online-softmax kernel above. The dot
  * accumulates in float4 (4 partial sums, matching the CPU -ffast-math float4
  * vectorization — measured dot error ~4.5e-5 vs scalar float's ~5.3e-4 on the
  * deep-layer activation spikes) and the softmax uses precise::exp so the deep
- * spikes never overflow the fast-exp path. Scores are stored ONCE in a
- * threadgroup lg[] and exp() is cached in p[], so the working set is O(S+Hd)
- * (no [S,S] score matrix) — which is what lets a long sequence (768p, S~7.4k)
- * run without the O(S^2) memory blowup.
+ * spikes never overflow the fast-exp path.
+ *
+ * Flash-style: the KV range is split into blocks of BLOCK=512 keys so a long
+ * sequence (768p, S~7.4k) runs with an O(S) working set — no [S,S] score
+ * matrix. Two passes: pass 1 finds the global max per (head,query); pass 2
+ * re-computes the (bit-identical) scores and accumulates sum + PV. The score
+ * is re-computed rather than stored, since storing all H·S·S scores would be
+ * O(S^2) memory.
  *
  * One threadgroup per (head, query). grid = H*S, 64 threads.
  *
@@ -188,6 +204,7 @@ kernel void h3_attn_two_pass(
     uint tid [[thread_position_in_threadgroup]],
     uint tg  [[threads_per_threadgroup]])
 {
+    constexpr uint BLOCK = 512;
     uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
     uint orowstride = geom2[0].x, ooff = geom2[0].y;
     uint h = hg / S;
@@ -195,40 +212,53 @@ kernel void h3_attn_two_pass(
     const device float* qh = Q + (size_t)a * rowstride + qoff + (size_t)h * Hd;
 
     threadgroup float sm[2];
-    threadgroup float lg[512];
-    threadgroup float p[512];
+    threadgroup float lg[BLOCK];
+    threadgroup float p[BLOCK];
 
-    /* 1) scores. Hd is the H3 denoiser's fixed 128 (divisible by 4). */
-    for (uint b2 = tid; b2 < S; b2 += tg) {
-        const device float* kh = K + (size_t)b2 * rowstride + koff + (size_t)h * Hd;
-        float4 ss = float4(0.0f);
-        for (uint d = 0; d < Hd; d += 4)
-            ss += float4(qh[d], qh[d+1], qh[d+2], qh[d+3]) * float4(kh[d], kh[d+1], kh[d+2], kh[d+3]);
-        lg[b2] = ((ss.x + ss.y) + (ss.z + ss.w)) * scale;
+    /* Pass 1: block-wise global max. */
+    float gmax = -INFINITY;
+    for (uint bs = 0; bs < S; bs += BLOCK) {
+        uint be = min(bs + BLOCK, S);
+        uint len = be - bs;
+        for (uint b2 = bs + tid; b2 < be; b2 += tg)
+            lg[b2 - bs] = qk_dot4(qh, K + (size_t)b2 * rowstride + koff + (size_t)h * Hd, Hd) * scale;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0) { float m = -INFINITY; for (uint i = 0; i < len; i++) if (lg[i] > m) m = lg[i]; if (m > gmax) gmax = m; }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+    if (tid == 0) sm[0] = gmax;
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    gmax = sm[0];
 
-    /* 2) max (tid 0 serial scan) */
-    if (tid == 0) { float mx = -INFINITY; for (uint b2 = 0; b2 < S; b2++) if (lg[b2] > mx) mx = lg[b2]; sm[0] = mx; }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    const float mx = sm[0];
-
-    /* 3) exp once per key -> p */
-    for (uint b2 = tid; b2 < S; b2 += tg) p[b2] = precise::exp(lg[b2] - mx);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    /* 4) lse (tid 0 serial scan) -> inv */
-    if (tid == 0) { float se = 0.0f; for (uint b2 = 0; b2 < S; b2++) se += p[b2]; sm[0] = 1.0f / se; }
+    /* Pass 2: re-compute (bit-identical) scores, exp once per key into p,
+     * then accumulate the softmax denominator (lse) and the weighted sum.
+     * Hd is the H3 denoiser's fixed 128 with tg=64, so each thread owns the
+     * two output dims d=tid and d=tid+64. */
+    const uint d0 = tid, d1 = tid + 64;
+    float lse = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f;
+    for (uint bs = 0; bs < S; bs += BLOCK) {
+        uint be = min(bs + BLOCK, S);
+        uint len = be - bs;
+        for (uint b2 = bs + tid; b2 < be; b2 += tg)
+            lg[b2 - bs] = qk_dot4(qh, K + (size_t)b2 * rowstride + koff + (size_t)h * Hd, Hd) * scale;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = tid; i < len; i += tg) p[i] = precise::exp(lg[i] - gmax);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0) { float s = 0.0f; for (uint i = 0; i < len; i++) s += p[i]; lse += s; }
+        for (uint i = 0; i < len; i++) {
+            float pp = p[i];
+            acc0 += pp * V[(size_t)(bs + i) * rowstride + voff + (size_t)h * Hd + d0];
+            acc1 += pp * V[(size_t)(bs + i) * rowstride + voff + (size_t)h * Hd + d1];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) sm[0] = 1.0f / lse;
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const float inv = sm[0];
 
-    /* 5) weighted sum, reusing the cached p[] */
     device float* op = Out + (size_t)a * orowstride + ooff + (size_t)h * Hd;
-    for (uint d = tid; d < Hd; d += tg) {
-        float acc = 0.0f;
-        for (uint b2 = 0; b2 < S; b2++)
-            acc += p[b2] * V[(size_t)b2 * rowstride + voff + (size_t)h * Hd + d];
-        op[d] = acc * inv;
-    }
+    op[d0] = acc0 * inv;
+    op[d1] = acc1 * inv;
 }
 
