@@ -186,6 +186,57 @@ static void h3_par_for(int n, void (*fn)(int, int, void*), void* arg) {
     for (int t = 0; t < started; t++) pthread_join(th[t], NULL);
 }
 
+/* Per-(head, query) CPU attention, parallelized over the HEADS*seq grid.
+ * Numerics are byte-identical to the former serial loop: the dot is a double
+ * accumulate over HD (per key), the softmax sum is a double accumulate, and
+ * the output is a float accumulate over keys — each (head, query) is fully
+ * independent, so splitting the grid changes nothing. Each worker gets its
+ * own lg/acc scratch (the serial loop shared one lg). */
+typedef struct {
+    const float* qkv;
+    float* attn;
+    long seq_len;
+    int FF1, comp, HD;
+    float scale2;
+} AttnCtx;
+
+static void attn_range(int lo, int hi, void* arg) {
+    AttnCtx* c = (AttnCtx*)arg;
+    const long seq = c->seq_len;
+    const int HD = c->HD, comp = c->comp, FF1 = c->FF1;
+    const float scale2 = c->scale2;
+    const float* qkv = c->qkv;
+    float* attn = c->attn;
+    float* lg = malloc(sizeof(float) * (size_t)seq);
+    float* acc = malloc(sizeof(float) * (size_t)HD);
+    for (int idx = lo; idx < hi; idx++) {
+        const int h = idx / (int)seq;
+        const long a = idx % seq;
+        const float* qh = &qkv[a * FF1 + h * HD];
+        for (long b2 = 0; b2 < seq; b2++) {
+            const float* kh = &qkv[b2 * FF1 + comp + h * HD];
+            double dot = 0;
+            for (int d = 0; d < HD; d++) dot += (double)qh[d] * kh[d];
+            lg[b2] = (float)(dot * scale2);
+        }
+        float mx = lg[0];
+        for (long j = 1; j < seq; j++) if (lg[j] > mx) mx = lg[j];
+        double se = 0;
+        for (long j = 0; j < seq; j++) { lg[j] -= mx; se += exp((double)lg[j]); }
+        const float inv = (float)(1.0 / se);
+        float* oh = &attn[a * FF1 + h * HD];
+        for (int d = 0; d < HD; d++) acc[d] = 0.0f;
+        for (long b2 = 0; b2 < seq; b2++) {
+            const float pv = expf(lg[b2]) * inv;
+            const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
+            for (int d = 0; d < HD; d++) acc[d] += pv * vh[d];
+        }
+        for (int d = 0; d < HD; d++) oh[d] = acc[d];
+    }
+    free(lg);
+    free(acc);
+}
+
 /* batched: y[s] = W @ x[s] for all S token rows, rows parallelized.
  * STRATUM_H3_NC=1 routes the gemv through the engine's per-tensor NoCopy
  * Metal path (boundary 2a: per-tensor <100MB windows, never whole-model).
@@ -921,7 +972,6 @@ int run_h3_forward_main(int argc, char** argv) {
         /* bidirectional attention (full packed stream) */
         PROF_ENDSLOT(2);
         float scale2 = 1.0f / sqrtf((float)HD);
-        float* lgd = NULL;   /* CPU-attention scratch; NULL on the GPU path */
 #ifdef STRATUM_USE_METAL
         int attn_minseq = 512;
             { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
@@ -944,36 +994,10 @@ int run_h3_forward_main(int argc, char** argv) {
             }
         }
 #endif
-        {   /* strided CPU attention over fbuf rows [q|k|v|out] */
-            float* att_row0 = fbuf + QKV;
-            for (long s = 0; s < seq_len; s++)
-                memset(att_row0 + s * FF1, 0, sizeof(float) * comp);
+        {   /* strided CPU attention over fbuf rows [q|k|v|out] — parallel */
+            AttnCtx ac = { qkv, attn, seq_len, FF1, comp, HD, scale2 };
+            h3_par_for(HEADS * (int)seq_len, attn_range, &ac);
         }
-        lgd = malloc(sizeof(float) * seq_len);
-        for (int h = 0; h < HEADS; h++)
-            for (long a = 0; a < seq_len; a++) {
-                const float* qh = &qkv[a * FF1 + h * HD];
-                for (long b2 = 0; b2 < seq_len; b2++) {
-                    const float* kh = &qkv[b2 * FF1 + comp + h * HD];
-                    double dot = 0;
-                    for (int d = 0; d < HD; d++)
-                        dot += (double)qh[d] * kh[d];
-                    lgd[b2] = (float)(dot * scale2);
-                }
-                float mx = lgd[0];
-                for (long j = 1; j < seq_len; j++) if (lgd[j] > mx) mx = lgd[j];
-                double se = 0;
-                for (long j = 0; j < seq_len; j++) {
-                    lgd[j] -= mx; se += exp((double)lgd[j]);
-                }
-                float inv = (float)(1.0 / se);
-                float* oh = &attn[a * FF1 + h * HD];
-                for (long b2 = 0; b2 < seq_len; b2++) {
-                    float pv = expf(lgd[b2]) * inv;
-                    const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
-                    for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
-                }
-            }
 
         attn_done:;
         PROF_ENDSLOT(3);
@@ -1088,8 +1112,6 @@ int run_h3_forward_main(int argc, char** argv) {
         }
         PROF_ENDSLOT(0);
 
-        free(lgd);
-        lgd = NULL;
         if (getenv("H3_ATTN_CHK")) {
             long bad = 0; double bmax = 0;
             for (long t = 0; t < seq_len * HID; t++) {
@@ -1728,7 +1750,6 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         /* bidirectional attention (full packed stream) */
         PROF_ENDSLOT(2);
         float scale2 = 1.0f / sqrtf((float)HD);
-        float* lgd = NULL;   /* CPU-attention scratch; NULL on the GPU path */
 #ifdef STRATUM_USE_METAL
         int attn_minseq = 512;
             { const char* e = getenv("H3_ATTN_MINSEQ"); if (e) attn_minseq = atoi(e); }
@@ -1749,36 +1770,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             }
         }
 #endif
-        {   /* strided CPU attention over fbuf rows [q|k|v|out] */
-            float* att_row0 = fbuf + QKV;
-            for (long s = 0; s < seq_len; s++)
-                memset(att_row0 + s * FF1, 0, sizeof(float) * comp);
+        {   /* strided CPU attention over fbuf rows [q|k|v|out] — parallel */
+            AttnCtx ac = { qkv, attn, seq_len, FF1, comp, HD, scale2 };
+            h3_par_for(HEADS * (int)seq_len, attn_range, &ac);
         }
-        lgd = malloc(sizeof(float) * seq_len);
-        for (int h = 0; h < HEADS; h++)
-            for (long a = 0; a < seq_len; a++) {
-                const float* qh = &qkv[a * FF1 + h * HD];
-                for (long b2 = 0; b2 < seq_len; b2++) {
-                    const float* kh = &qkv[b2 * FF1 + comp + h * HD];
-                    double dot = 0;
-                    for (int d = 0; d < HD; d++)
-                        dot += (double)qh[d] * kh[d];
-                    lgd[b2] = (float)(dot * scale2);
-                }
-                float mx = lgd[0];
-                for (long j = 1; j < seq_len; j++) if (lgd[j] > mx) mx = lgd[j];
-                double se = 0;
-                for (long j = 0; j < seq_len; j++) {
-                    lgd[j] -= mx; se += exp((double)lgd[j]);
-                }
-                float inv = (float)(1.0 / se);
-                float* oh = &attn[a * FF1 + h * HD];
-                for (long b2 = 0; b2 < seq_len; b2++) {
-                    float pv = expf(lgd[b2]) * inv;
-                    const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
-                    for (int d = 0; d < HD; d++) oh[d] += pv * vh[d];
-                }
-            }
 
         attn_done:;
         PROF_ENDSLOT(3);
@@ -1893,8 +1888,6 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         }
         PROF_ENDSLOT(0);
 
-        free(lgd);
-        lgd = NULL;
         if (getenv("H3_ATTN_CHK")) {
             long bad = 0; double bmax = 0;
             for (long t = 0; t < seq_len * HID; t++) {
