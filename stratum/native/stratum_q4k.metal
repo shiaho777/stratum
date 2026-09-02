@@ -2097,7 +2097,7 @@ kernel void q4k_tile_gemm(
     uint2 tid  [[thread_position_in_threadgroup]],
     uint2 tgsz [[threads_per_threadgroup]])
 {
-    const uint BM = 64, BN = 64, BK = 64;
+    const uint BM = 64, BN = 128, BK = 32;
     threadgroup float As[BM][BK];
     threadgroup float Bs[BK][BN];
     const uint bpr = K / 256;
@@ -2108,7 +2108,7 @@ kernel void q4k_tile_gemm(
     for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) acc[i][j] = 0.0f;
 
     for (uint kk = 0; kk < K; kk += BK) {
-        for (uint i = tx + ty * 8; i < BM * BK / 4; i += 64) {
+        for (uint i = tx + ty * 16; i < BM * BK / 4; i += 128) {
             uint r = i / (BK / 4), c4 = i % (BK / 4);
             uint mr = m0 + r;
             float4 v = (mr < M && kk + c4 * 4 < K)
@@ -2116,20 +2116,20 @@ kernel void q4k_tile_gemm(
             ((threadgroup float4*)As[r])[c4] = v;
         }
         uint j0 = (kk % 256) / 32;
-        for (uint i = tx + ty * 8; i < BN * 2; i += 64) {
-            uint c = i / 2, sb = i % 2, j = j0 + sb, nc = n0 + c;
+        for (uint i = tx + ty * 16; i < BN; i += 128) {
+            uint c = i, nc = n0 + c;
             if (nc < N) {
                 const device block_q4_K& bl = W[nc * bpr + kk / 256];
                 float d = float(bl.d), dmin = float(bl.dmin);
                 uchar sc, m;
-                unpack_scale_min((int)j, bl.scales, sc, m);
+                unpack_scale_min((int)j0, bl.scales, sc, m);
                 float d_sc = d * (float)sc, dmin_m = dmin * (float)m;
-                const device uchar* qs = bl.qs + (j / 2) * 32;
-                uint shift = (j & 1) ? 4u : 0u;
+                const device uchar* qs = bl.qs + (j0 / 2) * 32;
+                uint shift = (j0 & 1) ? 4u : 0u;
                 for (uint l = 0; l < 32; l++)
-                    Bs[sb * 32 + l][c] = (float)((qs[l] >> shift) & 0xF) * d_sc - dmin_m;
+                    Bs[l][c] = (float)((qs[l] >> shift) & 0xF) * d_sc - dmin_m;
             } else {
-                for (uint l = 0; l < 32; l++) Bs[sb * 32 + l][c] = 0.0f;
+                for (uint l = 0; l < 32; l++) Bs[l][c] = 0.0f;
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -2145,3 +2145,4 @@ kernel void q4k_tile_gemm(
         if (mr < M && nc < N) C[mr * N + nc] = acc[i][j];
     }
 }
+

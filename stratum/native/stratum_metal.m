@@ -2961,8 +2961,8 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
             if (gguf_type == 12 && g_q4k_tile_gemm && !xdirect && !ydirect &&
                 (N % 64 == 0) && (K % 256 == 0)) {
-                /* tiled batch GEMM: ~5.5x the per-row bparallel at seq=276.
-                 * M=B, N=N, K=K; writes the same compact [B,N] staging slab. */
+                /* tiled batch GEMM (BN=128): ~5.5x the per-row bparallel at
+                 * seq=276. M=B, N=N, K=K; writes the same compact [B,N] slab. */
                 [enc setComputePipelineState:g_q4k_tile_gemm];
                 [enc setBuffer:wbuf       offset:woff atIndex:0];
                 [enc setBuffer:g_ncb_xbuf offset:xoff atIndex:1];
@@ -2970,8 +2970,8 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
                 [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:3];
                 [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
                 [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:5];
-                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 63) / 64), (NSUInteger)((B + 63) / 64), 1)
-                    threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 127) / 128), (NSUInteger)((B + 63) / 64), 1)
+                    threadsPerThreadgroup:MTLSizeMake(16, 8, 1)];
             } else {
                 [enc setComputePipelineState:bppso];
                 [enc setBuffer:wbuf      offset:woff  atIndex:0];
