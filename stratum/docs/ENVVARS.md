@@ -458,3 +458,21 @@ Final seq=276 profile: GPU gemv 12.6s (qkv 3.7 + fc1 4.9 + fc2 2.7 + out_proj
 1.3) is ~90% of the step; the only remaining lever is the tiled gemv itself
 (BK=128, double-buffered slab loads, or int8 dot — the CPU now has spare
 threads for a q*-style row split).
+
+## Tiled GEMM widened to BN=128 (wall 14.0 -> 12.3s)
+
+A tile-shape sweep found 64x128x32 (128 threads, 8x8 register tile) runs 2.69
+vs 1.87 TFLOP/s over the 64x64x64 shape — the wider BN amortizes the barrier
+and lets the B slab serve 16 column-groups. Same per-element dequant, so
+numerics are unchanged (max|d| 7.98e-5 vs the CPU reference).
+
+| stage | 64x64x64 | 64x128x32 |
+|---|---|---|
+| qkv | 3.69s | 3.19s |
+| fc1 | 4.90s | 4.13s |
+| fc2 | 2.69s | 2.44s |
+| out_proj | 1.33s | 1.11s |
+| wall | 14.0s | 12.3s |
+
+The threadgroup shape is (16, 8): tx covers the 16 column-groups, ty the 8 row
+groups. Reversing it to (8, 16) silently transposes and reads out of bounds.
