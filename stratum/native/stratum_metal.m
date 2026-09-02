@@ -3564,7 +3564,9 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
     if (!g_ncb_cmd) return -2;
     if (g_ncb_ny >= 512) return -1;
     static id<MTLComputePipelineState> spso = nil;
+    static id<MTLComputePipelineState> tpso = nil;   /* two-pass fp32 softmax */
     static uint gHd = 0;
+    static int g_use_tp = -1;   /* H3_ATTN_TWOPASS=0 forces the online kernel */
     @autoreleasepool {
         if (!spso || gHd != (uint)Hd) {
             id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill_strided"];
@@ -3572,6 +3574,17 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             spso = [g_device newComputePipelineStateWithFunction:fn error:nil];
             if (!spso) return -1;
             gHd = (uint)Hd;
+        }
+        if (g_use_tp < 0) {
+            const char* e = getenv("H3_ATTN_TWOPASS");
+            g_use_tp = (e && atoi(e) == 1) ? 1 : 0;
+        }
+        if (g_use_tp && !tpso) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass"];
+            if (fn) {
+                tpso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!tpso) g_use_tp = 0;
+            } else g_use_tp = 0;
         }
         size_t qb = (size_t)S * H * Hd * sizeof(float);
         id<MTLBuffer> bdir = ncar_get(base, (size_t)S * rowstride * sizeof(float));
@@ -3616,7 +3629,7 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             ob = obuf;
         }
         id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-        [enc setComputePipelineState:spso];
+        [enc setComputePipelineState:(g_use_tp ? tpso : spso)];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 2 * qb : 0) atIndex:2];
@@ -3635,13 +3648,26 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             [enc setBytes:&g1 length:16 atIndex:9];
         } else {
             uint32_t g0[4] = { (uint)rowstride, (uint)qoff, (uint)koff, (uint)voff };
-            uint32_t g1[4] = { (uint)rowstride, (uint)ooff, 0, 0 };
+            uint32_t g1[4];
+            if (ob == obuf) {
+                /* compact obuf out (scattered at flush): out rows H*Hd apart */
+                g1[0] = (uint)(H * Hd); g1[1] = 0; g1[2] = 0; g1[3] = 0;
+            } else {
+                /* direct fbuf write: out stride = rowstride; the ooff region
+                 * offset is already folded into the buffer offset (ooff_b) */
+                g1[0] = (uint)rowstride; g1[1] = 0; g1[2] = 0; g1[3] = 0;
+            }
             [enc setBytes:&g0 length:16 atIndex:8];
             [enc setBytes:&g1 length:16 atIndex:9];
         }
-        uint qtiles = (uint)((S + 63) / 64);
-        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
-            threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        if (g_use_tp) {
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((size_t)H*S),1,1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        } else {
+            uint qtiles = (uint)((S + 63) / 64);
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        }
         [enc endEncoding];
         g_ncb_ytasks[g_ncb_ny].dst = out_region;
         g_ncb_ytasks[g_ncb_ny].dsts = NULL;

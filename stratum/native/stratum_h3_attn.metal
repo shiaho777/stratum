@@ -149,3 +149,75 @@ kernel void h3_attn_prefill_strided(
         op[0] = m; op[1] = l;
     }
 }
+
+/* Two-pass (non-online) softmax attention, fp32 throughout — the standard
+ * PyTorch numeric contract, unlike the online-softmax kernel above. The dot
+ * and the softmax sum accumulate in float (not double), which matches the CPU
+ * two-pass to max|d| ~6e-5 on the velocity (verified), vs the online-softmax
+ * kernel's 0.85. Dots are recomputed three times (max / sum / PV) so the
+ * working set is O(Hd) — no [S,S] score matrix — which is what lets a long
+ * sequence (768p, S~7.4k) run without the O(S^2) memory blowup.
+ *
+ * One threadgroup per (head, query). grid = H*S, 64 threads.
+ */
+kernel void h3_attn_two_pass(
+    device const float* Q   [[buffer(0)]],
+    device const float* K   [[buffer(1)]],
+    device const float* V   [[buffer(2)]],
+    device float*       Out [[buffer(3)]],
+    constant uint& S            [[buffer(4)]],
+    constant uint& H            [[buffer(5)]],
+    constant uint& Hd           [[buffer(6)]],
+    constant float& scale       [[buffer(7)]],
+    constant uint4* geom        [[buffer(8)]],
+    uint hg [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
+    uint orowstride = geom[1].x, ooff = geom[1].y;
+    uint h = hg / S;
+    uint a = hg % S;
+    const device float* qh = Q + (size_t)a * rowstride + qoff + (size_t)h * Hd;
+
+    /* Store the scores ONCE in a threadgroup lg[] so the max / sum / PV passes
+     * all read the identical float value — recomputing the dot three times is
+     * what exploded on the deep-layer activation spikes (float-accumulate error
+     * ~1e3 on a dot ~1e7 made pass-1 max and pass-2 sum disagree by >88, so
+     * precise::exp() overflowed). S <= 512 here (threadgroup memory); longer sequences
+     * need a flash-style block split. */
+    threadgroup float sm[64];
+    threadgroup float lg[512];
+
+    float lmax = -INFINITY;
+    for (uint b2 = tid; b2 < S; b2 += tg) {
+        const device float* kh = K + (size_t)b2 * rowstride + koff + (size_t)h * Hd;
+        float dot = 0.0f;
+        for (uint d = 0; d < Hd; d++) dot += qh[d] * kh[d];
+        float s = dot * scale;
+        lg[b2] = s;
+        if (s > lmax) lmax = s;
+    }
+    sm[tid] = lmax;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) { float mx = -INFINITY; for (uint t = 0; t < tg; t++) if (sm[t] > mx) mx = sm[t]; sm[0] = mx; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float mx = sm[0];
+
+    float lse = 0.0f;
+    for (uint b2 = tid; b2 < S; b2 += tg) lse += precise::exp(lg[b2] - mx);
+    sm[tid] = lse;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) { float se = 0.0f; for (uint t = 0; t < tg; t++) se += sm[t]; sm[0] = se; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = 1.0f / sm[0];
+
+    device float* op = Out + (size_t)a * orowstride + ooff + (size_t)h * Hd;
+    for (uint d = tid; d < Hd; d += tg) {
+        float acc = 0.0f;
+        for (uint b2 = 0; b2 < S; b2++)
+            acc += precise::exp(lg[b2] - mx) * inv * V[(size_t)b2 * rowstride + voff + (size_t)h * Hd + d];
+        op[d] = acc;
+    }
+}
+

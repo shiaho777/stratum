@@ -200,6 +200,8 @@ typedef struct {
     float scale2;
 } AttnCtx;
 
+static int g_attn_f32 = -1;   /* -1 unset; H3_ATTN_F32=1: fp32 dot + fp32 softmax sum */
+
 static void attn_range(int lo, int hi, void* arg) {
     AttnCtx* c = (AttnCtx*)arg;
     const long seq = c->seq_len;
@@ -209,18 +211,40 @@ static void attn_range(int lo, int hi, void* arg) {
     float* attn = c->attn;
     float* lg = malloc(sizeof(float) * (size_t)seq);
     float* acc = malloc(sizeof(float) * (size_t)HD);
+    if (g_attn_f32 < 0) { const char* e = getenv("H3_ATTN_F32"); g_attn_f32 = e && atoi(e) ? 1 : 0; }
+    const int f32 = g_attn_f32;   /* H3_ATTN_F32=1: fp32 dot + fp32 softmax sum */
     for (int idx = lo; idx < hi; idx++) {
         const int h = idx / (int)seq;
         const long a = idx % seq;
         const float* qh = &qkv[a * FF1 + h * HD];
         for (long b2 = 0; b2 < seq; b2++) {
             const float* kh = &qkv[b2 * FF1 + comp + h * HD];
-            double dot = 0;
-            for (int d = 0; d < HD; d++) dot += (double)qh[d] * kh[d];
-            lg[b2] = (float)(dot * scale2);
+            if (f32) {
+                float dot = 0;
+                for (int d = 0; d < HD; d++) dot += qh[d] * kh[d];
+                lg[b2] = dot * scale2;
+            } else {
+                double dot = 0;
+                for (int d = 0; d < HD; d++) dot += (double)qh[d] * kh[d];
+                lg[b2] = (float)(dot * scale2);
+            }
         }
         float mx = lg[0];
         for (long j = 1; j < seq; j++) if (lg[j] > mx) mx = lg[j];
+        if (f32) {
+            float se = 0;
+            for (long j = 0; j < seq; j++) { lg[j] -= mx; se += expf(lg[j]); }
+            const float inv = 1.0f / se;
+            float* oh = &attn[a * FF1 + h * HD];
+            for (int d = 0; d < HD; d++) acc[d] = 0.0f;
+            for (long b2 = 0; b2 < seq; b2++) {
+                const float pv = expf(lg[b2]) * inv;
+                const float* vh = &qkv[b2 * FF1 + 2 * comp + h * HD];
+                for (int d = 0; d < HD; d++) acc[d] += pv * vh[d];
+            }
+            for (int d = 0; d < HD; d++) oh[d] = acc[d];
+            continue;
+        }
         double se = 0;
         for (long j = 0; j < seq; j++) { lg[j] -= mx; se += exp((double)lg[j]); }
         const float inv = (float)(1.0 / se);
