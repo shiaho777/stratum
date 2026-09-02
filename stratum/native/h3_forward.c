@@ -1035,7 +1035,10 @@ int run_h3_forward_main(int argc, char** argv) {
         static int fused_en = -1;
         if (fused_en < 0) {
             const char* e = getenv("H3_MLP_FUSED");
-            fused_en = (e && atoi(e) == 0) ? 0 : 1;
+                        /* tiled per-row GEMVs made the fallback (tile fc1 + CPU swiglu +
+             * tile fc2) faster AND closer to the CPU reference than the fused
+             * per-row kernels, so fuse is opt-in now (H3_MLP_FUSED=1). */
+            fused_en = (e && atoi(e) == 1) ? 1 : 0;
         }
         if (fused_en && g_h3_nc && g_metal_ready &&
             (t_fc1->type == 12 || t_fc1->type == 14) &&
@@ -1837,7 +1840,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         static int fused_en = -1;
         if (fused_en < 0) {
             const char* e = getenv("H3_MLP_FUSED");
-            fused_en = (e && atoi(e) == 0) ? 0 : 1;
+                        /* tiled per-row GEMVs made the fallback (tile fc1 + CPU swiglu +
+             * tile fc2) faster AND closer to the CPU reference than the fused
+             * per-row kernels, so fuse is opt-in now (H3_MLP_FUSED=1). */
+            fused_en = (e && atoi(e) == 1) ? 1 : 0;
         }
         if (fused_en && g_h3_nc && g_metal_ready &&
             (t_fc1->type == 12 || t_fc1->type == 14) &&
