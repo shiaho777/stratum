@@ -3566,8 +3566,10 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
     static id<MTLComputePipelineState> spso = nil;
     static id<MTLComputePipelineState> tpso = nil;   /* two-pass fp32 softmax */
     static id<MTLComputePipelineState> tp2so = nil;  /* two-pass v2: ILP dot + simd reduce */
+    static id<MTLComputePipelineState> ttso = nil;   /* tiled Bq16: one-pass QK per tile */
     static uint gHd = 0;
-    /* H3_ATTN_TWOPASS: 0 = online kernel, 1 = two-pass, 2 = two-pass v2 (default) */
+    /* H3_ATTN_TWOPASS: 0 = online kernel, 1 = two-pass, 2 = two-pass v2
+     * (default), 3 = tiled Bq16 (one QK pass, per-tile online softmax) */
     static int g_use_tp = -1;
     @autoreleasepool {
         if (!spso || gHd != (uint)Hd) {
@@ -3580,6 +3582,13 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
         if (g_use_tp < 0) {
             const char* e = getenv("H3_ATTN_TWOPASS");
             g_use_tp = e ? atoi(e) : 2;
+        }
+        if (g_use_tp == 3 && !ttso) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_tiled"];
+            if (fn) {
+                ttso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!ttso) g_use_tp = 2;
+            } else g_use_tp = 2;
         }
         if (g_use_tp == 2 && !tp2so) {
             id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass_v2"];
@@ -3638,7 +3647,8 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             ob = obuf;
         }
         id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-        [enc setComputePipelineState:(g_use_tp == 2 ? tp2so
+        [enc setComputePipelineState:(g_use_tp == 3 ? ttso
+                                    : g_use_tp == 2 ? tp2so
                                     : g_use_tp == 1 ? tpso : spso)];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
@@ -3671,7 +3681,9 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             [enc setBytes:&g1 length:16 atIndex:9];
         }
         if (g_use_tp >= 1) {
-            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((size_t)H*S),1,1)
+            uint grid = (g_use_tp == 3) ? (uint)(H * ((S + 15) / 16))
+                                        : (uint)((size_t)H * S);
+            [enc dispatchThreadgroups:MTLSizeMake(grid,1,1)
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
         } else {
             uint qtiles = (uint)((S + 63) / 64);

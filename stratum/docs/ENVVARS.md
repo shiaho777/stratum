@@ -248,7 +248,7 @@ they are read by the spike programs, not by the `stratum` engine.
 | `STRATUM_NC_FREESTAGING` | release the NC staging x/y MTLBuffers after every flush instead of holding them for the process lifetime (resident-sampler mode; re-grows on demand). Set automatically by `H3_SAMPLER_STEPS` | experimental (auto-set by the sampler) |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
-| `H3_ATTN_TWOPASS` | attention kernel selector: `0` = online-softmax kernel, `1` = two-pass (tid0 serial reduction), `2` = **two-pass v2** (default): same two-pass numeric contract (one shared inline dot, bit-identical pass1/pass2 scores, precise::exp) but 4×independent-accumulator float4 dot, simd-shuffle max/sum reductions instead of tid0 serial scans, float4 V loads. Micro-bench (`bench_h3_attn`, synth spikes): 645→1288 GFLOP/s at S=7400 (~2×, all S), 0 NaN. e2e seq=276: packed velocity dump (video+audio) bit-identical vs `=1` | experimental (v2 default) |
+| `H3_ATTN_TWOPASS` | attention kernel selector: `0` = online-softmax kernel, `1` = two-pass (tid0 serial reduction), `2` = **two-pass v2** (default): same two-pass numeric contract (one shared inline dot, bit-identical pass1/pass2 scores, precise::exp) but 4×independent-accumulator float4 dot, simd-shuffle max/sum reductions instead of tid0 serial scans, float4 V loads. Micro-bench (`bench_h3_attn`, synth spikes): 645→1288 GFLOP/s at S=7400 (~2×, all S), 0 NaN. e2e seq=276: packed velocity dump (video+audio) bit-identical vs `=1`. `3` = tiled Bq16: one QK pass per 256-key tile (per-tile online softmax, scores in threadgroup memory) — bench S=7400 0.958s vs v2 1.172s (1.22× wall; the v2 kernel is already ALU-bound at 2.68 TFLOP/s = tiled-GEMM level, so the tiled win is bounded by the 0.75× FLOP saving of the dropped second QK pass). e2e seq=276 bit-identical vs `=2` | experimental (v2 default, 3 optional for long sequences) |
 
 ### H3 attention two-pass v2 (2026-09-03)
 
@@ -271,6 +271,20 @@ data's own fp32 score noise (vs-fp32 == vs-f64 at every element), not a
 kernel regression; the v2-vs-v1 outputs are bit-identical in the e2e
 packed dump. Gate: `H3_ATTN_TWOPASS=1` still selects the V1 kernel for
 A/B runs.
+
+### H3 attention tiled Bq16 (2026-09-03, Phase 2)
+
+`h3_attn_tiled` — motivation was the ~2.6 TB/s L2 demand of the
+per-(head,query) kernels, but the bench showed v2 is ALREADY ALU-bound
+at 2.68 TFLOP/s (identical to the tiled GEMM's 2.69), so the tiled
+kernel's only structural win is dropping the second QK pass: 0.75× FLOP
+bound, 0.958 s vs v2's 1.172 s at S=7400 (1.22×, 92% of the bound).
+Design: Bq=16 queries per threadgroup, Bk=256-key KV tiles, scores in
+threadgroup memory (16 KB), per-tile online softmax (running max, exp
+arguments always ≤ 0), stage-2 key loop unrolled ×2. Numeric contract:
+fp32 + precise::exp, same class as v2 — e2e packed dump bit-identical
+to TWOPASS=2 at seq=276. Worth ~15 min over 20 steps at 768p; select
+with `H3_ATTN_TWOPASS=3`.
 
 ### H3 fused activation buffer + fc2 row-stride fix (2026-09-01, a9ec089)
 
