@@ -228,6 +228,11 @@ int stratum_metal_nc_xreg_register(const float* p, size_t bytes);
  * it in place and flush skips the copy-back. */
 int stratum_metal_nc_yreg_register(float* p, size_t bytes);
 int stratum_metal_nc_batch_flush(void);
+/* Async-flush barrier (STRATUM_NC_ASYNC=1): flush() then only COMMITS; the
+ * wait + copy-back are deferred to the next begin() (or this drain). Call
+ * before any CPU read of a tensor the pending batch writes, and once at the
+ * end of a forward pass. No-op in sync mode. */
+void stratum_metal_nc_batch_drain(void);
 /* STRATUM_NC_TIME diagnostic: print accumulated NoCopy-registration vs
  * commit+wait wall time for the NC batch path. No-op when never called. */
 void stratum_metal_nc_time_report(void);

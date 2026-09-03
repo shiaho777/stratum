@@ -2690,6 +2690,20 @@ static NCBatchYTask g_ncb_ytasks[512];
 static id<MTLBuffer> g_ncb_hbuf = nil;   /* fused-MLP h slab (freed with staging) */
 static size_t g_ncb_hcap = 0;
 
+/* Async flush (STRATUM_NC_ASYNC=1): flush() commits WITHOUT waiting and
+ * defers the wait + copy-back to the next begin() (or the drain at forward
+ * end). While the GPU runs this batch, the CPU proceeds with the next
+ * layer's norm/qknorm/rope work — the only serial segment left is the GPU
+ * itself. Correctness: begin() must drain BEFORE resetting the staging
+ * offsets (xpos/ypos) or reusing x/y buffers, because the pending batch's
+ * copy-backs read exactly those buffers. The pending ytask snapshot lives
+ * in its own array so the live g_ncb_ytasks can be rebuilt freely. */
+static id<MTLCommandBuffer> g_ncb_pending = nil;
+static NCBatchYTask g_ncb_ptasks[512];
+static int g_ncb_pn = 0;
+static id<MTLBuffer> g_ncb_pybuf = nil;   /* ybuf incarnation of the pending batch */
+static int g_ncb_async = -1;
+
 /* NC-path cost accounting (STRATUM_NC_TIME=1): isolate per-op NoCopy
  * registration from commit+wait latency so the real bottleneck is
  * measurable instead of guessed. */
@@ -2794,7 +2808,53 @@ static void nc_wpool_put(void* p, size_t len, id<MTLBuffer> buf) {
     }   /* else: fall through to per-flush lifetime (pool full) */
 }
 
+/* drain the pending (already-committed) batch: wait for the GPU, run the
+ * copy-backs, release. Called from begin() before staging reset and from
+ * nc_batch_drain() at forward end. */
+static void ncb_drain_pending(void) {
+    if (!g_ncb_pending) return;
+    double _tc0 = now_s();
+    [g_ncb_pending waitUntilCompleted];
+    g_t_commit += now_s() - _tc0;
+    const char* ybase = g_ncb_pybuf ? (const char*)[g_ncb_pybuf contents] : nil;
+    for (int i = 0; i < g_ncb_pn; i++) {
+        const NCBatchYTask* t = &g_ncb_ptasks[i];
+        if (t->src_buf) {
+            const char* sb = (const char*)[t->src_buf contents];
+            if (t->rows > 0) {
+                for (int r = 0; r < t->rows; r++)
+                    memcpy(t->dst + (size_t)r * t->out_stride,
+                           sb + (size_t)r * t->rowbytes, t->rowbytes);
+            } else if (t->out_stride == 0) {
+                memcpy(t->dst, sb, t->bytes);
+            } else {
+                for (int r = 0; r < t->N; r++)
+                    memcpy(t->dst + (size_t)r * t->out_stride,
+                           sb + (size_t)r * (t->bytes / 4 / t->N),
+                           (size_t)(t->bytes / 4 / t->N) * 4);
+            }
+            continue;
+        }
+        if (t->dst_buf) {
+            /* GPU wrote dst directly */
+        } else if (t->is_streams) {
+            for (int s2 = 0; s2 < t->B && s2 < 32; s2++)
+                memcpy(t->dst_ptrs[s2], ybase + t->off + (size_t)s2 * t->N * 4, (size_t)t->N * 4);
+        } else if (t->rows > 0) {
+            for (int r = 0; r < t->rows; r++)
+                memcpy(t->dst + (size_t)r * t->out_stride,
+                       ybase + t->off + (size_t)r * t->rowbytes, t->rowbytes);
+        } else {
+            memcpy(t->dst, ybase + t->off, t->bytes);
+        }
+    }
+    g_ncb_pn = 0;
+    g_ncb_pending = nil;
+    g_ncb_pybuf = nil;
+}
+
 int stratum_metal_nc_batch_begin(void) {
+    ncb_drain_pending();   /* async mode: wait+copyback BEFORE reusing staging */
     if (!g_ncb_cmd) g_ncb_cmd = [g_queue commandBuffer];
     g_ncb_ny = 0;
     g_ncb_xpos = 0;
@@ -3129,8 +3189,29 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
 int stratum_metal_nc_batch_flush(void) {
     if (!g_ncb_cmd) return 0;
     if (getenv("STRATUM_NC_DEBUG")) fprintf(stderr, "  [nc] flush cmd ny=%d\n", g_ncb_ny);
+    if (g_ncb_async < 0) {
+        const char* e = getenv("STRATUM_NC_ASYNC");
+        g_ncb_async = (e && atoi(e) == 1) ? 1 : 0;
+    }
     double _tc0 = now_s();
     [g_ncb_cmd commit];
+    if (g_ncb_async) {
+        /* commit-only: the wait + copy-back happen at the next begin() or
+         * drain. Snapshot the ytasks — the pending batch's copy-backs read
+         * this ybuf incarnation, which stays alive via g_ncb_pybuf. */
+        memcpy(g_ncb_ptasks, g_ncb_ytasks, sizeof(NCBatchYTask) * (size_t)g_ncb_ny);
+        g_ncb_pn = g_ncb_ny;
+        g_ncb_pending = g_ncb_cmd;
+        g_ncb_pybuf = g_ncb_ybuf;
+        g_t_commit += now_s() - _tc0; g_n_commit++;
+        g_ncb_cmd = nil;
+        g_ncb_ny = 0;
+        g_ncb_nw = 0;   /* weight buffers: released when the batch drains */
+        /* FREESTAGING cannot apply in async mode: the pending batch's
+         * copy-backs read the staging buffers, so they must survive until
+         * the drain. Guarded again in begin()'s drain path. */
+        return 0;
+    }
     [g_ncb_cmd waitUntilCompleted];
     g_t_commit += now_s() - _tc0; g_n_commit++;
     const char* ybase = (const char*)[g_ncb_ybuf contents];
@@ -3176,16 +3257,32 @@ int stratum_metal_nc_batch_flush(void) {
     g_ncb_cmd = nil;
     g_ncb_ny = 0;
     g_ncb_nw = 0;   /* release weight buffers (command buffer done) */
-    if (getenv("STRATUM_NC_FREESTAGING")) {
+    if (getenv("STRATUM_NC_FREESTAGING") && !g_ncb_pending) {
         /* resident-sampler mode: release the staging x/y buffers after every
          * flush. They re-grow on demand next flush (a few extra allocs per
-         * step vs holding ~64MB of staging for the whole sampling loop). */
+         * step vs holding ~64MB of staging for the whole sampling loop).
+         * Skipped in async mode — the pending batch's copy-backs read them;
+         * they are released by the drain instead. */
         g_ncb_xbuf = nil; g_ncb_ybuf = nil;
         g_ncb_xcap = 0;   g_ncb_ycap = 0;
         g_ncb_xpos = 0;   g_ncb_ypos = 0;
         g_ncb_hbuf = nil; g_ncb_hcap = 0;   /* fused-MLP h slab too */
     }
     return 0;
+}
+
+/* async-mode barrier: wait for the pending batch and finish its copy-backs.
+ * Callers: h3_forward at the end of the block loop (and anywhere a CPU
+ * path is about to READ a tensor the GPU wrote in the pending batch). */
+void stratum_metal_nc_batch_drain(void) {
+    ncb_drain_pending();
+    /* FREESTAGING release deferred from flush() happens here */
+    if (g_ncb_pending == nil && getenv("STRATUM_NC_FREESTAGING") && !g_ncb_cmd) {
+        g_ncb_xbuf = nil; g_ncb_ybuf = nil;
+        g_ncb_xcap = 0;   g_ncb_ycap = 0;
+        g_ncb_xpos = 0;   g_ncb_ypos = 0;
+        g_ncb_hbuf = nil; g_ncb_hcap = 0;
+    }
 }
 
 void stratum_metal_nc_time_report(void) {

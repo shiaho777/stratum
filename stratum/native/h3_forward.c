@@ -1150,6 +1150,9 @@ int run_h3_forward_main(int argc, char** argv) {
         }
     }
     double elapsed = h3_now_s() - t_fw;
+#ifdef STRATUM_USE_METAL
+    if (g_h3_nc) stratum_metal_nc_batch_drain();   /* async flush: wait + copyback */
+#endif
     fprintf(stderr, "\n  packed forward (%d layers, seq=%ld): %.1fs wall\n",
             NL, seq_len, elapsed);
     if (getenv("STRATUM_NC_TIME")) stratum_metal_nc_time_report();
@@ -1568,6 +1571,9 @@ int h3_sampler_main(int argc, char** argv) {
         double sigma = 1000.0 * (1.0 - (i + 0.5) / steps) / 1000.0;
         double t0 = h3_now_s();
         if (h3_sampler_step(&st, sigma, NULL) != 0) return 1;
+#ifdef STRATUM_USE_METAL
+        if (g_h3_nc) stratum_metal_nc_batch_drain();   /* async flush: wait + copyback before the CPU Euler update reads xnext */
+#endif
         /* Euler update against the flow ODE: the model returns -v in x0
          * space, so x <- x - dt * out (h3_euler.sh contract). */
         for (long k = 0; k < (long)st.n_video * 96; k++)
