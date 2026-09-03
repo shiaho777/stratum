@@ -248,6 +248,29 @@ they are read by the spike programs, not by the `stratum` engine.
 | `STRATUM_NC_FREESTAGING` | release the NC staging x/y MTLBuffers after every flush instead of holding them for the process lifetime (resident-sampler mode; re-grows on demand). Set automatically by `H3_SAMPLER_STEPS` | experimental (auto-set by the sampler) |
 | `STRATUM_METALLIB` | metallib path for stratum_metal_init | sanctioned |
 | `STRATUM_H3_ATTNLIB` | metallib path for the H3 attention kernel (default /tmp/h3_attn.metallib) | experimental |
+| `H3_ATTN_TWOPASS` | attention kernel selector: `0` = online-softmax kernel, `1` = two-pass (tid0 serial reduction), `2` = **two-pass v2** (default): same two-pass numeric contract (one shared inline dot, bit-identical pass1/pass2 scores, precise::exp) but 4×independent-accumulator float4 dot, simd-shuffle max/sum reductions instead of tid0 serial scans, float4 V loads. Micro-bench (`bench_h3_attn`, synth spikes): 645→1288 GFLOP/s at S=7400 (~2×, all S), 0 NaN. e2e seq=276: packed velocity dump (video+audio) bit-identical vs `=1` | experimental (v2 default) |
+
+### H3 attention two-pass v2 (2026-09-03)
+
+`h3_attn_two_pass_v2` in `stratum_h3_attn.metal` — structural-only rework of
+the two-pass kernel, numeric contract unchanged:
+
+1. `qk_dot4_4x`: 4 independent float4 accumulators (the old single chain
+   serialized 32 FMAs).
+2. simd-shuffle reductions: private per-thread max (pass 1) / partial sums
+   (pass 2), folded by `simd_shuffle_xor` + one cross-simd broadcast. The
+   old tid0 serial O(BLOCK) scans idled 62/64 threads at a barrier per
+   512-key block.
+3. PV loads V rows as float4s.
+
+Measured (`bench_h3_attn.m`, synth spike data, M4 Pro, best-of-3):
+S=276: 611→1149 GF/s (1.9×), S=2048: 696→1149 (1.65×), S=7400:
+646→1288 (2.0×). 0 NaN/Inf at all S. The bench's CPU-double reference
+shows max|d| ~2.6–5.0 for BOTH kernels — that distance is the synth
+data's own fp32 score noise (vs-fp32 == vs-f64 at every element), not a
+kernel regression; the v2-vs-v1 outputs are bit-identical in the e2e
+packed dump. Gate: `H3_ATTN_TWOPASS=1` still selects the V1 kernel for
+A/B runs.
 
 ### H3 fused activation buffer + fc2 row-stride fix (2026-09-01, a9ec089)
 

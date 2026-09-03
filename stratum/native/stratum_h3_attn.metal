@@ -262,3 +262,139 @@ kernel void h3_attn_two_pass(
     op[d1] = acc1 * inv;
 }
 
+/* ---------------------------------------------------------------------------
+ * V2 two-pass kernel (2026-09): same numeric contract as h3_attn_two_pass,
+ * three structural fixes. All scores still re-computed with ONE shared
+ * static-inline dot (bit-identical pass 1 / pass 2), softmax still
+ * precise::exp, accumulation still fp32 — max|d| contract unchanged.
+ *
+ * 1. qk_dot4_4x: 4 independent float4 accumulators — the old single-chain
+ *    dot serialized 32 FMAs (4-deep dependency); 4 chains restore ILP.
+ * 2. Private max (pass 1) and private partial sums (pass 2) per thread,
+ *    reduced by simd shuffle + a 1-row cross-simd sum instead of the tid-0
+ *    serial O(BLOCK) scans. The tid-0 threadgroup-array scan was ~30k idle
+ *    cycles per 512-key block (62 of 64 threads waiting at the barrier).
+ *    The pass-1 max needs a max reduction (simd_max), pass 2 a sum
+ *    reduction (simd_sum) — same stored-scores source of truth as V1
+ *    (lg[] written by all threads, then reduced), so the miscompile V1
+ *    documented for inline cross-thread partial reductions is not in play.
+ * 3. PV accumulate over float4 V rows: each thread owns output dims
+ *    (d0 = tid, d1 = tid + 64) as before, but loads V as two float4s per
+ *    step and unrolls the key loop ×2 for load pairing.
+ * --------------------------------------------------------------------------- */
+
+static inline float qk_dot4_4x(const device float* qh, const device float* kh, uint Hd) {
+    float4 s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+    uint d = 0;
+    for (; d + 16 <= Hd; d += 16) {
+        s0 += float4(qh[d+0],  qh[d+1],  qh[d+2],  qh[d+3])  * float4(kh[d+0],  kh[d+1],  kh[d+2],  kh[d+3]);
+        s1 += float4(qh[d+4],  qh[d+5],  qh[d+6],  qh[d+7])  * float4(kh[d+4],  kh[d+5],  kh[d+6],  kh[d+7]);
+        s2 += float4(qh[d+8],  qh[d+9],  qh[d+10], qh[d+11]) * float4(kh[d+8],  kh[d+9],  kh[d+10], kh[d+11]);
+        s3 += float4(qh[d+12], qh[d+13], qh[d+14], qh[d+15]) * float4(kh[d+12], kh[d+13], kh[d+14], kh[d+15]);
+    }
+    for (; d + 4 <= Hd; d += 4)
+        s0 += float4(qh[d], qh[d+1], qh[d+2], qh[d+3]) * float4(kh[d], kh[d+1], kh[d+2], kh[d+3]);
+    float4 t = (s0 + s1) + (s2 + s3);
+    for (; d < Hd; d++) t.x += qh[d] * kh[d];
+    return (t.x + t.y) + (t.z + t.w);
+}
+
+/* warp-level reductions via simd shuffle (no shared-memory round trip) */
+static inline float simd_reduce_max(float v) {
+    v = max(v, simd_shuffle_xor(v, 16));
+    v = max(v, simd_shuffle_xor(v, 8));
+    v = max(v, simd_shuffle_xor(v, 4));
+    v = max(v, simd_shuffle_xor(v, 2));
+    v = max(v, simd_shuffle_xor(v, 1));
+    return v;
+}
+static inline float simd_reduce_sum(float v) {
+    v += simd_shuffle_xor(v, 16);
+    v += simd_shuffle_xor(v, 8);
+    v += simd_shuffle_xor(v, 4);
+    v += simd_shuffle_xor(v, 2);
+    v += simd_shuffle_xor(v, 1);
+    return v;
+}
+
+kernel void h3_attn_two_pass_v2(
+    device const float* Q   [[buffer(0)]],
+    device const float* K   [[buffer(1)]],
+    device const float* V   [[buffer(2)]],
+    device float*       Out [[buffer(3)]],
+    constant uint& S            [[buffer(4)]],
+    constant uint& H            [[buffer(5)]],
+    constant uint& Hd           [[buffer(6)]],
+    constant float& scale       [[buffer(7)]],
+    constant uint4* geom        [[buffer(8)]],
+    constant uint4* geom2       [[buffer(9)]],
+    uint hg [[threadgroup_position_in_grid]],
+    uint simd_lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint tid  [[thread_index_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    constexpr uint BLOCK = 512;
+    uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
+    uint orowstride = geom2[0].x, ooff = geom2[0].y;
+    uint h = hg / S;
+    uint a = hg % S;
+    const device float* qh = Q + (size_t)a * rowstride + qoff + (size_t)h * Hd;
+
+    threadgroup float smax[2];   /* cross-simd broadcast: [max, 1/lse] */
+    threadgroup float ssum[2];
+
+    /* Pass 1: global max. Each thread strides keys, keeps a private max;
+     * simd_reduce_max folds lanes, one cross-simd max folds simdgroups. */
+    float pmax = -INFINITY;
+    for (uint b2 = simd_group * 32 + simd_lane; b2 < S; b2 += tg)
+        pmax = max(pmax, qk_dot4_4x(qh, K + (size_t)b2 * rowstride + koff + (size_t)h * Hd, Hd) * scale);
+    pmax = simd_reduce_max(pmax);
+    if (simd_lane == 0) smax[simd_group] = pmax;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd_group == 0) {
+        float m = (tg > 32 && simd_lane < tg / 32) ? smax[simd_lane] : smax[0];
+        m = max(m, simd_reduce_max(m));
+        if (simd_lane == 0) smax[1] = m;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float gmax = smax[1];
+
+    /* Pass 2: re-compute (bit-identical) scores, accumulate per-thread
+     * partial lse and PV. Each thread owns output dims d0=tid, d1=tid+64.
+     * V rows loaded as float4 pairs; key loop unrolled ×2 for load pairing. */
+    const uint d0 = (simd_group * 32 + simd_lane), d1 = d0 + 64;
+    float lse = 0.0f;
+    float acc0 = 0.0f, acc1 = 0.0f;
+    for (uint bs = 0; bs < S; bs += BLOCK) {
+        uint be = min(bs + BLOCK, S);
+        for (uint b2 = bs + tid; b2 < be; b2 += tg) {
+            float p = precise::exp(
+                qk_dot4_4x(qh, K + (size_t)b2 * rowstride + koff + (size_t)h * Hd, Hd) * scale
+                - gmax);
+            lse += p;
+            const device float* vh = V + (size_t)b2 * rowstride + voff + (size_t)h * Hd;
+            for (uint d = d0; d < d0 + 64; d += 4) {
+                acc0 += p * (vh[d] + vh[d+1] + vh[d+2] + vh[d+3]);
+            }
+            acc1 += p * (vh[d1] + vh[d1+1] + vh[d1+2] + vh[d1+3]);
+        }
+    }
+    lse = simd_reduce_sum(lse);
+    if (simd_lane == 0) ssum[simd_group] = lse;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (simd_group == 0) {
+        float s = (tg > 32 && simd_lane < tg / 32) ? ssum[simd_lane] : ssum[0];
+        s = simd_reduce_sum(s);
+        if (simd_lane == 0) ssum[1] = s;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    device float* op = Out + (size_t)a * orowstride + ooff + (size_t)h * Hd;
+    if (tid == 0) smax[0] = 1.0f / ssum[1];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = smax[0];
+    op[d0] = acc0 * inv;
+    op[d1] = acc1 * inv;
+}
+

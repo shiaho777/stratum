@@ -3565,8 +3565,10 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
     if (g_ncb_ny >= 512) return -1;
     static id<MTLComputePipelineState> spso = nil;
     static id<MTLComputePipelineState> tpso = nil;   /* two-pass fp32 softmax */
+    static id<MTLComputePipelineState> tp2so = nil;  /* two-pass v2: ILP dot + simd reduce */
     static uint gHd = 0;
-    static int g_use_tp = -1;   /* H3_ATTN_TWOPASS=0 forces the online kernel */
+    /* H3_ATTN_TWOPASS: 0 = online kernel, 1 = two-pass, 2 = two-pass v2 (default) */
+    static int g_use_tp = -1;
     @autoreleasepool {
         if (!spso || gHd != (uint)Hd) {
             id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill_strided"];
@@ -3577,9 +3579,16 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
         }
         if (g_use_tp < 0) {
             const char* e = getenv("H3_ATTN_TWOPASS");
-            g_use_tp = (e && atoi(e) == 1) ? 1 : 0;
+            g_use_tp = e ? atoi(e) : 2;
         }
-        if (g_use_tp && !tpso) {
+        if (g_use_tp == 2 && !tp2so) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass_v2"];
+            if (fn) {
+                tp2so = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!tp2so) g_use_tp = 1;
+            } else g_use_tp = 1;
+        }
+        if (g_use_tp >= 1 && !tpso) {
             id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass"];
             if (fn) {
                 tpso = [g_device newComputePipelineStateWithFunction:fn error:nil];
@@ -3629,7 +3638,8 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             ob = obuf;
         }
         id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-        [enc setComputePipelineState:(g_use_tp ? tpso : spso)];
+        [enc setComputePipelineState:(g_use_tp == 2 ? tp2so
+                                    : g_use_tp == 1 ? tpso : spso)];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
         [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 2 * qb : 0) atIndex:2];
@@ -3660,7 +3670,7 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
             [enc setBytes:&g0 length:16 atIndex:8];
             [enc setBytes:&g1 length:16 atIndex:9];
         }
-        if (g_use_tp) {
+        if (g_use_tp >= 1) {
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((size_t)H*S),1,1)
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
         } else {
