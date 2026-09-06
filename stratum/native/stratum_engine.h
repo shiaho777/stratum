@@ -24,7 +24,10 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <mach/mach.h>
 #include <time.h>
@@ -367,6 +370,224 @@ static inline void stratum_logits_dump_record(const float* logits, int n_vocab, 
     fwrite(&t, 4, 1, fp);
     fwrite(logits, sizeof(float), (size_t)n_vocab, fp);
     fflush(fp);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Adaptive bandwidth calibration (STRATUM_ADAPTIVE=1)                */
+/* ------------------------------------------------------------------ */
+/* V219: measured, not assumed. One short calibration records the
+ * machine's streaming bandwidths into the run banner, so every perf
+ * claim carries its machine context (config-record rule). Routing
+ * consumption is deliberately NOT wired yet — that lands only with
+ * end-to-end A/B data.
+ *
+ *   hot       : line-stride mmap touch of a resident scratch file
+ *               (one byte per page measures page-walk, not DRAM)
+ *   cold      : msync(MS_INVALIDATE)-evict + plain pread; F_NOCACHE is
+ *               NOT a reliable cold proxy on darwin (measured 18 GB/s,
+ *               i.e. still cache-served)
+ *   pair      : both concurrently on separate files — solo numbers
+ *               overestimate; the two paths contend for DRAM/SSD
+ *
+ * qstar = cold_pair / (hot_pair + cold_pair): measured fraction of a
+ * decode step's bytes worth streaming from disk while compute runs.
+ * Scratch files live in TMPDIR and are unlinked afterwards. */
+
+typedef struct {
+    int valid;
+    double hot_gbs, cold_gbs, hot_pair_gbs, cold_pair_gbs, qstar;
+} StratumAdaptiveProfile;
+
+static StratumAdaptiveProfile g_stratum_adaptive;
+static uint8_t* st_adapt_map;          /* hot-side mapping */
+static volatile uint64_t st_adapt_sink; /* keeps touch loops from being
+                                           optimized out entirely */
+
+static inline double st_adapt_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+typedef struct {
+    int fd;
+    size_t sz;
+    double secs;
+    double bw;
+} StAdaptArg;
+
+static void* st_adapt_hot_thread(void* p) {
+    StAdaptArg* a = (StAdaptArg*)p;
+    uint64_t bytes = 0, sink = 0;
+    double t0 = st_adapt_now(), t = 1;
+    do {
+        for (size_t o = 0; o < a->sz; o += 128)
+            sink += st_adapt_map[o] + st_adapt_map[o + 64];
+        bytes += a->sz;
+        t = st_adapt_now() - t0;
+    } while (t < a->secs);
+    a->bw = (double)bytes / t;
+    st_adapt_sink = sink;
+    return NULL;
+}
+
+static void* st_adapt_cold_thread(void* p) {
+    /* evict-then-pread per chunk on a separate file: true device reads,
+     * no disturbance of the hot side's resident pages, DRAM/SSD still
+     * contended. Heap buffer — pthread stacks are only 512 KB. */
+    StAdaptArg* a = (StAdaptArg*)p;
+    char* buf = malloc(4 << 20);
+    if (!buf) return NULL;
+    uint64_t bytes = 0;
+    double t0 = st_adapt_now(), t = 1;
+    off_t off = 0;
+    size_t want = 4 << 20;
+    do {
+        if (off + (off_t)want > (off_t)a->sz) off = 0;
+        void* m = mmap(NULL, want, PROT_READ, MAP_SHARED, a->fd, off);
+        if (m != MAP_FAILED) {
+            msync(m, want, MS_INVALIDATE | MS_SYNC);
+            munmap(m, want);
+        }
+        ssize_t r = pread(a->fd, buf, want, off);
+        if (r <= 0) break;
+        off += r;
+        bytes += (uint64_t)r;
+        t = st_adapt_now() - t0;
+    } while (t < a->secs);
+    free(buf);
+    a->bw = (double)bytes / t;
+    return NULL;
+}
+
+static int st_adapt_fill(const char* path, size_t sz) {
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    char* z = malloc(1 << 20);
+    if (!z) { close(fd); return -1; }
+    memset(z, 0x5a, 1 << 20);   /* real bytes: holes would fake cold reads */
+    size_t done = 0;
+    while (done < sz) {
+        ssize_t w = write(fd, z, 1 << 20);
+        if (w <= 0) { free(z); close(fd); return -1; }
+        done += (size_t)w;
+    }
+    fsync(fd);
+    free(z);
+    close(fd);
+    return 0;
+}
+
+static inline void stratum_adaptive_calibrate(void) {
+    const char* tmp = getenv("TMPDIR");
+    if (!tmp || !tmp[0]) tmp = "/tmp";
+    char pa[512], pb[512];
+    snprintf(pa, sizeof(pa), "%s/stratum_bbw.%ld.a", tmp, (long)getpid());
+    snprintf(pb, sizeof(pb), "%s/stratum_bbw.%ld.b", tmp, (long)getpid());
+    size_t sz = (size_t)128 << 20;
+    double secs = 0.4;
+    double t0;
+
+    if (st_adapt_fill(pa, sz) != 0 || st_adapt_fill(pb, sz) != 0) {
+        fprintf(stderr, "  adaptive calibrate: skipped (scratch create failed)\n");
+        unlink(pa);
+        unlink(pb);
+        return;
+    }
+    int fa = open(pa, O_RDONLY);
+    int fb = open(pb, O_RDONLY);
+    if (fa < 0 || fb < 0) {
+        if (fa >= 0) close(fa);
+        if (fb >= 0) close(fb);
+        unlink(pa);
+        unlink(pb);
+        return;
+    }
+    st_adapt_map = mmap(NULL, sz, PROT_READ, MAP_SHARED, fa, 0);
+    if (st_adapt_map == MAP_FAILED) {
+        fprintf(stderr, "  adaptive calibrate: skipped (mmap failed)\n");
+        close(fa);
+        close(fb);
+        unlink(pa);
+        unlink(pb);
+        return;
+    }
+
+    /* hot: warm file A, then time line-stride passes */
+    for (size_t o = 0; o < sz; o += 4096) ((volatile uint8_t*)st_adapt_map)[o];
+    {
+        uint64_t bytes = 0, sink = 0;
+        t0 = st_adapt_now();
+        double t = 1;
+        do {
+            for (size_t o = 0; o < sz; o += 128)
+                sink += st_adapt_map[o] + st_adapt_map[o + 64];
+            bytes += sz;
+            t = st_adapt_now() - t0;
+        } while (t < secs);
+        g_stratum_adaptive.hot_gbs = (double)bytes / t / 1e9;
+        st_adapt_sink = sink;
+    }
+
+    /* cold: evict-then-pread over file A */
+    {
+        StAdaptArg a;
+        a.fd = fa;
+        a.sz = sz;
+        a.secs = secs;
+        a.bw = 0;
+        st_adapt_cold_thread(&a);
+        g_stratum_adaptive.cold_gbs = a.bw / 1e9;
+    }
+
+    /* pair: hot streams A from cache while cold streams B from disk */
+    for (size_t o = 0; o < sz; o += 4096) ((volatile uint8_t*)st_adapt_map)[o];
+    {
+        StAdaptArg ha, ca;
+        pthread_t th, tc;
+        ha.fd = fa;
+        ha.sz = sz;
+        ha.secs = secs;
+        ha.bw = 0;
+        ca.fd = fb;
+        ca.sz = sz;
+        ca.secs = secs;
+        ca.bw = 0;
+        pthread_create(&th, NULL, st_adapt_hot_thread, &ha);
+        pthread_create(&tc, NULL, st_adapt_cold_thread, &ca);
+        pthread_join(th, NULL);
+        pthread_join(tc, NULL);
+        g_stratum_adaptive.hot_pair_gbs = ha.bw / 1e9;
+        g_stratum_adaptive.cold_pair_gbs = ca.bw / 1e9;
+    }
+
+    munmap(st_adapt_map, sz);
+    st_adapt_map = NULL;
+    close(fa);
+    close(fb);
+    unlink(pa);
+    unlink(pb);
+
+    g_stratum_adaptive.valid =
+        (g_stratum_adaptive.hot_pair_gbs > 0 && g_stratum_adaptive.cold_pair_gbs > 0);
+    if (!g_stratum_adaptive.valid) {
+        fprintf(stderr, "  adaptive calibrate: failed (no pair bandwidth)\n");
+        return;
+    }
+    g_stratum_adaptive.qstar = g_stratum_adaptive.cold_pair_gbs /
+        (g_stratum_adaptive.hot_pair_gbs + g_stratum_adaptive.cold_pair_gbs);
+
+    fprintf(stderr,
+            "  adaptive calibrate: hot %.1f GB/s | cold %.1f GB/s | "
+            "pair hot %.1f / cold %.1f GB/s\n",
+            g_stratum_adaptive.hot_gbs, g_stratum_adaptive.cold_gbs,
+            g_stratum_adaptive.hot_pair_gbs, g_stratum_adaptive.cold_pair_gbs);
+    fprintf(stderr,
+            "ADAPTIVE_PROFILE v1 hot=%.2f cold=%.2f hot_pair=%.2f "
+            "cold_pair=%.2f qstar=%.4f\n",
+            g_stratum_adaptive.hot_gbs, g_stratum_adaptive.cold_gbs,
+            g_stratum_adaptive.hot_pair_gbs, g_stratum_adaptive.cold_pair_gbs,
+            g_stratum_adaptive.qstar);
 }
 
 #endif /* STRATUM_ENGINE_H */

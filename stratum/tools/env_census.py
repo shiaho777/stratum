@@ -53,6 +53,7 @@ SANCTIONED = {
     "STRATUM_Q2K_NIB_OFF": "disable nibble path",
     "STRATUM_TREE_EXTEND_K": "tree chain depth (cap 12)",
     "STRATUM_Q2K_SDOT": "int8 SDOT for Q2K (opt-in)",
+    "STRATUM_ADAPTIVE": "startup bandwidth calibration probe (measurement only)",
 }
 
 
@@ -73,7 +74,33 @@ def nearest_comment(lines, idx, max_back=3):
     return ""
 
 
+APPENDIX_MARKER = "## H3 video pipeline"
+
+MANUAL_SECTIONS = (
+    # Hand-maintained appendices live below the generated table (H3 spike
+    # switches are read by h3_* programs, most of them H3_* without the
+    # STRATUM_ prefix, so the census scan cannot see them). Regeneration
+    # must preserve them — a bare rewrite once wiped the whole appendix.
+    APPENDIX_MARKER,
+)
+
+
+def load_appendix():
+    """Return the preserved manual appendix of the existing doc, if any."""
+    if not os.path.exists(OUT):
+        return ""
+    with open(OUT, encoding="utf-8") as f:
+        text = f.read()
+    idx = text.find(APPENDIX_MARKER)
+    if idx < 0:
+        return ""
+    return text[idx:].rstrip() + "\n"
+
+
 def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        return
     call_sites = defaultdict(list)  # var -> [(file, line, kind, comment)]
     for root, _dirs, files in os.walk(NATIVE):
         for fn in sorted(files):
@@ -150,6 +177,9 @@ def main():
         "  choices, not API.",
     ]
 
+    appendix = load_appendix()
+    if appendix:
+        lines_out += ["", appendix.rstrip()]
     text = "\n".join(lines_out) + "\n"
     if "--stdout" in sys.argv:
         print(text)

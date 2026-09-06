@@ -168,6 +168,47 @@ int stratum_metal_qwen35_forward_full_attn(
     int use_internal_buffers
 );
 
+/* H3 flash-style prefill attention (Q,K,V token-major [S, H*Hd]) */
+int stratum_metal_h3_attn_init(const char* metallib_path);
+int stratum_metal_h3_attn(const float* Q, const float* K, const float* V,
+                          float* Out, int S, int H, int Hd, float scale);
+/* attention encoded INTO the currently-open nc batch */
+int stratum_metal_nc_batch_attn(const float* Q, const float* K, const float* V,
+                                float* out, int S, int H, int Hd, float scale);
+/* strided variant: dst rows sit inside a wider caller buffer; out_stride is
+ * the dst row stride in floats (attention row itself stays H*Hd wide). */
+int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const float* V,
+                                float* out, int S, int H, int Hd, float scale,
+                                int out_stride);
+/* register a page-aligned Q/K/V gather buffer for attention direct-read
+ * (no staging copy); falls back to staging when unregistered */
+int stratum_metal_nc_attn_direct_register(const float* p, size_t bytes);
+/* H3 fused MLP into the open nc batch: fc1(gate|up fused Q4_K/Q6_K weight)
+ * + swiglu -> GPU-resident h, then fc2 -> compact y. wtype: 12=Q4_K, 14=Q6_K.
+ * K=in_dim(HID), N=FF2, hstride=HID (fc2 out rows); y receives [B, HID]. */
+int stratum_metal_nc_mlp_fused(const void* w1, size_t w1bytes, int wtype,
+                               const void* w2, size_t w2bytes,
+                               const float* x, float* h, int hstride,
+                               float* y, int B, int K, int N);
+/* packed in-place attention over ONE activation buffer: row r of length
+ * rowstride floats holds Q at +qoff, K at +koff, V at +voff; attention
+ * output written at +ooff (may alias nothing). Requires a registered base
+ * (16K-aligned) for zero-copy; otherwise stages compactly and scatters. */
+int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
+                                       int qoff, int koff, int voff, int ooff,
+                                       float* out_region, int S, int H, int Hd,
+                                       float scale);
+/* Head-grouped attention: prepare() gathers Q/K/V once per layer (or finds
+ * the zero-copy window); each group() encodes one head slice [h0,h0+hg)
+ * into the open batch (ytask copy-back covers only the group's head dims).
+ * Groups run in sequential batches so each head's K/V stays L2-resident.
+ * Grouped == single-batch bit-identical (scheduling only). */
+int stratum_metal_nc_attn_prepare(const float* base, int rowstride,
+                                  int qoff, int koff, int voff,
+                                  int S, int H, int Hd);
+int stratum_metal_nc_attn_group(float* out_region, int S, int H, int Hd,
+                                float scale, int h0, int hg);
+
 #ifdef __cplusplus
 }
 #endif
@@ -182,7 +223,35 @@ int stratum_metal_qwen35_forward_full_attn(
 int stratum_metal_nc_batch_begin(void);
 int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
                                const float* x, float* y, int N, int K, int B);
+/* strided variant: x/y rows sit inside a wider caller buffer; *_stride is the
+ * row stride in floats (0 = compact). Strided y skips the staging ybuf and
+ * the flush scatters compact rows into the caller's layout. */
+int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf_type,
+                               const float* x, float* y, int N, int K, int B,
+                               int xstride, int ystride);
+/* Register a caller-owned page-aligned activation buffer for zero-copy
+ * direct-read inside nc_batch_add (x registry). Call once after allocation;
+ * unregistered / non-page-aligned x still takes the staging-copy path. */
+int stratum_metal_nc_xreg_register(const float* p, size_t bytes);
+/* y-side direct-write registry (same contract as the x registry): register a
+ * page-aligned destination buffer once; nc_batch_add then lets the GPU write
+ * it in place and flush skips the copy-back. */
+int stratum_metal_nc_yreg_register(float* p, size_t bytes);
 int stratum_metal_nc_batch_flush(void);
+/* Async-flush barrier (STRATUM_NC_ASYNC=1): flush() then only COMMITS; the
+ * wait + copy-back are deferred to the next begin() (or this drain). Call
+ * before any CPU read of a tensor the pending batch writes, and once at the
+ * end of a forward pass. No-op in sync mode. */
+void stratum_metal_nc_batch_drain(void);
+/* Consume fence for STRATUM_NC_ASYNC=1: wait for the pending batch and run
+ * its copy-backs, WITHOUT releasing staging (unlike drain). Call before any
+ * CPU read of a tensor the just-flushed batch writes — every mixed_gemv
+ * caller consumes y immediately, so the drain-at-next-begin is too late.
+ * No-op when nothing is pending (sync mode: single branch). */
+void stratum_metal_nc_batch_consume(void);
+/* STRATUM_NC_TIME diagnostic: print accumulated NoCopy-registration vs
+ * commit+wait wall time for the NC batch path. No-op when never called. */
+void stratum_metal_nc_time_report(void);
 
 /* V54.4b: batch_add with per-stream y targets (multix ys[] array). The
  * continuous-buffer form (batch_add) breaks when several matmuls in one

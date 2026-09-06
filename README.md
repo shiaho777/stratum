@@ -16,7 +16,7 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 | vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
 | Engine size | ~752 KB binary · ≈46k lines C/Metal/tooling (≈26k engine core) |
 | GPU required | none (integrated, optional Metal accel) |
-| Architecture support | Llama family + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) |
+| Architecture support | Llama family + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) + MoE (`llama-moe`, experimental) + video-DiT/H3 spikes (standalone, not part of the `stratum` binary) |
 
 <p align="center"><img src="docs/assets/project-stats.svg" alt="Project statistics: lines of code, binary size, formats, gates, CI jobs" width="720"></p>
 
@@ -224,13 +224,23 @@ stratum/native/
 ├── stratum_engine.h             ← CPU/GPU init, madvise, spec decode, memory report
 ├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense arch (self-registers)
 ├── stratum_arch_qwen35.inc.c    ← Qwen3.8 hybrid arch (GGUF arch id: qwen35): Gated DeltaNet + attention (~24k lines)
+├── stratum_arch_moe.inc.c       ← MoE arch (GGUF arch ids: `llama-moe,llama_moe,moe`, experimental): dense attention + top-k expert FFN, per-expert `madvise` streaming
 ├── stratum_metal.m/.h           ← Metal layer: GEMV kernels, batched-B, group dispatch, NC
 ├── stratum_q{k}_*.{h,neon.h,metal} ← quantized kernels (scalar + NEON + Metal)
 ├── v199–v217_gate.sh            ← bit-exact regression gates
+├── h3_*.c / te_qwen3vl_step.c   ← H3 video-generation spikes (standalone binaries, NOT part of `./stratum`): packed denoiser forward, text encoder, VAE decoders, Euler sampler — see below
+├── dit_probe.c / dit_sample.c   ← mini-DiT spike + flow-matching sampler (standalone; `dit_probe` is a `make` target and a CI gate)
 └── Makefile                     ← builds ./stratum (+ metallib)
 ```
 
 Adding an architecture = write `stratum_arch_<name>.inc.c`, implement the `StratumArch` interface, register it — the Makefile auto-collects `*.inc.c` into `stratum_archs.gen.h`, so no existing file changes. The same rule applies to models: nothing is hardcoded per-model.
+
+### Beyond text LLMs: MoE and video-generation spikes
+
+Two research spikes reuse the same streaming primitives outside the `stratum` binary. Both are **experimental**: they stream weights via mmap like the engine, but they carry no bit-exact gate coverage and make no memory-floor claim.
+
+- **MoE (`llama-moe`)** — a registered engine architecture: dense attention exactly like the llama path, FFN replaced by a router (`ffn_gate_inp`) + top-k experts from stacked `ffn_gate/up/down_exps` tensors. Streaming point: only k of E expert slices are touched per token, each slice a contiguous byte range prefetched with `madvise` after the router fires — nothing is ever locked. Routing is deterministic (ties → lower expert id). Tiny-model generator (`make_tiny_model.py --arch moe`) + independent numpy oracle (`tiny_moe_oracle.py`) covering it; not yet a CI gate.
+- **H3 video pipeline (`h3_*.c`, `te_qwen3vl_step.c`)** — standalone denoiser/VAE/sampler spikes (50-block packed forward, text encoder, video/audio VAE decoders, resident multi-step Euler sampler, Metal flash attention in `stratum_h3_attn.metal`). Same mmap-streaming discipline, own env-var surface (`STRATUM_H3_*`, `H3_*`, `STRATUM_NC_*` — documented in the `ENVVARS.md` appendix, not in the engine table above), own pre-run gate (`h3_test_gate.sh check/clean`, boundary-3 compliant). Numerics note: int8 SDOT is killed for the denoiser (no argmax to hide behind over 50 diffusion steps); per-path agreement is checked with packed-dump md5 / max|d|, not token identity.
 
 ### Invariants
 
@@ -248,7 +258,7 @@ Three hard boundaries the engine never crosses — they are the reason numbers s
 
 The engine treats correctness as a contract, not a hope:
 
-- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on three layouts — llama, qwen35 full-attention, qwen35 hybrid SSM — plus a Q4_K-weighted variant, with the greedy sequences pinned as hard regression assertions.
+- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; a Metal device probe; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on llama, qwen35 full-attention, qwen35 hybrid SSM, a Q4_K-weighted variant, and a mini-DiT sequence forward — with the greedy sequences pinned as hard regression assertions.
 - **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
 - **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
 - **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the Qwen3.8 hybrid architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
@@ -256,6 +266,8 @@ The engine treats correctness as a contract, not a hope:
 - **Dual-path discipline** — CPU (NEON) and GPU (Metal) paths are both exercised; per-tensor NoCopy was verified bit-exact against the CPU path on the 27B before it was allowed.
 
 - **Backend identity (local hardware)** — `verify_backends.sh <model>` asserts cpu = GPU-NC = GPU2 greedy sequences on a generated Q4_K tiny model.
+- **MoE oracle (local, not CI)** — `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` cross-check the `llama-moe` path against an independent numpy reference.
+- **H3 gate (local, large weights)** — `h3_test_gate.sh check` refuses to start under memory pressure or with a sibling large-model process running; `h3_test_gate.sh clean <model…>` releases page cache after the run. H3 numerics are compared by dump identity (`md5` / max|d|), never by token argmax.
 
 Two configs agreeing on argmax is necessary, not sufficient. For distribution-level comparison:
 
@@ -352,6 +364,7 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 - **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
 - **Speculative-decode long-run gains are draft-quality-bound** (2.46 tok/main sustained vs 8.0 short-run).
 - **MemX trades bit-reproducibility for footprint** (~1e-4 mean KL run-to-run variance; token sequences stable).
+- **MoE and H3 are spikes, not products** — `llama-moe` has oracle coverage but no CI gate and no full-scale validation; the H3 pipeline has no memory-floor claim (activations + Metal staging are GB-scale at 768p) and its kernels default to the conservative path pending gate decisions.
 - **Apple Silicon only** — the NEON hot path has no x86_64 port.
 
 ---
@@ -360,7 +373,7 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 
 ### Environment variables
 
-The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments). The key ones:
+The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments; full map in `stratum/docs/ENVVARS.md`, H3 spike switches in its appendix). The key ones:
 
 | Variable | Purpose | Boundary |
 |---|---|---|
@@ -378,6 +391,7 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 | `STRATUM_LOGITS_DUMP=<path>` | Per-step logits dump → `logit_compare` | ✅ measurement |
 | `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram speculative decoding | ✅ |
 | `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX plane quotas (pressure repro) | ✅ |
+| `STRATUM_ADAPTIVE=1` | Startup bandwidth calibration probe (~1.5 s; records machine context, no routing change) | ✅ measurement |
 | `MEMX_REF=<ref>` (make deps) | Pin the MemX dependency revision | ✅ reproducibility |
 | `STRATUM_PREDECODE=1` | Q4_K→F16 predecode to GPU | ❌ memory boundary |
 | `STRATUM_Q4_0=1` | Q4_K→Q4_0 re-encode | ❌ quality boundary |
@@ -391,9 +405,9 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 ├── AGENTS.md          ← development guide, boundaries, determinism contract
 ├── docs/assets/       ← SVG figures embedded in this README
 └── stratum/
-    ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh
-    ├── docs/          ← measured evidence + VALIDATION.md coverage matrix
-    ├── tools/         ← GGUF utilities incl. make_tiny_model.py (test models from seed)
+    ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh, H3/DiT spikes
+    ├── docs/          ← measured evidence + VALIDATION.md coverage matrix + ENVVARS.md switch map
+    ├── tools/         ← GGUF utilities incl. make_tiny_model.py (llama/qwen35/hybrid/dit/moe from seed), oracles, env_census.py
     └── benchmarks/    ← benchmark scripts (headtohead, manifesto, GPU sweeps)
 ```
 

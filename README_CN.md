@@ -16,7 +16,7 @@
 | 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |
 | 引擎体积 | ~752 KB 二进制 · ≈4.6 万行 C/Metal/工具（引擎核心 ≈2.6 万行） |
 | GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
-| 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`） |
+| 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`）+ MoE（`llama-moe`，实验性）+ 视频 DiT/H3 探针（独立程序，不属于 `stratum` 二进制） |
 
 <p align="center"><img src="docs/assets/project-stats.svg" alt="项目统计:代码行数、二进制大小、格式数、gate 数、CI job 数" width="720"></p>
 
@@ -225,13 +225,23 @@ stratum/native/
 ├── stratum_engine.h             ← CPU/GPU 初始化、madvise、投机解码、内存报告
 ├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense 架构（自注册）
 ├── stratum_arch_qwen35.inc.c    ← Qwen3.8 混合架构（GGUF 架构 id：qwen35）：Gated DeltaNet + attention（~2.4 万行）
+├── stratum_arch_moe.inc.c       ← MoE 架构（GGUF 架构 id：`llama-moe,llama_moe,moe`，实验性）：dense 注意力 + top-k 专家 FFN，逐专家 `madvise` 流式
 ├── stratum_metal.m/.h           ← Metal 层：GEMV kernel、batched-B、group dispatch、NC
 ├── stratum_q{k}_*.{h,neon.h,metal} ← 量化 kernel（scalar + NEON + Metal）
 ├── v199–v217_gate.sh            ← bit-exact 回归 gate
+├── h3_*.c / te_qwen3vl_step.c   ← H3 视频生成探针（独立二进制，不属于 `./stratum`）：打包 denoiser 前向、文本编码器、VAE 解码器、Euler 采样器——见下
+├── dit_probe.c / dit_sample.c   ← mini-DiT 探针 + flow-matching 采样器（独立程序；`dit_probe` 是 `make` 目标也是 CI gate）
 └── Makefile                     ← 构建 ./stratum（+ metallib）
 ```
 
 新增架构 = 写 `stratum_arch_<name>.inc.c`，实现 `StratumArch` 接口，注册——Makefile 会自动把 `*.inc.c` 收集进 `stratum_archs.gen.h`，因此不需要改任何现有文件。对模型也是同理：没有任何逐模型硬编码。
+
+### 文本 LLM 之外：MoE 与视频生成探针
+
+两个研究探针在 `stratum` 二进制之外复用同一套流式原语。两者都是**实验性**：权重同样经 mmap 流式，但没有任何 bit-exact gate 覆盖，也不做内存地板承诺。
+
+- **MoE（`llama-moe`）** —— 注册进引擎的架构：注意力与 llama 路径完全一致，FFN 换成路由（`ffn_gate_inp`）+ 堆叠专家张量（`ffn_gate/up/down_exps`）的 top-k。流式要点：每 token 只碰 k/E 个专家切片，每个切片是张量内连续字节段，路由触发后 `madvise` 预取——永不锁定。路由确定（平局取小编号）。小模型生成器（`make_tiny_model.py --arch moe`）+ 独立 numpy oracle（`tiny_moe_oracle.py`）覆盖；尚未进 CI。
+- **H3 视频管线（`h3_*.c`、`te_qwen3vl_step.c`）** —— 独立的 denoiser/VAE/采样器探针（50 block 打包前向、文本编码器、视频/音频 VAE 解码器、进程内多步 Euler 采样器、`stratum_h3_attn.metal` 里的 Metal flash attention）。同样的 mmap 流式纪律，独立的环境变量面（`STRATUM_H3_*`、`H3_*`、`STRATUM_NC_*`——记在 `ENVVARS.md` 附录，不在上面的引擎表里），独立的启动前 gate（`h3_test_gate.sh check/clean`，符合边界 3）。数值注意：denoiser 上 int8 SDOT 已被杀掉（50 步扩散没有 argmax 可掩盖误差）；路径间一致用打包 dump 的 md5 / max|d| 对，不用 token 一致断言。
 
 ### 不变量
 
@@ -249,13 +259,15 @@ stratum/native/
 
 引擎把正确性当作契约而不是希望：
 
-- **每个 PR 都跑 CI（4 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；Metal 设备探针；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在**三个布局**（llama / qwen35 纯注意力 / qwen35 混合 SSM）外加 **Q4_K 权重**变体上驱动完整解码回路，贪心序列被钉定为硬回归断言。
+- **每个 PR 都跑 CI（4 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；Metal 设备探针；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在 llama、qwen35 纯注意力、qwen35 混合 SSM、**Q4_K 权重**变体与 mini-DiT 序列前向上驱动完整回路，贪心序列被钉定为硬回归断言。
 - **`quant_test`** —— 每个量化 kernel 与标量参考交叉验证。
 - **`spec_sample_test`** —— Leviathan-Chen 拒绝采样精确性。
 - **19 个 gate 脚本（`v199`–`v217`）** —— Qwen3.8 混合架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
 - **分布级回归** —— `STRATUM_LOGITS_DUMP=<path>` 记录每步 logits；`logit_compare` 报告任意两次运行的 KL(base‖candidate)、top-1 一致率与 max |Δ|。gate 只钉住少数 token 的 argmax，这看到的是整个分布。（MemX 运行间方差正是用它发现的，见 AGENTS.md。）
 - **双路径纪律** —— CPU（NEON）与 GPU（Metal）路径都被覆盖；逐 tensor NoCopy 在 27B 上与 CPU 路径验证 bit-exact 后才被允许。
 - **后端一致性（本地硬件）** —— `verify_backends.sh <model>` 断言 cpu = GPU-NC = GPU2 贪心序列（在生成的 Q4_K 小模型上运行）。
+- **MoE oracle（本地，非 CI）** —— `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` 对 `llama-moe` 路径做独立 numpy 交叉检查。
+- **H3 门禁（本地，大权重）** —— `h3_test_gate.sh check` 在内存紧张或已有大模型进程时拒绝启动；`h3_test_gate.sh clean <model…>` 跑后释放页缓存。H3 数值对比用 dump 一致（`md5` / max|d|），不用 token argmax。
 
 两个配置 argmax 一致是必要条件，不是充分条件。分布级对比：
 
@@ -350,6 +362,7 @@ $$
 - **解码保持带宽受限**：吞吐遵循上述公式——大模型是耐心的活，不是交互的活。MULTISEQ 在流间摊销，但不改变单流延迟。
 - **投机解码的长程收益受 draft 质量限制**（持续 2.46 tok/main vs 短测 8.0）。
 - **MemX 以位可复现性换足迹**（~1e-4 mean KL 运行间方差；token 序列稳定）。
+- **MoE 与 H3 是探针不是产品** —— `llama-moe` 有 oracle 覆盖但无 CI gate、无全规模验证；H3 管线无内存地板承诺（768p 下激活 + Metal staging 是 GB 级），其 kernel 默认走保守路径，待 gate 裁决。
 - **仅支持 Apple Silicon** —— NEON 热路径没有 x86_64 移植。
 
 ---
@@ -358,7 +371,7 @@ $$
 
 ### 环境变量
 
-引擎有 200+ 环境变量（多数是实验遗留的 GPU kernel 变体开关）。关键项：
+引擎有 200+ 环境变量（多数是实验遗留的 GPU kernel 变体开关；全表见 `stratum/docs/ENVVARS.md`，H3 探针开关在其附录）。关键项：
 
 | 变量 | 用途 | 边界 |
 |---|---|---|
@@ -376,6 +389,7 @@ $$
 | `STRATUM_LOGITS_DUMP=<path>` | 逐步 logits 导出 → `logit_compare` | ✅ 测量 |
 | `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram 投机解码 | ✅ |
 | `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX 平面配额（压力复现） | ✅ |
+| `STRATUM_ADAPTIVE=1` | 启动带宽校准探针（~1.5 s；只记录机器上下文，不改变路由） | ✅ 测量 |
 | `MEMX_REF=<ref>` (make deps) | 钉定 MemX 依赖版本 | ✅ 可复现性 |
 | `STRATUM_PREDECODE=1` | Q4_K→F16 预解码到 GPU | ❌ 内存边界 |
 | `STRATUM_Q4_0=1` | Q4_K→Q4_0 重编码 | ❌ 质量边界 |
@@ -389,9 +403,9 @@ $$
 ├── AGENTS.md          ← 开发指南、边界、确定性契约
 ├── docs/assets/       ← 本 README 嵌入的 SVG 图集
 └── stratum/
-    ├── native/        ← 引擎（C/Metal）、Makefile、gate 脚本、verify_backends.sh
-    ├── docs/          ← 实测证据 + VALIDATION.md 覆盖矩阵
-    ├── tools/         ← GGUF 工具,含 make_tiny_model.py(从种子生成测试模型)
+    ├── native/        ← 引擎（C/Metal）、Makefile、gate 脚本、verify_backends.sh、H3/DiT 探针
+    ├── docs/          ← 实测证据 + VALIDATION.md 覆盖矩阵 + ENVVARS.md 开关表
+    ├── tools/         ← GGUF 工具,含 make_tiny_model.py（llama/qwen35/hybrid/dit/moe 从种子生成）、oracle、env_census.py
     └── benchmarks/    ← 基准脚本（headtohead、manifesto、GPU 扫描）
 ```
 

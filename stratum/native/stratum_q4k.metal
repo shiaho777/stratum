@@ -1931,3 +1931,218 @@ kernel void attn_decode_gated_f32(
     }
 }
 
+
+/* H3 fused MLP stage 1: fc1 gate/up rows of ONE fused Q4_K weight
+ * (rows [0,N) = gate, [N,2N) = up), swiglu, output written with a caller
+ * row stride (h rows live inside the wider fbuf rows). Grid: (N, ceil(B/2));
+ * one threadgroup handles two adjacent tokens — the dual_swiglu_g2 scheme. */
+kernel void q4k_h3_mlp1_swiglu(
+    device const block_q4_K* Wg         [[buffer(0)]],   // gate rows
+    device const block_q4_K* Wu         [[buffer(1)]],   // up rows
+    device const float*      x          [[buffer(2)]],   // [B, K] compact
+    device float*            h          [[buffer(3)]],   // rows of hstride
+    constant uint&           K          [[buffer(4)]],   // in_dim (HID)
+    constant uint&           N          [[buffer(5)]],   // FF2
+    constant uint&           B          [[buffer(6)]],
+    constant uint&           hstride    [[buffer(7)]],
+    uint2                    tgid       [[threadgroup_position_in_grid]],
+    uint2                    tid2       [[thread_position_in_threadgroup]],
+    uint2                    tg2        [[threads_per_threadgroup]])
+{
+    uint row = tgid.x;
+    uint b0 = tgid.y * 2u;
+    uint tid = tid2.x;
+    uint tg_size = tg2.x;
+    if (row >= N || b0 >= B) return;
+    uint b1 = b0 + 1u;
+
+    const uint blocks_per_row = K / 256;
+    device const block_q4_K* rg = Wg + row * blocks_per_row;
+    device const block_q4_K* ru = Wu + row * blocks_per_row;
+    device const float* xb0 = x + (size_t)b0 * K;
+    device const float* xb1 = x + (size_t)b1 * K;
+    const uint total_sb = blocks_per_row * 8;
+
+    float4 partial = float4(0.0f);
+    for (uint sb = tid; sb < total_sb; sb += tg_size) {
+        uint i = sb >> 3;
+        uint j = sb & 7;
+        const device block_q4_K& bg = rg[i];
+        const device block_q4_K& bu = ru[i];
+        uchar scg, mg, scu, mu;
+        unpack_scale_min(j, bg.scales, scg, mg);
+        unpack_scale_min(j, bu.scales, scu, mu);
+        float g_sc = float(bg.d) * float(scg);
+        float g_min = float(bg.dmin) * float(mg);
+        float u_sc = float(bu.d) * float(scu);
+        float u_min = float(bu.dmin) * float(mu);
+        const device uchar* qg = bg.qs + (j / 2) * 32;
+        const device uchar* qu = bu.qs + (j / 2) * 32;
+        uint shift = (j & 1) ? 4u : 0u;
+        uint eo = i * 256 + j * 32;
+        uchar4 mask = uchar4(0xF);
+        float4 qgg0 = 0, qgu0 = 0, qgg1 = 0, qgu1 = 0;
+        float4 xs0 = 0, xs1 = 0;
+        for (int l = 0; l < 32; l += 4) {
+            uchar4 rawg = *(device const uchar4*)(qg + l);
+            uchar4 rawu = *(device const uchar4*)(qu + l);
+            float4 ng = float4((rawg >> uchar4((uchar)shift)) & mask);
+            float4 nu = float4((rawu >> uchar4((uchar)shift)) & mask);
+            float4 xv0 = *(device const float4*)(xb0 + eo + l);
+            float4 xv1 = *(device const float4*)(xb1 + eo + l);
+            qgg0 += ng * xv0; qgu0 += nu * xv0;
+            qgg1 += ng * xv1; qgu1 += nu * xv1;
+            xs0 += xv0; xs1 += xv1;
+        }
+        float sx0 = xs0.x + xs0.y + xs0.z + xs0.w;
+        float sx1 = xs1.x + xs1.y + xs1.z + xs1.w;
+        partial.x += g_sc * (qgg0.x+qgg0.y+qgg0.z+qgg0.w) - g_min * sx0;
+        partial.y += u_sc * (qgu0.x+qgu0.y+qgu0.z+qgu0.w) - u_min * sx0;
+        partial.z += g_sc * (qgg1.x+qgg1.y+qgg1.z+qgg1.w) - g_min * sx1;
+        partial.w += u_sc * (qgu1.x+qgu1.y+qgu1.z+qgu1.w) - u_min * sx1;
+    }
+    threadgroup float sd0[256], sd1[256], sd2[256], sd3[256];
+    float sg0 = simd_sum(partial.x), sg1 = simd_sum(partial.y);
+    float sg2 = simd_sum(partial.z), sg3 = simd_sum(partial.w);
+    uint simd_id = tid / 32u, lane = tid % 32u;
+    if (lane == 0) { sd0[simd_id]=sg0; sd1[simd_id]=sg1; sd2[simd_id]=sg2; sd3[simd_id]=sg3; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        uint ns = (tg_size + 31u) / 32u;
+        float g0=0,u0=0,g1=0,u1=0;
+        for (uint s = 0; s < ns; s++) { g0+=sd0[s]; u0+=sd1[s]; g1+=sd2[s]; u1+=sd3[s]; }
+        h[(size_t)b0 * hstride + row] = (g0 / (1.0f + exp(-g0))) * u0;
+        if (b1 < B) h[(size_t)b1 * hstride + row] = (g1 / (1.0f + exp(-g1))) * u1;
+    }
+}
+
+/* H3 fused MLP stage 2: fc2 Q4_K gemv reading h rows at stride hstride
+ * (in fbuf), writing proj compact [B, N]. Grid: (N, B). */
+kernel void q4k_h3_mlp2_ostride(
+    device const block_q4_K* W           [[buffer(0)]],
+    device const float*      h           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],   // FF2
+    constant uint&           N           [[buffer(4)]],   // HID
+    constant uint&           B           [[buffer(5)]],
+    constant uint&           hstride     [[buffer(6)]],
+    uint2                    tgid        [[threadgroup_position_in_grid]],
+    uint2                    tid2        [[thread_position_in_threadgroup]],
+    uint2                    tg2         [[threads_per_threadgroup]])
+{
+    uint row = tgid.x;
+    uint bidx = tgid.y;
+    uint tid = tid2.x;
+    uint tg_size = tg2.x;
+    if (row >= N || bidx >= B) return;
+    const uint blocks_per_row = K / 256;
+    device const block_q4_K* row_blocks = W + row * blocks_per_row;
+    device const float* xb = h + (size_t)bidx * hstride;
+    const uint total_sb = blocks_per_row * 8;
+    float partial = 0.0f;
+    for (uint sb = tid; sb < total_sb; sb += tg_size) {
+        uint i = sb >> 3;
+        uint j = sb & 7;
+        const device block_q4_K& bl = row_blocks[i];
+        const float d = float(bl.d);
+        const float dmin = float(bl.dmin);
+        uchar sc, m;
+        unpack_scale_min(j, bl.scales, sc, m);
+        float d_sc = d * float(sc);
+        float dmin_m = dmin * float(m);
+        const device uchar* qs_pair = bl.qs + (j / 2) * 32;
+        uint shift = (j & 1) ? 4u : 0u;
+        uint elem_offset = i * 256 + j * 32;
+        float4 qx4 = float4(0.0f), xs4 = float4(0.0f);
+        uchar4 mask = uchar4(0xF);
+        for (int l = 0; l < 32; l += 4) {
+            uchar4 raw = *(device const uchar4*)(qs_pair + l);
+            uchar4 nib = (raw >> uchar4((uchar)shift)) & mask;
+            float4 nf = float4(nib);
+            float4 xv = *(device const float4*)(xb + elem_offset + l);
+            qx4 += nf * xv;
+            xs4 += xv;
+        }
+        partial += d_sc * (qx4.x+qx4.y+qx4.z+qx4.w) - dmin_m * (xs4.x+xs4.y+xs4.z+xs4.w);
+    }
+    threadgroup float sdata[256];
+    float sg = simd_sum(partial);
+    uint simd_id = tid / 32u, lane = tid % 32u;
+    if (lane == 0) sdata[simd_id] = sg;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        uint ns = (tg_size + 31u) / 32u;
+        float tot = 0.0f;
+        for (uint s = 0; s < ns; s++) tot += sdata[s];
+        y[(size_t)bidx * N + row] = tot;
+    }
+}
+
+/* Tiled Q4_K batch GEMM: C[M,N] = A[M,K] x W^T[N,K], one threadgroup per
+ * 64x64 output tile. Beats the per-row bparallel (~0.34 vs ~1.9 TFLOP/s at
+ * seq=276) because each threadgroup reuses its A/B slabs across an 8x8
+ * register tile instead of streaming one row per threadgroup. Weights are
+ * dequantized into the B slab in-place (nib*d_sc - dmin_m); this reorders the
+ * fp32 math vs the per-row d_sc*sum - dmin_m*sum form, so it matches to ~2e-3
+ * (fp32 associativity), not bit-exact. Requires K a multiple of 256 and a
+ * 64-aligned N (both true for every H3 GEMV). */
+kernel void q4k_tile_gemm(
+    device const block_q4_K* W [[buffer(0)]],
+    device const float*      A [[buffer(1)]],
+    device float*            C [[buffer(2)]],
+    constant uint&           M [[buffer(3)]],
+    constant uint&           N [[buffer(4)]],
+    constant uint&           K [[buffer(5)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint2 tid  [[thread_position_in_threadgroup]],
+    uint2 tgsz [[threads_per_threadgroup]])
+{
+    const uint BM = 64, BN = 128, BK = 32;
+    threadgroup float As[BM][BK];
+    threadgroup float Bs[BK][BN];
+    const uint bpr = K / 256;
+    const uint m0 = tgid.y * BM, n0 = tgid.x * BN;
+    const uint tx = tid.x, ty = tid.y;
+
+    float acc[8][8];
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) acc[i][j] = 0.0f;
+
+    for (uint kk = 0; kk < K; kk += BK) {
+        for (uint i = tx + ty * 16; i < BM * BK / 4; i += 128) {
+            uint r = i / (BK / 4), c4 = i % (BK / 4);
+            uint mr = m0 + r;
+            float4 v = (mr < M && kk + c4 * 4 < K)
+                ? ((device const float4*)(A + mr * K + kk))[c4] : float4(0.0f);
+            ((threadgroup float4*)As[r])[c4] = v;
+        }
+        uint j0 = (kk % 256) / 32;
+        for (uint i = tx + ty * 16; i < BN; i += 128) {
+            uint c = i, nc = n0 + c;
+            if (nc < N) {
+                const device block_q4_K& bl = W[nc * bpr + kk / 256];
+                float d = float(bl.d), dmin = float(bl.dmin);
+                uchar sc, m;
+                unpack_scale_min((int)j0, bl.scales, sc, m);
+                float d_sc = d * (float)sc, dmin_m = dmin * (float)m;
+                const device uchar* qs = bl.qs + (j0 / 2) * 32;
+                uint shift = (j0 & 1) ? 4u : 0u;
+                for (uint l = 0; l < 32; l++)
+                    Bs[l][c] = (float)((qs[l] >> shift) & 0xF) * d_sc - dmin_m;
+            } else {
+                for (uint l = 0; l < 32; l++) Bs[l][c] = 0.0f;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k2 = 0; k2 < BK; k2++)
+            for (int i = 0; i < 8; i++) {
+                float a = As[ty * 8 + i][k2];
+                for (int j = 0; j < 8; j++) acc[i][j] += a * Bs[k2][tx * 8 + j];
+            }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    for (int i = 0; i < 8; i++) for (int j = 0; j < 8; j++) {
+        uint mr = m0 + ty * 8 + i, nc = n0 + tx * 8 + j;
+        if (mr < M && nc < N) C[mr * N + nc] = acc[i][j];
+    }
+}
+

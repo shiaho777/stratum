@@ -1284,3 +1284,139 @@ kernel void q6k_top1_tiles_batched(
         idxs[(size_t)bidx * nt + tile] = ti[0];
     }
 }
+
+/* H3 fused MLP stage 1 (Q6_K weights): fc1 gate/up rows of ONE fused
+ * weight (rows [0,N) gate, [N,2N) up), swiglu, strided h output. */
+kernel void q6k_h3_mlp1_swiglu(
+    device const block_q6_K* Wg          [[buffer(0)]],
+    device const block_q6_K* Wu          [[buffer(1)]],
+    device const float*      x           [[buffer(2)]],
+    device float*            h           [[buffer(3)]],
+    constant uint&           K           [[buffer(4)]],
+    constant uint&           N           [[buffer(5)]],
+    constant uint&           B           [[buffer(6)]],
+    constant uint&           hstride     [[buffer(7)]],
+    uint2                    tgid        [[threadgroup_position_in_grid]],
+    uint2                    tid2        [[thread_position_in_threadgroup]],
+    uint2                    tg2         [[threads_per_threadgroup]])
+{
+    uint row = tgid.x;
+    uint b0 = tgid.y * 2u;
+    uint tid = tid2.x;
+    uint tg_size = tg2.x;
+    if (row >= N || b0 >= B) return;
+    uint b1 = b0 + 1u;
+
+    const uint blocks_per_row = K / 256;
+    device const block_q6_K* rg = Wg + row * blocks_per_row;
+    device const block_q6_K* ru = Wu + row * blocks_per_row;
+    device const float* xb0 = x + (size_t)b0 * K;
+    device const float* xb1 = x + (size_t)b1 * K;
+    const uint total_half = blocks_per_row * 2;
+
+    float pg0 = 0, pu0 = 0, pg1 = 0, pu1 = 0;
+    for (uint u = tid; u < total_half; u += tg_size) {
+        uint i = u >> 1;
+        uint n = (u & 1) * 128;
+        const device block_q6_K& bg = rg[i];
+        const device block_q6_K& bu = ru[i];
+        const float dg = float(bg.d), du = float(bu.d);
+        const device uchar* qlg = bg.ql + n / 2;
+        const device uchar* qhg = bg.qh + n / 4;
+        const device char*  sg = bg.scales + n / 16;
+        const device uchar* qlu = bu.ql + n / 2;
+        const device uchar* qhu = bu.qh + n / 4;
+        const device char*  su = bu.scales + n / 16;
+        uint base = i * 256 + n;
+        for (int l = 0; l < 32; l++) {
+            int is = l / 16;
+            float qg1 = float(int((qlg[l]      & 0xF) | (((qhg[l] >> 0) & 3) << 4)) - 32);
+            float qg2 = float(int((qlg[l + 32] & 0xF) | (((qhg[l] >> 2) & 3) << 4)) - 32);
+            float qg3 = float(int((qlg[l]      >>  4) | (((qhg[l] >> 4) & 3) << 4)) - 32);
+            float qg4 = float(int((qlg[l + 32] >>  4) | (((qhg[l] >> 6) & 3) << 4)) - 32);
+            float qu1 = float(int((qlu[l]      & 0xF) | (((qhu[l] >> 0) & 3) << 4)) - 32);
+            float qu2 = float(int((qlu[l + 32] & 0xF) | (((qhu[l] >> 2) & 3) << 4)) - 32);
+            float qu3 = float(int((qlu[l]      >>  4) | (((qhu[l] >> 4) & 3) << 4)) - 32);
+            float qu4 = float(int((qlu[l + 32] >>  4) | (((qhu[l] >> 6) & 3) << 4)) - 32);
+            float xv0 = xb0[base + l], xv1 = xb1[base + l];
+            pg0 += dg * (float(sg[is+0])*qg1*xv0 + float(sg[is+2])*qg2*xv0
+                       + float(sg[is+4])*qg3*xv0 + float(sg[is+6])*qg4*xv0);
+            pu0 += du * (float(su[is+0])*qu1*xv0 + float(su[is+2])*qu2*xv0
+                       + float(su[is+4])*qu3*xv0 + float(su[is+6])*qu4*xv0);
+            pg1 += dg * (float(sg[is+0])*qg1*xv1 + float(sg[is+2])*qg2*xv1
+                       + float(sg[is+4])*qg3*xv1 + float(sg[is+6])*qg4*xv1);
+            pu1 += du * (float(su[is+0])*qu1*xv1 + float(su[is+2])*qu2*xv1
+                       + float(su[is+4])*qu3*xv1 + float(su[is+6])*qu4*xv1);
+        }
+    }
+    threadgroup float sd0[256], sd1[256], sd2[256], sd3[256];
+    float s0 = simd_sum(pg0), s1 = simd_sum(pu0), s2 = simd_sum(pg1), s3 = simd_sum(pu1);
+    uint simd_id = tid / 32u, lane = tid % 32u;
+    if (lane == 0) { sd0[simd_id]=s0; sd1[simd_id]=s1; sd2[simd_id]=s2; sd3[simd_id]=s3; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        uint ns = (tg_size + 31u) / 32u;
+        float g0=0,u0=0,g1=0,u1=0;
+        for (uint s = 0; s < ns; s++) { g0+=sd0[s]; u0+=sd1[s]; g1+=sd2[s]; u1+=sd3[s]; }
+        h[(size_t)b0 * hstride + row] = (g0 / (1.0f + exp(-g0))) * u0;
+        if (b1 < B) h[(size_t)b1 * hstride + row] = (g1 / (1.0f + exp(-g1))) * u1;
+    }
+}
+
+/* H3 fused MLP stage 2 (Q6_K): fc2 gemv, h rows at stride, compact out. */
+kernel void q6k_h3_mlp2_ostride(
+    device const block_q6_K* W           [[buffer(0)]],
+    device const float*      h           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],
+    constant uint&           N           [[buffer(4)]],
+    constant uint&           B           [[buffer(5)]],
+    constant uint&           hstride     [[buffer(6)]],
+    uint2                    tgid        [[threadgroup_position_in_grid]],
+    uint2                    tid2        [[thread_position_in_threadgroup]],
+    uint2                    tg2         [[threads_per_threadgroup]])
+{
+    uint row = tgid.x;
+    uint bidx = tgid.y;
+    uint tid = tid2.x;
+    uint tg_size = tg2.x;
+    if (row >= N || bidx >= B) return;
+    const uint blocks_per_row = K / 256;
+    device const block_q6_K* row_blocks = W + row * blocks_per_row;
+    device const float* xb = h + (size_t)bidx * hstride;
+    const uint total_half = blocks_per_row * 2;
+    float partial = 0.0f;
+    for (uint u = tid; u < total_half; u += tg_size) {
+        uint i = u >> 1;
+        uint n = (u & 1) * 128;
+        const device block_q6_K& bl = row_blocks[i];
+        const float d = float(bl.d);
+        const device uchar* ql = bl.ql + n / 2;
+        const device uchar* qh = bl.qh + n / 4;
+        const device char*  sc = bl.scales + n / 16;
+        uint base = i * 256 + n;
+        for (int l = 0; l < 32; l++) {
+            int is = l / 16;
+            float q1 = float(int((ql[l]      & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32);
+            float q2 = float(int((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32);
+            float q3 = float(int((ql[l]      >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32);
+            float q4 = float(int((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32);
+            partial += d * (
+                float(sc[is+0]) * q1 * xb[base + l + 0] +
+                float(sc[is+2]) * q2 * xb[base + l + 32] +
+                float(sc[is+4]) * q3 * xb[base + l + 64] +
+                float(sc[is+6]) * q4 * xb[base + l + 96]);
+        }
+    }
+    threadgroup float sdata[256];
+    float sg = simd_sum(partial);
+    uint simd_id = tid / 32u, lane = tid % 32u;
+    if (lane == 0) sdata[simd_id] = sg;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        uint ns = (tg_size + 31u) / 32u;
+        float tot = 0.0f;
+        for (uint s = 0; s < ns; s++) tot += sdata[s];
+        y[(size_t)bidx * N + row] = tot;
+    }
+}

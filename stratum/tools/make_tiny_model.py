@@ -49,6 +49,13 @@ FULL_ATTN_INTERVAL = 4   # layers where (i+1)%4==0 are full-attn, rest SSM
 DIT = dict(S=32, T=2, HG=4, WG=4,   # 32 tokens on a 2x4x4 grid
            H=64, HEADS=4, HD=16, FF=176, NL=2)
 
+# Tiny MoE geometry (--arch moe): llama-style dense attention + expert FFN.
+# Per-layer router [E,H] picks k experts per token from E stacked expert
+# matrices (llama.cpp naming: ffn_gate_inp / *_exps). Embedding/output stay
+# F16 regardless of --weights so expert tensors are the quantized path.
+MOE_N_EXP = 4
+MOE_USED = 2
+
 
 def q4k_encode_mat(vals, k, n):
     """Encode a [k, n] row-major f32 matrix as Q4_K blocks.
@@ -128,6 +135,57 @@ def build_entries(arch, weights, rng):
                                   for _ in range(n))
 
     entries = []  # (name, dims, ggml_type, data)
+    if arch == 'moe':
+        # RNG order (documented for reproducibility): per layer attn_norm,
+        # q, k, v, o, ffn_norm, router, then experts gate/up/down; globals
+        # embd/output_norm/output last.
+        for li in range(NL):
+            entries.append((f'blk.{li}.attn_norm.weight', (H,), *norm_vec(H)))
+            entries.append((f'blk.{li}.attn_q.weight', (H, NQ * HD),
+                            *mat(H, NQ * HD)))
+            entries.append((f'blk.{li}.attn_k.weight', (H, NK * HD),
+                            *mat(H, NK * HD)))
+            entries.append((f'blk.{li}.attn_v.weight', (H, NK * HD),
+                            *mat(H, NK * HD)))
+            entries.append((f'blk.{li}.attn_output.weight', (NQ * HD, H),
+                            *mat(NQ * HD, H)))
+            entries.append((f'blk.{li}.ffn_norm.weight', (H,), *norm_vec(H)))
+            entries.append((f'blk.{li}.ffn_gate_inp.weight', (H, MOE_N_EXP),
+                            GGML_F32,
+                            b''.join(struct.pack('<f',
+                                                 rng.gauss(0.0, 1.0))
+                                     for _ in range(H * MOE_N_EXP))))
+            # stacked expert tensors: dim order (K_in, N_out, E); expert e is
+            # the contiguous slice e*(K*N) — a standard [N,K] row-major mat.
+            for base_name, ki, no in (('ffn_gate_exps', H, FF),
+                                      ('ffn_up_exps', H, FF),
+                                      ('ffn_down_exps', FF, H)):
+                vals_e = []
+                for _e in range(MOE_N_EXP):
+                    scale = 1.0 / (ki ** 0.5)
+                    vals_e.append([rng.gauss(0.0, scale)
+                                   for _ in range(ki * no)])
+                if weights == 'q4k':
+                    blob = b''.join(q4k_encode_mat(v, ki, no)
+                                    for v in vals_e)
+                    ty = GGML_Q4_K
+                else:
+                    blob = b''.join(struct.pack('<e', x)
+                                    for v in vals_e for x in v)
+                    ty = GGML_F16
+                entries.append((f'blk.{li}.{base_name}.weight',
+                                (ki, no, MOE_N_EXP), ty, blob))
+        entries.append(('token_embd.weight', (H, V), GGML_F16,
+                        b''.join(struct.pack('<e',
+                                             rng.gauss(0.0, 1.0 / V ** 0.5))
+                                 for _ in range(V * H))))
+        entries.append(('output_norm.weight', (H,), *norm_vec(H)))
+        entries.append(('output.weight', (H, V), GGML_F16,
+                        b''.join(struct.pack('<e',
+                                             rng.gauss(0.0, 1.0 / V ** 0.5))
+                                 for _ in range(V * H))))
+        return entries
+
     if arch == 'dit':
         G = DIT
         Hb, FFb, NLb = G['H'], G['FF'], G['NL']
@@ -271,6 +329,32 @@ def kv_pairs(arch, weights):
 
     # both qwen35 variants share the registered arch string "qwen35";
     # hybrid-ness comes from full_attention_interval + ssm.* metadata
+    if arch == 'moe':
+        p = 'llama-moe'
+        kvs = [
+            kv_pair('general.architecture', p),
+            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights == 'q4k'
+                    else BASE['N_LAYERS']),
+            kv_pair(f'{p}.embedding_length',
+                    Q4K['H'] if weights == 'q4k' else BASE['H']),
+            kv_pair(f'{p}.feed_forward_length',
+                    Q4K['FF'] if weights == 'q4k' else BASE['FF']),
+            kv_pair(f'{p}.expert_count', MOE_N_EXP),
+            kv_pair(f'{p}.expert_used_count', MOE_USED),
+            kv_pair(f'{p}.attention.head_count',
+                    Q4K['NQ'] if weights == 'q4k' else BASE['NQ']),
+            kv_pair(f'{p}.attention.head_count_kv',
+                    Q4K['NK'] if weights == 'q4k' else BASE['NK']),
+            kv_pair(f'{p}.attention.key_length',
+                    Q4K['HD'] if weights == 'q4k' else BASE['HD']),
+            kv_pair(f'{p}.attention.layer_norm_rms_epsilon', 1e-5),
+            kv_pair(f'{p}.rope.freq_base', 10000.0),
+            kv_pair(f'{p}.rope.dimension_count',
+                    Q4K['HD'] if weights == 'q4k' else BASE['HD']),
+            kv_pair('general.alignment', 32),
+        ]
+        return b''.join(kvs), len(kvs)
+
     p = 'llama' if arch == 'llama' else 'qwen35'
     G = Q4K if weights == 'q4k' else BASE
     kvs = [
@@ -304,7 +388,7 @@ def kv_pairs(arch, weights):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arch', default='llama',
-                    choices=['llama', 'qwen35', 'qwen35-hybrid', 'dit'])
+                    choices=['llama', 'qwen35', 'qwen35-hybrid', 'dit', 'moe'])
     ap.add_argument('--weights', default='f16', choices=['f16', 'q4k'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
