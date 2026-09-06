@@ -97,13 +97,14 @@ kernel void h3_attn_prefill_strided(
     constant float& scale       [[buffer(7)]],
     constant uint4* geom        [[buffer(8)]],
     constant uint4* geom2       [[buffer(9)]],
+    constant uint& h0           [[buffer(10)]],
     uint hg [[threadgroup_position_in_grid]],   // h * q_tiles + qt
     uint tid [[thread_position_in_threadgroup]])
 {
     constexpr uint QT = 64;
     uint H_ = H;
     uint qtiles = (S + QT - 1) / QT;
-    uint h = hg / qtiles;
+    uint h = h0 + hg / qtiles;
     uint qt = hg % qtiles;
     uint q0 = qt * QT;
 
@@ -200,6 +201,7 @@ kernel void h3_attn_two_pass(
     constant float& scale       [[buffer(7)]],
     constant uint4* geom        [[buffer(8)]],
     constant uint4* geom2       [[buffer(9)]],
+    constant uint& h0           [[buffer(10)]],
     uint hg [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
     uint tg  [[threads_per_threadgroup]])
@@ -207,7 +209,7 @@ kernel void h3_attn_two_pass(
     constexpr uint BLOCK = 512;
     uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
     uint orowstride = geom2[0].x, ooff = geom2[0].y;
-    uint h = hg / S;
+    uint h = h0 + hg / S;
     uint a = hg % S;
     const device float* qh = Q + (size_t)a * rowstride + qoff + (size_t)h * Hd;
 
@@ -328,6 +330,7 @@ kernel void h3_attn_two_pass_v2(
     constant float& scale       [[buffer(7)]],
     constant uint4* geom        [[buffer(8)]],
     constant uint4* geom2       [[buffer(9)]],
+    constant uint& h0           [[buffer(10)]],
     uint hg [[threadgroup_position_in_grid]],
     uint simd_lane [[thread_index_in_simdgroup]],
     uint simd_group [[simdgroup_index_in_threadgroup]],
@@ -337,7 +340,7 @@ kernel void h3_attn_two_pass_v2(
     constexpr uint BLOCK = 512;
     uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
     uint orowstride = geom2[0].x, ooff = geom2[0].y;
-    uint h = hg / S;
+    uint h = h0 + hg / S;
     uint a = hg % S;
     const device float* qh = Q + (size_t)a * rowstride + qoff + (size_t)h * Hd;
 
@@ -407,19 +410,22 @@ kernel void h3_attn_two_pass_v2(
  * GEMM shape. Grid stays H-major so concurrent threadgroups share one
  * head's K/V slice (7.6 MB) in L2.
  *
- * Layout: 64 threads, each collaborating on query qa = tid/4 for the score
- * stage and owning output dims [dq0, dq0+32) (dq0 = (tid%4)*32) of every
- * query for PV; scores for the tile (16x256) live in threadgroup memory
- * (16 KB of the 32 KB budget). PV accumulators: 8 float4 per query.
+ * Layout: 64 threads per threadgroup; thread tid owns dims [dq0,dq0+32)
+ * (dq0 = (tid%4)*32) of exactly one query (qa = tid/4) and accumulates its
+ * complete (l, PV) serially. Scores for the tile (16x256) live in
+ * threadgroup memory (16 KB of the 32 KB budget). Per-thread running state
+ * is one query's (m, l) + 8 float4 accumulators.
  *
  * Numeric contract: fp32 throughout, precise::exp, fp32 accumulation —
  * same as the two-pass kernels. The softmax is per-tile online (one
- * max/rescale per 256-key tile instead of one global max): the rescale
- * factor is exp(m_old - m_new) with m the RUNNING max, so exp arguments
- * are always <= 0 — no overflow path. Sum order differs from the global-
- * max form (documented fp32 re-ordering, same class as the fused-MLP
- * 2.7e-5 drift); the gates assert greedy/output equality, and the bench
- * asserts vs-f64 max|d| stays at the fp32 noise level of the synth data.
+ * max/rescale per 256-key tile instead of one global max): each tile
+ * rescales the previous tiles' (l, vacc) by exp(m_old - m_new) with m
+ * the RUNNING max (flash-style; omitting this is a math error, not fp
+ * noise — caught by the bench_h3_oracle RAMP synth). Exp arguments are
+ * always <= 0 — no overflow path. Remaining differences vs the
+ * global-max form are fp32 sum order only (same class as the v1/v2
+ * dot-order drift); bench_h3_oracle asserts tiled-vs-v2 stays within
+ * 10x of the v1-vs-v2 baseline.
  * --------------------------------------------------------------------------- */
 
 static inline float qk_dot16(const device float* qh, const device float* kh, uint Hd) {
@@ -451,24 +457,30 @@ kernel void h3_attn_tiled(
     constant float& scale       [[buffer(7)]],
     constant uint4* geom        [[buffer(8)]],
     constant uint4* geom2       [[buffer(9)]],
+    constant uint& h0           [[buffer(10)]],
     uint hg [[threadgroup_position_in_grid]],
-    uint tid [[thread_index_in_threadgroup]],
+    uint tid [[thread_position_in_threadgroup]],
     uint tg  [[threads_per_threadgroup]])
 {
     constexpr uint BQ = 16, BK = 256;
     uint rowstride = geom[0].x, qoff = geom[0].y, koff = geom[0].z, voff = geom[0].w;
     uint orowstride = geom2[0].x, ooff = geom2[0].y;
     uint qtiles = (S + BQ - 1) / BQ;
-    uint h = hg / qtiles;
+    uint h = h0 + hg / qtiles;
     uint qt = hg % qtiles;
     uint q0 = qt * BQ;
 
     threadgroup float sc[BQ * BK];
 
-    /* each thread: query qa = tid/4 (4 threads collaborate per query), and
-     * owns output dims [dq0, dq0+32) of EVERY query in the tile */
-    const uint qa = tid / 4;              /* primary query of this thread */
+    /* each thread owns output dims [dq0, dq0+32) of exactly ONE query
+     * (qa = tid/4) and accumulates its COMPLETE (l, PV) serially over all
+     * tile keys. Stage 1 collaborates on all queries' scores into shared
+     * sc[] (the L2-traffic amortization); stage 2 is per-thread complete,
+     * so no cross-thread reduction exists anywhere (a strided stage-2
+     * partition leaves each private copy holding a fraction of the mass). */
+    const uint qa = tid / 4;              /* the one query this thread owns */
     const uint dq0 = (tid % 4) * 32;      /* first of 32 owned output dims */
+    const bool qvalid = (q0 + qa) < S;
 
     const device float* qptr[BQ];
     for (uint i = 0; i < BQ; i++) {
@@ -476,80 +488,65 @@ kernel void h3_attn_tiled(
         qptr[i] = (qs < S) ? Q + (size_t)qs * rowstride + qoff + (size_t)h * Hd : Q;
     }
 
-    /* acc[i] holds THIS thread's 32 dims of query i: acc[i][dq0/4 + j] is
-     * dim dq0 + 4*j .. dq0 + 4*j + 3 (stored as 8 float4 row-sums) */
-    float m[BQ], l[BQ];
-    float acc[BQ][8];
-    float4 vacc[BQ][8];
-    for (uint i = 0; i < BQ; i++) {
-        m[i] = -INFINITY; l[i] = 0.0f;
-        for (uint j = 0; j < 8; j++) { acc[i][j] = 0.0f; vacc[i][j] = 0.0f; }
-    }
+    /* per-thread running state for the owned query only. */
+    float m_qa = -INFINITY, mo_qa = -INFINITY, l_qa = 0.0f;
+    float4 vacc_qa[8];
+    for (uint j = 0; j < 8; j++) vacc_qa[j] = 0.0f;
 
     for (uint k0 = 0; k0 < S; k0 += BK) {
         uint ke = min(k0 + BK, S);
         uint len = ke - k0;
 
-        /* stage 1: scores for the whole tile (all 16 queries), track max.
-         * Per thread: 4 dots in flight (queries qa, qa+16/4? no — BQ=16,
-         * 64 threads → 4 threads per query). Reordered: iterate keys outer,
-         * and for each key issue the dot for query qa with a 4-deep float4
-         * chain (qk_dot16), keeping the per-key loop branchless. The
-         * per-query loop is kept but the max update is branchless. */
+        /* stage 1: scores for the whole tile (all 16 queries),
+         * collaborative strided dots into shared sc[]. */
         for (uint i = 0; i < BQ; i++) {
             uint qs = q0 + i;
             if (qs >= S) break;
-            float mi = m[i];
             for (uint b2 = k0 + tid; b2 < ke; b2 += tg) {
                 float s = qk_dot16(qptr[i], K + (size_t)b2 * rowstride + koff + (size_t)h * Hd, Hd) * scale;
                 sc[i * BK + (b2 - k0)] = s;
-                mi = max(mi, s);
             }
-            m[i] = mi;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
+        /* running max for the owned query: serial scan of its score row. */
+        mo_qa = m_qa;
+        if (qvalid) {
+            float tm = mo_qa;
+            for (uint k = 0; k < len; k++) tm = max(tm, sc[qa * BK + k]);
+            m_qa = tm;
+        }
 
-        /* stage 2: exp + lse + PV accumulation, per query.
-         * Unrolled ×2 over keys to pair two vacc chains. */
-        for (uint i = 0; i < BQ; i++) {
-            uint qs = q0 + i;
-            if (qs >= S) break;
-            float mi = m[i];
+        /* stage 2: complete (l, PV) for the owned query over all tile
+         * keys, serially. Flash rescale rebases the previous tiles to the
+         * new running max; when the max did not move corr is exactly 1.0. */
+        if (qvalid) {
+            float mi = m_qa;
+            float corr = precise::exp(mo_qa - mi);
             const device float* vh0 = V + (size_t)k0 * rowstride + voff + (size_t)h * Hd + dq0;
-            float lnew = l[i];
-            uint b2 = tid;
-            for (; b2 + tg < len; b2 += 2 * tg) {
-                float p0 = precise::exp(sc[i * BK + b2] - mi);
-                float p1 = precise::exp(sc[i * BK + b2 + tg] - mi);
-                lnew += p0 + p1;
-                const device float* vh = vh0 + (size_t)b2 * rowstride;
-                const device float* vh1 = vh0 + (size_t)(b2 + tg) * rowstride;
-                for (uint j = 0; j < 8; j++) {
-                    vacc[i][j] += p0 * float4(vh[4*j], vh[4*j+1], vh[4*j+2], vh[4*j+3])
-                                + p1 * float4(vh1[4*j], vh1[4*j+1], vh1[4*j+2], vh1[4*j+3]);
-                }
-            }
-            for (; b2 < len; b2 += tg) {
-                float p = precise::exp(sc[i * BK + b2] - mi);
+            float lnew = l_qa * corr;
+            for (uint j = 0; j < 8; j++) vacc_qa[j] *= corr;
+            /* serial over keys (an x2 unroll was measured: no gain —
+             * exp/V-load bound, not ILP bound — so keep the simple form). */
+            for (uint k = 0; k < len; k++) {
+                float p = precise::exp(sc[qa * BK + k] - mi);
                 lnew += p;
-                const device float* vh = vh0 + (size_t)b2 * rowstride;
+                const device float* vhr = vh0 + (size_t)k * rowstride;
                 for (uint j = 0; j < 8; j++)
-                    vacc[i][j] += p * float4(vh[4*j], vh[4*j+1], vh[4*j+2], vh[4*j+3]);
+                    vacc_qa[j] += p * float4(vhr[4*j], vhr[4*j+1], vhr[4*j+2], vhr[4*j+3]);
             }
-            l[i] = lnew;
+            l_qa = lnew;
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    /* write out: thread (i*4 + dq0/32) owns query i, dims [dq0, dq0+32) */
+    /* write out: owned query, owned dims. */
     {
-        uint i = qa;
-        uint qs = q0 + i;
+        uint qs = q0 + qa;
         if (qs < S) {
-            float inv = 1.0f / l[i];
+            float inv = 1.0f / l_qa;
             device float* op = Out + (size_t)qs * orowstride + ooff + (size_t)h * Hd + dq0;
             for (uint j = 0; j < 8; j++) {
-                float4 v = vacc[i][j] * inv;
+                float4 v = vacc_qa[j] * inv;
                 op[4*j] = v.x; op[4*j+1] = v.y; op[4*j+2] = v.z; op[4*j+3] = v.w;
             }
         }

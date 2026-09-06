@@ -198,6 +198,16 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
                                        int qoff, int koff, int voff, int ooff,
                                        float* out_region, int S, int H, int Hd,
                                        float scale);
+/* Head-grouped attention: prepare() gathers Q/K/V once per layer (or finds
+ * the zero-copy window); each group() encodes one head slice [h0,h0+hg)
+ * into the open batch (ytask copy-back covers only the group's head dims).
+ * Groups run in sequential batches so each head's K/V stays L2-resident.
+ * Grouped == single-batch bit-identical (scheduling only). */
+int stratum_metal_nc_attn_prepare(const float* base, int rowstride,
+                                  int qoff, int koff, int voff,
+                                  int S, int H, int Hd);
+int stratum_metal_nc_attn_group(float* out_region, int S, int H, int Hd,
+                                float scale, int h0, int hg);
 
 #ifdef __cplusplus
 }
@@ -233,6 +243,12 @@ int stratum_metal_nc_batch_flush(void);
  * before any CPU read of a tensor the pending batch writes, and once at the
  * end of a forward pass. No-op in sync mode. */
 void stratum_metal_nc_batch_drain(void);
+/* Consume fence for STRATUM_NC_ASYNC=1: wait for the pending batch and run
+ * its copy-backs, WITHOUT releasing staging (unlike drain). Call before any
+ * CPU read of a tensor the just-flushed batch writes — every mixed_gemv
+ * caller consumes y immediately, so the drain-at-next-begin is too late.
+ * No-op when nothing is pending (sync mode: single branch). */
+void stratum_metal_nc_batch_consume(void);
 /* STRATUM_NC_TIME diagnostic: print accumulated NoCopy-registration vs
  * commit+wait wall time for the NC batch path. No-op when never called. */
 void stratum_metal_nc_time_report(void);

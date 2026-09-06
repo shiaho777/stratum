@@ -186,6 +186,96 @@ static void h3_par_for(int n, void (*fn)(int, int, void*), void* arg) {
     for (int t = 0; t < started; t++) pthread_join(th[t], NULL);
 }
 
+/* Row-parallel elementwise kernels (norm1/norm2/qknorm+rope): every row is
+ * computed serially in the exact original fp order, rows are independent,
+ * so any thread partition is bit-identical (same precedent as the parallel
+ * CPU attention). Covers the ~1.8s of serial elementwise at seq=2328. */
+typedef struct {
+    float* stream; const int* tag; long seq; int hid;
+    const uint16_t* g16;
+    const float *sc0, *sh0, *sc1, *sh1, *sc2, *sh2;
+} H3NormCtx;
+static void h3_norm_range(int lo, int hi, void* a) {
+    H3NormCtx* c = (H3NormCtx*)a;
+    for (long s = lo; s < hi; s++) {
+        float* r = &c->stream[(size_t)s * c->hid];
+        double ss = 0;
+        for (int i = 0; i < c->hid; i++) ss += (double)r[i] * r[i];
+        float sc = (float)(1.0 / sqrt(ss / c->hid + 1e-5));
+        int t = c->tag[s];
+        const float* sms = t == 0 ? c->sc0 : t == 1 ? c->sc1 : c->sc2;
+        const float* shs = t == 0 ? c->sh0 : t == 1 ? c->sh1 : c->sh2;
+        for (int i = 0; i < c->hid; i++)
+            r[i] = r[i] * sc * bfv(c->g16[i]) * (1.0f + sms[i]) + shs[i];
+    }
+}
+typedef struct {
+    float* qkv; int ff1, comp, heads, hd, rot; long seq;
+    const uint16_t* qw, *kw; const double* pos; const float* invf;
+} H3QkCtx;
+static void h3_qk_range(int lo, int hi, void* a) {
+    H3QkCtx* c = (H3QkCtx*)a;
+    for (long s = lo; s < hi; s++) {
+        for (int h = 0; h < c->heads; h++) {
+            float* qp = &c->qkv[(size_t)s * c->ff1 + h * c->hd];
+            double ss = 0;
+            for (int d = 0; d < c->hd; d++) ss += (double)qp[d] * qp[d];
+            float sc = (float)(1.0 / sqrt(ss / c->hd + 1e-5));
+            for (int d = 0; d < c->hd; d++) qp[d] *= sc * bfv(c->qw[d]);
+        }
+        for (int h = 0; h < c->heads; h++) {
+            float* kp = &c->qkv[(size_t)s * c->ff1 + c->comp + h * c->hd];
+            double ss = 0;
+            for (int d = 0; d < c->hd; d++) ss += (double)kp[d] * kp[d];
+            float sc = (float)(1.0 / sqrt(ss / c->hd + 1e-5));
+            for (int d = 0; d < c->hd; d++) kp[d] *= sc * bfv(c->kw[d]);
+        }
+        for (int j = 0; j < c->rot; j++) {
+            int axis = j / 16, kbase = j % 16;
+            float ang = (float)c->pos[s * 3 + axis] * c->invf[kbase];
+            float cc = cosf(ang), sn = sinf(ang);
+            for (int h = 0; h < c->heads; h++) {
+                float* qp = &c->qkv[(size_t)s * c->ff1 + h * c->hd];
+                float a0 = qp[j], a1 = qp[c->hd / 2 + j];
+                qp[j]            = a0 * cc - a1 * sn;
+                qp[c->hd / 2 + j] = a0 * sn + a1 * cc;
+                float* kp = &c->qkv[(size_t)s * c->ff1 + c->comp + h * c->hd];
+                a0 = kp[j]; a1 = kp[c->hd / 2 + j];
+                kp[j]            = a0 * cc - a1 * sn;
+                kp[c->hd / 2 + j] = a0 * sn + a1 * cc;
+            }
+        }
+    }
+}
+
+/* Row-parallel swiglu + residuals: pure per-row elementwise, no cross-row
+ * reduction at all (unlike the norms), so any partition is bit-identical
+ * barring compiler codegen drift — the md5 gate decides. */
+typedef struct { float* a; int ff1, ff2; long seq; } H3SwigCtx;
+static void h3_swig_range(int lo, int hi, void* arg) {
+    H3SwigCtx* c = (H3SwigCtx*)arg;
+    for (long s = lo; s < hi; s++)
+        for (int i = 0; i < c->ff2; i++) {
+            float gv = c->a[(size_t)s * c->ff1 + i];
+            c->a[(size_t)s * c->ff1 + i] =
+                (gv / (1.0f + expf(-gv))) * c->a[(size_t)s * c->ff1 + c->ff2 + i];
+        }
+}
+typedef struct {
+    float* st; const float* xr; const float* pr; const int* tag;
+    long seq; int hid; const float *g0, *g1, *g2;
+} H3ResidCtx;
+static void h3_resid_range(int lo, int hi, void* arg) {
+    H3ResidCtx* c = (H3ResidCtx*)arg;
+    for (long s = lo; s < hi; s++) {
+        int t = c->tag[s];
+        const float* g = t == 0 ? c->g0 : t == 1 ? c->g1 : c->g2;
+        for (int i = 0; i < c->hid; i++)
+            c->st[(size_t)s * c->hid + i] =
+                c->xr[(size_t)s * c->hid + i] + g[i] * c->pr[(size_t)s * c->hid + i];
+    }
+}
+
 /* Per-(head, query) CPU attention, parallelized over the HEADS*seq grid.
  * Numerics are byte-identical to the former serial loop: the dot is a double
  * accumulate over HD (per key), the softmax sum is a double accumulate, and
@@ -295,6 +385,45 @@ static int h3_nc_gemv(const GgufTensor* t, int in_dim, int out_dim,
 }
 #endif
 
+/* Debug dump for the int8-dot oracle: first 3 strided GEMVs (block-0
+ * qkv/out/fc1) -> <dir>/rec<i>.bin holding gathered x + raw W + dims.
+ * Zero effect unless H3_GEMV_DUMP=<dir> (dir must exist). */
+static void h3_gemv_dump(const GgufTensor* t, int in_dim, int out_dim,
+                         long S, const float* x, int xstride) {
+    static int n = 0;
+    const char* d = getenv("H3_GEMV_DUMP");
+    if (!d || n >= 3) return;
+    char path[256];
+    snprintf(path, sizeof path, "%s/rec%d.bin", d, n);
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite("H3GX0001", 1, 8, f);
+    int32_t ii[4] = { in_dim, out_dim, xstride, t->type };
+    int64_t ll[1] = { S };
+    uint64_t ww = (uint64_t)t->nbytes;
+    fwrite(ii, 4, 4, f); fwrite(ll, 8, 1, f); fwrite(&ww, 8, 1, f);
+    int xs = xstride ? xstride : in_dim;
+    for (long s = 0; s < S; s++)
+        fwrite(x + (size_t)s * xs, 4, (size_t)in_dim, f);
+    fwrite((const void*)(G.mmap_base + t->offset), 1, (size_t)t->nbytes, f);
+    fclose(f);
+    fprintf(stderr, "  [gemv-dump] rec%d in=%d out=%d S=%ld xst=%d wtype=%d wMB=%.1f -> %s\n",
+            n, in_dim, out_dim, S, xstride, t->type, ww / 1048576.0, path);
+    n++;
+}
+
+/* NC_ASYNC consume fence: with STRATUM_NC_ASYNC=1 flush() commits WITHOUT
+ * waiting, but every mixed_gemv caller below consumes y immediately, so the
+ * deferred wait at the next begin() is too late (measured: async dump
+ * diverges from sync, video mean 1.03 -> 0.60). Fence before each CPU
+ * consumer. Sync mode / CPU fallback: nothing pending -> single-branch
+ * no-op, and unlike batch_drain it never releases staging. */
+#ifdef STRATUM_USE_METAL
+#define H3_NC_CONSUME() do { if (g_h3_nc) stratum_metal_nc_batch_consume(); } while (0)
+#else
+#define H3_NC_CONSUME() do { } while (0)
+#endif
+
 static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
                              long S, const float* x, float* y) {
     if (g_h3_nc < 0) {
@@ -308,6 +437,7 @@ static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
         stratum_metal_nc_batch_begin();
         int rc = h3_nc_gemv(t, in_dim, out_dim, S, x, y);
         stratum_metal_nc_batch_flush();
+        H3_NC_CONSUME();   /* async: y is consumed on return — fence here, not at next begin */
         if (rc == 0) return;
     }
 #endif
@@ -332,6 +462,7 @@ static void mixed_gemv_batch(const GgufTensor* t, int in_dim, int out_dim,
 static void mixed_gemv_batch_strided(const GgufTensor* t, int in_dim, int out_dim,
                                      long S, const float* x, float* y,
                                      int xstride, int ystride) {
+    h3_gemv_dump(t, in_dim, out_dim, S, x, xstride);
     if (g_h3_nc < 0) {
         const char* e = getenv("STRATUM_H3_NC");
         g_h3_nc = e && atoi(e) ? 1 : 0;
@@ -346,6 +477,7 @@ static void mixed_gemv_batch_strided(const GgufTensor* t, int in_dim, int out_di
             (const void*)(G.mmap_base + t->offset), nbytes, t->type,
             x, y, out_dim, in_dim, (int)S, xstride, ystride);
         stratum_metal_nc_batch_flush();
+        H3_NC_CONSUME();   /* async: y is consumed on return — fence here, not at next begin */
         if (rc == 0 || rc == -2) return;
     }
 #endif
@@ -936,19 +1068,10 @@ int run_h3_forward_main(int argc, char** argv) {
         snprintf(nm, sizeof nm, "blocks.%d.norm1.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
-            for (long s = 0; s < seq_len; s++) {
-                float* r = &stream[s * HID];
-                double ss = 0;
-                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
-                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
-                for (int i = 0; i < HID; i++)
-                    r[i] = r[i] * sc * bfv(g16[i])
-                         * (1.0f + (tag[s] == 0 ? scale_msa[i]
-                                  : tag[s] == 1 ? scale_msa_t[i]
-                                  : scale_msa_a[i]))
-                         + (tag[s] == 0 ? shift_msa[i]
-                            : tag[s] == 1 ? shift_msa_t[i] : shift_msa_a[i]);
-            }
+            H3NormCtx hnc = { stream, tag, seq_len, HID, g16,
+                scale_msa, shift_msa, scale_msa_t, shift_msa_t,
+                scale_msa_a, shift_msa_a };
+            h3_par_for((int)seq_len, h3_norm_range, &hnc);
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
         PROF_BEGINSLOT(1);
@@ -961,36 +1084,10 @@ int run_h3_forward_main(int argc, char** argv) {
         snprintf(nm, sizeof nm, "blocks.%d.attn.k_norm.weight", li);
         const uint16_t* kw = (const uint16_t*)T(nm);
         PROF_BEGINSLOT(2);
-        for (long s = 0; s < seq_len; s++) {
-            for (int h = 0; h < HEADS; h++) {
-                float* qp = &qkv[s * FF1 + h * HD];
-                double ss = 0;
-                for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
-                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
-                for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
-            }
-            for (int h = 0; h < HEADS; h++) {
-                float* kp = &qkv[s * FF1 + comp + h * HD];
-                double ss = 0;
-                for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
-                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
-                for (int d = 0; d < HD; d++) kp[d] *= sc * bfv(kw[d]);
-            }
-            for (int j = 0; j < ROT_PAIRS; j++) {
-                int axis = j / 16, kbase = j % 16;
-                float ang = (float)pos[s * 3 + axis] * inv_freq[kbase];
-                float c = cosf(ang), sn = sinf(ang);
-                for (int h = 0; h < HEADS; h++) {
-                    float* qp = &qkv[s * FF1 + h * HD];
-                    float a0 = qp[j], a1 = qp[HD / 2 + j];
-                    qp[j]        = a0 * c - a1 * sn;
-                    qp[HD / 2 + j] = a0 * sn + a1 * c;
-                    float* kp = &qkv[s * FF1 + comp + h * HD];
-                    a0 = kp[j]; a1 = kp[HD / 2 + j];
-                    kp[j]        = a0 * c - a1 * sn;
-                    kp[HD / 2 + j] = a0 * sn + a1 * c;
-                }
-            }
+        {   /* qk-norm + rope over rows, parallel (row-independent, bit-identical) */
+            H3QkCtx hqc = { qkv, FF1, comp, HEADS, HD, ROT_PAIRS, seq_len,
+                qw, kw, pos, inv_freq };
+            h3_par_for((int)seq_len, h3_qk_range, &hqc);
         }
 
         /* bidirectional attention (full packed stream) */
@@ -1008,13 +1105,46 @@ int run_h3_forward_main(int argc, char** argv) {
             { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
             if (attn_used < attn_layer_max) {
                 attn_used++;
+                /* H3_ATTN_HG: heads per attention batch (L2 isolation at long
+                 * seq; 0/unset = all heads = legacy single batch). Groups run
+                 * in sequential batches (drain-at-begin serializes the GPU),
+                 * so each head's K/V slice stays resident across its qtiles.
+                 * Grouped math == single-batch math (scheduling only). */
+                static int attn_hg = -1;
+                if (attn_hg < 0) {
+                    const char* e = getenv("H3_ATTN_HG");
+                    attn_hg = (e && atoi(e) > 0) ? atoi(e) : 0;
+                }
                 stratum_metal_nc_batch_begin();
-                int arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
-                                    0, comp, 2 * comp, QKV, attn,
-                                    (int)seq_len, HEADS, HD, scale2);
-                stratum_metal_nc_batch_flush();
+                int arc = -1;
+                if (attn_hg <= 0 || attn_hg >= HEADS) {
+                    arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
+                                        0, comp, 2 * comp, QKV, attn,
+                                        (int)seq_len, HEADS, HD, scale2);
+                    stratum_metal_nc_batch_flush();
+                } else if (stratum_metal_nc_attn_prepare(fbuf, FF1,
+                                        0, comp, 2 * comp,
+                                        (int)seq_len, HEADS, HD) == 0) {
+                    /* one batch per group: the drain-at-begin before each
+                     * group serializes the GPU, so a group's heads own the
+                     * L2 for their qtiles (one big batch would let Metal
+                     * interleave all heads and thrash it — the 768p
+                     * disease). Copy-back total is unchanged (disjoint
+                     * head dims per group). */
+                    arc = 0;
+                    for (int h0 = 0; h0 < HEADS && arc == 0; h0 += attn_hg) {
+                        int hgc = h0 + attn_hg > HEADS ? HEADS - h0 : attn_hg;
+                        stratum_metal_nc_batch_begin();
+                        arc = stratum_metal_nc_attn_group(attn,
+                                        (int)seq_len, HEADS, HD, scale2, h0, hgc);
+                        stratum_metal_nc_batch_flush();
+                    }
+                }
                 if (arc == 0)
                     goto attn_done;
+                /* partial-group failure: sync the batch first; the CPU
+                 * fallback below recomputes the whole attn buffer. */
+                stratum_metal_nc_batch_drain();
             }
         }
 #endif
@@ -1044,12 +1174,9 @@ int run_h3_forward_main(int argc, char** argv) {
             fprintf(stderr, "  [L2 probe] attn nonfinite=%ld max=%.4g | proj nonfinite=%ld max=%.4g\n",
                     b1, m1, b2, m2);
         }
-        for (long s = 0; s < seq_len; s++) {
-            const float* g = tag[s] == 0 ? gate_msa
-                           : tag[s] == 1 ? gate_msa_t : gate_msa_a;
-            for (int i = 0; i < HID; i++)
-                stream[s * HID + i] = xres[s * HID + i] + g[i] * proj[s * HID + i];
-        }
+        { H3ResidCtx hrc = { stream, xres, proj, tag, seq_len, HID,
+              gate_msa, gate_msa_t, gate_msa_a };
+          h3_par_for((int)seq_len, h3_resid_range, &hrc); }
         PROF_ENDSLOT(0);
 
         /* mlp */
@@ -1060,19 +1187,10 @@ int run_h3_forward_main(int argc, char** argv) {
         snprintf(nm, sizeof nm, "blocks.%d.norm2.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
-            for (long s = 0; s < seq_len; s++) {
-                float* r = &stream[s * HID];
-                double ss = 0;
-                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
-                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
-                for (int i = 0; i < HID; i++)
-                    r[i] = r[i] * sc * bfv(g16[i])
-                         * (1.0f + (tag[s] == 0 ? scale_mlp[i]
-                                  : tag[s] == 1 ? scale_mlp_t[i]
-                                  : scale_mlp_a[i]))
-                         + (tag[s] == 0 ? shift_mlp[i]
-                            : tag[s] == 1 ? shift_mlp_t[i] : shift_mlp_a[i]);
-            }
+            H3NormCtx hnc = { stream, tag, seq_len, HID, g16,
+                scale_mlp, shift_mlp, scale_mlp_t, shift_mlp_t,
+                scale_mlp_a, shift_mlp_a };
+            h3_par_for((int)seq_len, h3_norm_range, &hnc);
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
         const GgufTensor* t_fc1 = TT(nm);
@@ -1109,12 +1227,8 @@ int run_h3_forward_main(int argc, char** argv) {
                                  HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
-        for (long s = 0; s < seq_len; s++)
-            for (int i = 0; i < FF2; i++) {
-                float gv = fc1o[s * FF1 + i];
-                fc1o[s * FF1 + i] =
-                    (gv / (1.0f + expf(-gv))) * fc1o[s * FF1 + FF2 + i];
-            }
+        { H3SwigCtx hsc = { fc1o, FF1, FF2, seq_len };
+          h3_par_for((int)seq_len, h3_swig_range, &hsc); }
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(7);
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
@@ -1122,18 +1236,15 @@ int run_h3_forward_main(int argc, char** argv) {
                                  FF1, HID);
         PROF_ENDSLOT(7);
         }
+        H3_NC_CONSUME();   /* fused-MLP direct flush (or fc2) y=proj is read by the residual next */
         if (getenv("H3_MLP_PROBE") && li == 0) {
             FILE* fp = fopen("/tmp/mlp_proj_probe.bin", "wb");
             if (fp) { fwrite(proj, 4, (size_t)seq_len * HID, fp); fclose(fp); }
         }
         PROF_BEGINSLOT(0);
-        for (long s = 0; s < seq_len; s++) {
-            const float* g = tag[s] == 0 ? gate_mlp
-                           : tag[s] == 1 ? gate_mlp_t : gate_mlp_a;
-            for (int i = 0; i < HID; i++)
-                stream[s * HID + i] =
-                    xres[s * HID + i] + g[i] * proj[s * HID + i];
-        }
+        { H3ResidCtx hrc = { stream, xres, proj, tag, seq_len, HID,
+              gate_mlp, gate_mlp_t, gate_mlp_a };
+          h3_par_for((int)seq_len, h3_resid_range, &hrc); }
         PROF_ENDSLOT(0);
 
         if (getenv("H3_ATTN_CHK")) {
@@ -1720,19 +1831,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         snprintf(nm, sizeof nm, "blocks.%d.norm1.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
-            for (long s = 0; s < seq_len; s++) {
-                float* r = &stream[s * HID];
-                double ss = 0;
-                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
-                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
-                for (int i = 0; i < HID; i++)
-                    r[i] = r[i] * sc * bfv(g16[i])
-                         * (1.0f + (tag[s] == 0 ? scale_msa[i]
-                                  : tag[s] == 1 ? scale_msa_t[i]
-                                  : scale_msa_a[i]))
-                         + (tag[s] == 0 ? shift_msa[i]
-                            : tag[s] == 1 ? shift_msa_t[i] : shift_msa_a[i]);
-            }
+            H3NormCtx hnc = { stream, tag, seq_len, HID, g16,
+                scale_msa, shift_msa, scale_msa_t, shift_msa_t,
+                scale_msa_a, shift_msa_a };
+            h3_par_for((int)seq_len, h3_norm_range, &hnc);
         }
         snprintf(nm, sizeof nm, "blocks.%d.attn.qkv_proj.weight", li);
         PROF_BEGINSLOT(1);
@@ -1745,36 +1847,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         snprintf(nm, sizeof nm, "blocks.%d.attn.k_norm.weight", li);
         const uint16_t* kw = (const uint16_t*)T(nm);
         PROF_BEGINSLOT(2);
-        for (long s = 0; s < seq_len; s++) {
-            for (int h = 0; h < HEADS; h++) {
-                float* qp = &qkv[s * FF1 + h * HD];
-                double ss = 0;
-                for (int d = 0; d < HD; d++) ss += (double)qp[d] * qp[d];
-                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
-                for (int d = 0; d < HD; d++) qp[d] *= sc * bfv(qw[d]);
-            }
-            for (int h = 0; h < HEADS; h++) {
-                float* kp = &qkv[s * FF1 + comp + h * HD];
-                double ss = 0;
-                for (int d = 0; d < HD; d++) ss += (double)kp[d] * kp[d];
-                float sc = (float)(1.0 / sqrt(ss / HD + 1e-5));
-                for (int d = 0; d < HD; d++) kp[d] *= sc * bfv(kw[d]);
-            }
-            for (int j = 0; j < ROT_PAIRS; j++) {
-                int axis = j / 16, kbase = j % 16;
-                float ang = (float)pos[s * 3 + axis] * inv_freq[kbase];
-                float c = cosf(ang), sn = sinf(ang);
-                for (int h = 0; h < HEADS; h++) {
-                    float* qp = &qkv[s * FF1 + h * HD];
-                    float a0 = qp[j], a1 = qp[HD / 2 + j];
-                    qp[j]        = a0 * c - a1 * sn;
-                    qp[HD / 2 + j] = a0 * sn + a1 * c;
-                    float* kp = &qkv[s * FF1 + comp + h * HD];
-                    a0 = kp[j]; a1 = kp[HD / 2 + j];
-                    kp[j]        = a0 * c - a1 * sn;
-                    kp[HD / 2 + j] = a0 * sn + a1 * c;
-                }
-            }
+        {   /* qk-norm + rope over rows, parallel (row-independent, bit-identical) */
+            H3QkCtx hqc = { qkv, FF1, comp, HEADS, HD, ROT_PAIRS, seq_len,
+                qw, kw, pos, inv_freq };
+            h3_par_for((int)seq_len, h3_qk_range, &hqc);
         }
 
         /* bidirectional attention (full packed stream) */
@@ -1790,13 +1866,46 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             { const char* e = getenv("H3_ATTN_LAYERS"); if (e) attn_layer_max = atoi(e); }
             if (attn_used < attn_layer_max) {
                 attn_used++;
+                /* H3_ATTN_HG: heads per attention batch (L2 isolation at long
+                 * seq; 0/unset = all heads = legacy single batch). Groups run
+                 * in sequential batches (drain-at-begin serializes the GPU),
+                 * so each head's K/V slice stays resident across its qtiles.
+                 * Grouped math == single-batch math (scheduling only). */
+                static int attn_hg = -1;
+                if (attn_hg < 0) {
+                    const char* e = getenv("H3_ATTN_HG");
+                    attn_hg = (e && atoi(e) > 0) ? atoi(e) : 0;
+                }
                 stratum_metal_nc_batch_begin();
-                int arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
-                                    0, comp, 2 * comp, QKV, attn,
-                                    (int)seq_len, HEADS, HD, scale2);
-                stratum_metal_nc_batch_flush();
+                int arc = -1;
+                if (attn_hg <= 0 || attn_hg >= HEADS) {
+                    arc = stratum_metal_nc_batch_attn_packed(fbuf, FF1,
+                                        0, comp, 2 * comp, QKV, attn,
+                                        (int)seq_len, HEADS, HD, scale2);
+                    stratum_metal_nc_batch_flush();
+                } else if (stratum_metal_nc_attn_prepare(fbuf, FF1,
+                                        0, comp, 2 * comp,
+                                        (int)seq_len, HEADS, HD) == 0) {
+                    /* one batch per group: the drain-at-begin before each
+                     * group serializes the GPU, so a group's heads own the
+                     * L2 for their qtiles (one big batch would let Metal
+                     * interleave all heads and thrash it — the 768p
+                     * disease). Copy-back total is unchanged (disjoint
+                     * head dims per group). */
+                    arc = 0;
+                    for (int h0 = 0; h0 < HEADS && arc == 0; h0 += attn_hg) {
+                        int hgc = h0 + attn_hg > HEADS ? HEADS - h0 : attn_hg;
+                        stratum_metal_nc_batch_begin();
+                        arc = stratum_metal_nc_attn_group(attn,
+                                        (int)seq_len, HEADS, HD, scale2, h0, hgc);
+                        stratum_metal_nc_batch_flush();
+                    }
+                }
                 if (arc == 0)
                     goto attn_done;
+                /* partial-group failure: sync the batch first; the CPU
+                 * fallback below recomputes the whole attn buffer. */
+                stratum_metal_nc_batch_drain();
             }
         }
 #endif
@@ -1826,12 +1935,9 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
             fprintf(stderr, "  [L2 probe] attn nonfinite=%ld max=%.4g | proj nonfinite=%ld max=%.4g\n",
                     b1, m1, b2, m2);
         }
-        for (long s = 0; s < seq_len; s++) {
-            const float* g = tag[s] == 0 ? gate_msa
-                           : tag[s] == 1 ? gate_msa_t : gate_msa_a;
-            for (int i = 0; i < HID; i++)
-                stream[s * HID + i] = xres[s * HID + i] + g[i] * proj[s * HID + i];
-        }
+        { H3ResidCtx hrc = { stream, xres, proj, tag, seq_len, HID,
+              gate_msa, gate_msa_t, gate_msa_a };
+          h3_par_for((int)seq_len, h3_resid_range, &hrc); }
         PROF_ENDSLOT(0);
 
         /* mlp */
@@ -1842,19 +1948,10 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
         snprintf(nm, sizeof nm, "blocks.%d.norm2.weight", li);
         {
             const uint16_t* g16 = (const uint16_t*)T(nm);
-            for (long s = 0; s < seq_len; s++) {
-                float* r = &stream[s * HID];
-                double ss = 0;
-                for (int i = 0; i < HID; i++) ss += (double)r[i] * r[i];
-                float sc = (float)(1.0 / sqrt(ss / HID + 1e-5));
-                for (int i = 0; i < HID; i++)
-                    r[i] = r[i] * sc * bfv(g16[i])
-                         * (1.0f + (tag[s] == 0 ? scale_mlp[i]
-                                  : tag[s] == 1 ? scale_mlp_t[i]
-                                  : scale_mlp_a[i]))
-                         + (tag[s] == 0 ? shift_mlp[i]
-                            : tag[s] == 1 ? shift_mlp_t[i] : shift_mlp_a[i]);
-            }
+            H3NormCtx hnc = { stream, tag, seq_len, HID, g16,
+                scale_mlp, shift_mlp, scale_mlp_t, shift_mlp_t,
+                scale_mlp_a, shift_mlp_a };
+            h3_par_for((int)seq_len, h3_norm_range, &hnc);
         }
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc1.weight", li);
         const GgufTensor* t_fc1 = TT(nm);
@@ -1891,12 +1988,8 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                                  HID, FF1);
         PROF_ENDSLOT(6);
         PROF_BEGINSLOT(7);
-        for (long s = 0; s < seq_len; s++)
-            for (int i = 0; i < FF2; i++) {
-                float gv = fc1o[s * FF1 + i];
-                fc1o[s * FF1 + i] =
-                    (gv / (1.0f + expf(-gv))) * fc1o[s * FF1 + FF2 + i];
-            }
+        { H3SwigCtx hsc = { fc1o, FF1, FF2, seq_len };
+          h3_par_for((int)seq_len, h3_swig_range, &hsc); }
         PROF_ENDSLOT(7);
         PROF_BEGINSLOT(7);
         snprintf(nm, sizeof nm, "blocks.%d.mlp.fc2.weight", li);
@@ -1904,18 +1997,15 @@ static int h3_sampler_step(H3SamState* st, double sigma_v, FILE* xsrc) {
                                  FF1, HID);
         PROF_ENDSLOT(7);
         }
+        H3_NC_CONSUME();   /* fused-MLP direct flush (or fc2) y=proj is read by the residual next */
         if (getenv("H3_MLP_PROBE") && li == 0) {
             FILE* fp = fopen("/tmp/mlp_proj_probe.bin", "wb");
             if (fp) { fwrite(proj, 4, (size_t)seq_len * HID, fp); fclose(fp); }
         }
         PROF_BEGINSLOT(0);
-        for (long s = 0; s < seq_len; s++) {
-            const float* g = tag[s] == 0 ? gate_mlp
-                           : tag[s] == 1 ? gate_mlp_t : gate_mlp_a;
-            for (int i = 0; i < HID; i++)
-                stream[s * HID + i] =
-                    xres[s * HID + i] + g[i] * proj[s * HID + i];
-        }
+        { H3ResidCtx hrc = { stream, xres, proj, tag, seq_len, HID,
+              gate_mlp, gate_mlp_t, gate_mlp_a };
+          h3_par_for((int)seq_len, h3_resid_range, &hrc); }
         PROF_ENDSLOT(0);
 
         if (getenv("H3_ATTN_CHK")) {

@@ -2685,7 +2685,9 @@ typedef struct { float* dst; float* const* dsts; float* dst_ptrs[32]; size_t off
                  __strong id<MTLBuffer> dst_buf;   /* registered y: GPU writes dst directly, no copy-back */
                  int out_stride;   /* dst row stride in floats (0 = compact) */
                  int rows;         /* 0 = single contiguous block; >0 = per-row scatter */
-                 size_t rowbytes;  /* bytes per row when rows > 0 */ } NCBatchYTask;
+                 size_t rowbytes;  /* bytes per row when rows > 0 */
+                 int ho0, holen;   /* head-dim subrange in floats (0,0 = full row);
+                                    * head-grouped attention copies only its heads */ } NCBatchYTask;
 static NCBatchYTask g_ncb_ytasks[512];
 static id<MTLBuffer> g_ncb_hbuf = nil;   /* fused-MLP h slab (freed with staging) */
 static size_t g_ncb_hcap = 0;
@@ -2821,10 +2823,12 @@ static void ncb_drain_pending(void) {
         const NCBatchYTask* t = &g_ncb_ptasks[i];
         if (t->src_buf) {
             const char* sb = (const char*)[t->src_buf contents];
+            size_t ho = (size_t)t->ho0 * 4, hl = t->holen ? (size_t)t->holen * 4 : 0;
             if (t->rows > 0) {
                 for (int r = 0; r < t->rows; r++)
-                    memcpy(t->dst + (size_t)r * t->out_stride,
-                           sb + (size_t)r * t->rowbytes, t->rowbytes);
+                    memcpy(t->dst + (size_t)r * t->out_stride + (hl ? ho / 4 : 0),
+                           sb + (size_t)r * t->rowbytes + (hl ? ho : 0),
+                           hl ? hl : t->rowbytes);
             } else if (t->out_stride == 0) {
                 memcpy(t->dst, sb, t->bytes);
             } else {
@@ -2875,6 +2879,13 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
                                int xstride, int ystride) {
     if (!wptr || nbytes == 0 || !g_device) return -1;
     if (g_ncb_ny >= 512) return -1;
+    /* stride==dim fast path: rows are contiguous in caller memory, so
+     * normalize to the compact form — staging copy-in and flush copy-back
+     * become single memcpys over identical bytes (no per-row loop of
+     * S small memcpys). Zero semantic change; the strided callers that
+     * pass stride==dim (qkv-x, fc1-x/y, fc2-y, out-y) all take it. */
+    if (xstride == K) xstride = 0;
+    if (ystride == N) ystride = 0;
     if (getenv("STRATUM_NC_DEBUG")) fprintf(stderr, "  [nc] add type=%d N=%d K=%d B=%d cmd=%p\n", gguf_type, N, K, B, g_ncb_cmd);
     if (!g_ncb_cmd) {
         /* no batch open (e.g. single-stream path without begin/flush):
@@ -3010,6 +3021,8 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
              * rows must go through the rows>0 scatter instead */
             g_ncb_ytasks[g_ncb_ny].out_stride = ystride;
         }
+        g_ncb_ytasks[g_ncb_ny].ho0 = 0;   /* full-row copy (see attn groups) */
+        g_ncb_ytasks[g_ncb_ny].holen = 0;
         g_ncb_ny++;
 
         if (use_bp2d) {
@@ -3141,6 +3154,8 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
         g_ncb_ytasks[g_ncb_ny].B = B;
         g_ncb_ytasks[g_ncb_ny].N = N;
         g_ncb_ytasks[g_ncb_ny].is_streams = 1;
+        g_ncb_ytasks[g_ncb_ny].ho0 = 0;
+        g_ncb_ytasks[g_ncb_ny].holen = 0;
         g_ncb_ny++;
 
         if (use_bp2d) {
@@ -3224,13 +3239,15 @@ int stratum_metal_nc_batch_flush(void) {
                     t->is_streams, t->off);
         if (t->src_buf) {
             const char* sb = (const char*)[t->src_buf contents];
+            size_t ho = (size_t)t->ho0 * 4, hl = t->holen ? (size_t)t->holen * 4 : 0;
             if (t->rows > 0) {
                 /* per-row scatter: src rows are t->rowbytes apart, dst rows
                  * t->out_stride floats apart (dst may be nil when dst_buf
                  * took the direct-write path — nothing to copy then) */
                 for (int r = 0; r < t->rows; r++)
-                    memcpy(t->dst + (size_t)r * t->out_stride,
-                           sb + (size_t)r * t->rowbytes, t->rowbytes);
+                    memcpy(t->dst + (size_t)r * t->out_stride + (hl ? ho / 4 : 0),
+                           sb + (size_t)r * t->rowbytes + (hl ? ho : 0),
+                           hl ? hl : t->rowbytes);
             } else if (t->out_stride == 0) {
                 memcpy(t->dst, sb, t->bytes);
             } else {
@@ -3283,6 +3300,13 @@ void stratum_metal_nc_batch_drain(void) {
         g_ncb_xpos = 0;   g_ncb_ypos = 0;
         g_ncb_hbuf = nil; g_ncb_hcap = 0;
     }
+}
+
+/* consume fence: same wait + copy-back as drain, but NEVER releases staging,
+ * so it is safe between a flush and its immediate CPU consumer (and a no-op
+ * in sync mode, where no batch is ever pending). */
+void stratum_metal_nc_batch_consume(void) {
+    ncb_drain_pending();
 }
 
 void stratum_metal_nc_time_report(void) {
@@ -3459,6 +3483,8 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
             g_ncb_ytasks[g_ncb_ny].is_streams = 0;
             g_ncb_ytasks[g_ncb_ny].src_buf = ob;
             g_ncb_ytasks[g_ncb_ny].out_stride = out_stride;
+            g_ncb_ytasks[g_ncb_ny].ho0 = 0;   /* full-range legacy path */
+            g_ncb_ytasks[g_ncb_ny].holen = 0;
             g_ncb_ny++;
             return 0;
         }
@@ -3485,6 +3511,8 @@ int stratum_metal_nc_batch_attn_strided(const float* Q, const float* K, const fl
         g_ncb_ytasks[g_ncb_ny].is_streams = 0;
         g_ncb_ytasks[g_ncb_ny].src_buf = ob;
         g_ncb_ytasks[g_ncb_ny].out_stride = out_stride;
+        g_ncb_ytasks[g_ncb_ny].ho0 = 0;   /* full-range legacy path */
+        g_ncb_ytasks[g_ncb_ny].holen = 0;
         g_ncb_ny++;
         return 0;
     }
@@ -3643,6 +3671,194 @@ int stratum_metal_nc_mlp_fused(const void* w1, size_t w1bytes, int wtype,
         g_ncb_ytasks[g_ncb_ny].rows = 0;
         g_ncb_ytasks[g_ncb_ny].rowbytes = 0;
         g_ncb_ytasks[g_ncb_ny].out_stride = 0;
+        g_ncb_ytasks[g_ncb_ny].ho0 = 0;
+        g_ncb_ytasks[g_ncb_ny].holen = 0;
+        g_ncb_ny++;
+        return 0;
+    }
+}
+
+/* Head-grouped attention: prepare() gathers Q/K/V once per layer (or finds
+ * the zero-copy window); each group() encodes one head slice [h0,h0+hg).
+ * Groups run in sequential batches (drain-at-next-begin serializes the GPU),
+ * so each head's K/V slice stays L2-resident across its qtiles — the 768p
+ * fix (one 26k-threadgroup batch over 56 heads x 7.8MB slices thrashes L2:
+ * attention 11.6s@2328 -> 502.7s@7624, 4.3x over quadratic). Per-group
+ * copy-back covers only the group's head dims (ytask ho0/holen); the math
+ * per (head,query) is unchanged, so grouped == single-batch bit-identical. */
+typedef struct { const float* base; int rowstride, qoff, koff, voff, S, H, Hd;
+                 size_t qb; id bdir; id stage; int ok; } NCAttnPrep;
+static NCAttnPrep g_ncprep = { 0 };
+static id<MTLComputePipelineState> g_attn_spso = nil, g_attn_tpso = nil,
+    g_attn_tp2so = nil, g_attn_ttso = nil;
+static uint g_attn_gHd = 0;
+/* H3_ATTN_TWOPASS: 0 = online kernel, 1 = two-pass, 2 = two-pass v2
+ * (default), 3 = tiled Bq16 (one QK pass, per-tile online softmax) */
+static int g_attn_use_tp = -1;
+static id<MTLBuffer> g_attn_obuf = nil; static size_t g_attn_obuf_cap = 0;
+
+int stratum_metal_nc_attn_prepare(const float* base, int rowstride,
+                                  int qoff, int koff, int voff,
+                                  int S, int H, int Hd) {
+    if (!g_h3_attn || !g_device) return -1;
+    g_ncprep.ok = 0;
+    size_t qb = (size_t)S * H * Hd * sizeof(float);
+    id<MTLBuffer> bdir = ncar_get(base, (size_t)S * rowstride * sizeof(float));
+    g_ncprep.base = base; g_ncprep.rowstride = rowstride;
+    g_ncprep.qoff = qoff; g_ncprep.koff = koff; g_ncprep.voff = voff;
+    g_ncprep.S = S; g_ncprep.H = H; g_ncprep.Hd = Hd;
+    g_ncprep.qb = qb; g_ncprep.bdir = bdir; g_ncprep.stage = nil;
+    if (!bdir) {
+        /* compact staging fallback: copy q|k|v regions in once per layer
+         * (NOT per group — groups share this slab within the layer) */
+        if (!g_ncbatn_qkv || g_ncbatn_cap < qb) {
+            g_ncbatn_qkv = [g_device newBufferWithLength:qb * 3
+                options:MTLResourceStorageModeShared];
+            g_ncbatn_cap = qb;
+        }
+        if (!g_ncbatn_qkv) return -1;
+        char* b = (char*)[g_ncbatn_qkv contents];
+        for (int r = 0; r < S; r++) {
+            memcpy(b + (size_t)r * qb / S,
+                   base + (size_t)r * rowstride + qoff, (size_t)H * Hd * 4);
+            memcpy(b + qb + (size_t)r * (qb / S),
+                   base + (size_t)r * rowstride + koff, (size_t)H * Hd * 4);
+            memcpy(b + 2 * qb + (size_t)r * (qb / S),
+                   base + (size_t)r * rowstride + voff, (size_t)H * Hd * 4);
+        }
+        g_ncprep.stage = g_ncbatn_qkv;
+    }
+    g_ncprep.ok = 1;
+    return 0;
+}
+
+int stratum_metal_nc_attn_group(float* out_region, int S, int H, int Hd,
+                                float scale, int h0, int hg) {
+    if (!g_ncprep.ok || !g_device) return -1;
+    if (!g_ncb_cmd) return -2;
+    if (g_ncb_ny >= 512) return -1;
+    if (h0 < 0 || hg <= 0 || h0 + hg > H) return -1;
+    if (S != g_ncprep.S || H != g_ncprep.H || Hd != g_ncprep.Hd) return -1;
+    @autoreleasepool {
+        if (!g_attn_spso || g_attn_gHd != (uint)Hd) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill_strided"];
+            if (!fn) return -1;
+            g_attn_spso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+            if (!g_attn_spso) return -1;
+            g_attn_gHd = (uint)Hd;
+        }
+        if (g_attn_use_tp < 0) {
+            const char* e = getenv("H3_ATTN_TWOPASS");
+            g_attn_use_tp = e ? atoi(e) : 2;
+        }
+        if (g_attn_use_tp == 3 && !g_attn_ttso) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_tiled"];
+            if (fn) {
+                g_attn_ttso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!g_attn_ttso) g_attn_use_tp = 2;
+            } else g_attn_use_tp = 2;
+        }
+        if (g_attn_use_tp == 2 && !g_attn_tp2so) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass_v2"];
+            if (fn) {
+                g_attn_tp2so = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!g_attn_tp2so) g_attn_use_tp = 1;
+            } else g_attn_use_tp = 1;
+        }
+        if (g_attn_use_tp >= 1 && !g_attn_tpso) {
+            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass"];
+            if (fn) {
+                g_attn_tpso = [g_device newComputePipelineStateWithFunction:fn error:nil];
+                if (!g_attn_tpso) g_attn_use_tp = 0;
+            } else g_attn_use_tp = 0;
+        }
+        size_t qb = g_ncprep.qb;
+        id<MTLBuffer> bdir = g_ncprep.bdir;
+        id<MTLBuffer> stage = g_ncprep.stage;
+        int rowstride = g_ncprep.rowstride;
+        int qoff = g_ncprep.qoff, koff = g_ncprep.koff, voff = g_ncprep.voff;
+        id<MTLBuffer> ob = nil; size_t ooff_b = 0;
+        if (bdir && out_region >= g_ncprep.base &&
+            (uintptr_t)out_region >= (uintptr_t)g_ncprep.base) {
+            size_t obyte = (uintptr_t)out_region - (uintptr_t)g_ncprep.base;
+            if ((obyte & 16383) == 0) {
+                ob = bdir;
+                ooff_b = obyte;
+            }
+        }
+        /* partial head groups need the staging path: the direct fbuf write
+         * has no subrange copy-back (and never triggers in practice — the
+         * fbuf out offset QKV*4 is not 16K-aligned). */
+        if (ob != nil && (h0 != 0 || hg != H)) return -1;
+        if (!ob) {
+            if (g_attn_obuf_cap < qb) {
+                g_attn_obuf = [g_device newBufferWithLength:qb
+                    options:MTLResourceStorageModeShared];
+                g_attn_obuf_cap = qb;
+            }
+            if (!g_attn_obuf) return -1;
+            ob = g_attn_obuf;
+        }
+        id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+        [enc setComputePipelineState:(g_attn_use_tp == 3 ? g_attn_ttso
+                                     : g_attn_use_tp == 2 ? g_attn_tp2so
+                                     : g_attn_use_tp == 1 ? g_attn_tpso : g_attn_spso)];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
+        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 2 * qb : 0) atIndex:2];
+        [enc setBuffer:ob offset:(NSUInteger)ooff_b atIndex:3];
+        uint32_t s=S, h=H, hd=Hd, h0u=(uint32_t)h0;
+        [enc setBytes:&s length:4 atIndex:4];
+        [enc setBytes:&h length:4 atIndex:5];
+        [enc setBytes:&hd length:4 atIndex:6];
+        [enc setBytes:&scale length:4 atIndex:7];
+        if (stage) {
+            /* staging slab is token-major compact [S, H*Hd]: row stride =
+             * H*Hd (kernel is the strided variant bound to compact slabs) */
+            uint32_t g0[4] = { (uint)(H * Hd), 0, 0, 0 },
+                     g1[4] = { (uint)(H * Hd), 0, 0, 0 };
+            [enc setBytes:&g0 length:16 atIndex:8];
+            [enc setBytes:&g1 length:16 atIndex:9];
+        } else {
+            uint32_t g0[4] = { (uint)rowstride, (uint)qoff, (uint)koff, (uint)voff };
+            uint32_t g1[4];
+            if (ob == g_attn_obuf) {
+                /* compact obuf out (scattered at flush): out rows H*Hd apart */
+                g1[0] = (uint)(H * Hd); g1[1] = 0; g1[2] = 0; g1[3] = 0;
+            } else {
+                /* direct fbuf write: out stride = rowstride; the ooff region
+                 * offset is already folded into the buffer offset (ooff_b) */
+                g1[0] = (uint)rowstride; g1[1] = 0; g1[2] = 0; g1[3] = 0;
+            }
+            [enc setBytes:&g0 length:16 atIndex:8];
+            [enc setBytes:&g1 length:16 atIndex:9];
+        }
+        [enc setBytes:&h0u length:4 atIndex:10];
+        if (g_attn_use_tp >= 1) {
+            uint grid = (g_attn_use_tp == 3) ? (uint)(hg * ((S + 15) / 16))
+                                            : (uint)((size_t)hg * S);
+            [enc dispatchThreadgroups:MTLSizeMake(grid,1,1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        } else {
+            uint qtiles = (uint)((S + 63) / 64);
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(hg*qtiles),1,1)
+                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        }
+        [enc endEncoding];
+        g_ncb_ytasks[g_ncb_ny].dst = out_region;
+        g_ncb_ytasks[g_ncb_ny].dsts = NULL;
+        g_ncb_ytasks[g_ncb_ny].off = 0;
+        g_ncb_ytasks[g_ncb_ny].bytes = qb;
+        g_ncb_ytasks[g_ncb_ny].B = 1;
+        g_ncb_ytasks[g_ncb_ny].N = S;
+        g_ncb_ytasks[g_ncb_ny].is_streams = 0;
+        g_ncb_ytasks[g_ncb_ny].rows = (ob == g_attn_obuf) ? S : 0;
+        g_ncb_ytasks[g_ncb_ny].rowbytes = (size_t)H * Hd * 4;
+        g_ncb_ytasks[g_ncb_ny].out_stride = rowstride;
+        g_ncb_ytasks[g_ncb_ny].src_buf = (ob == g_attn_obuf) ? g_attn_obuf : nil;
+        g_ncb_ytasks[g_ncb_ny].dst_buf = (ob == g_attn_obuf) ? nil : ob;
+        g_ncb_ytasks[g_ncb_ny].ho0 = h0 * Hd;
+        g_ncb_ytasks[g_ncb_ny].holen = hg * Hd;
         g_ncb_ny++;
         return 0;
     }
@@ -3660,147 +3876,8 @@ int stratum_metal_nc_batch_attn_packed(const float* base, int rowstride,
     if (!g_h3_attn || !g_device) return -1;
     if (!g_ncb_cmd) return -2;
     if (g_ncb_ny >= 512) return -1;
-    static id<MTLComputePipelineState> spso = nil;
-    static id<MTLComputePipelineState> tpso = nil;   /* two-pass fp32 softmax */
-    static id<MTLComputePipelineState> tp2so = nil;  /* two-pass v2: ILP dot + simd reduce */
-    static id<MTLComputePipelineState> ttso = nil;   /* tiled Bq16: one-pass QK per tile */
-    static uint gHd = 0;
-    /* H3_ATTN_TWOPASS: 0 = online kernel, 1 = two-pass, 2 = two-pass v2
-     * (default), 3 = tiled Bq16 (one QK pass, per-tile online softmax) */
-    static int g_use_tp = -1;
-    @autoreleasepool {
-        if (!spso || gHd != (uint)Hd) {
-            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_prefill_strided"];
-            if (!fn) return -1;
-            spso = [g_device newComputePipelineStateWithFunction:fn error:nil];
-            if (!spso) return -1;
-            gHd = (uint)Hd;
-        }
-        if (g_use_tp < 0) {
-            const char* e = getenv("H3_ATTN_TWOPASS");
-            g_use_tp = e ? atoi(e) : 2;
-        }
-        if (g_use_tp == 3 && !ttso) {
-            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_tiled"];
-            if (fn) {
-                ttso = [g_device newComputePipelineStateWithFunction:fn error:nil];
-                if (!ttso) g_use_tp = 2;
-            } else g_use_tp = 2;
-        }
-        if (g_use_tp == 2 && !tp2so) {
-            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass_v2"];
-            if (fn) {
-                tp2so = [g_device newComputePipelineStateWithFunction:fn error:nil];
-                if (!tp2so) g_use_tp = 1;
-            } else g_use_tp = 1;
-        }
-        if (g_use_tp >= 1 && !tpso) {
-            id<MTLFunction> fn = [g_h3_lib newFunctionWithName:@"h3_attn_two_pass"];
-            if (fn) {
-                tpso = [g_device newComputePipelineStateWithFunction:fn error:nil];
-                if (!tpso) g_use_tp = 0;
-            } else g_use_tp = 0;
-        }
-        size_t qb = (size_t)S * H * Hd * sizeof(float);
-        id<MTLBuffer> bdir = ncar_get(base, (size_t)S * rowstride * sizeof(float));
-        id<MTLBuffer> ob = nil; size_t ooff_b = 0;
-        id<MTLBuffer> src = nil;
-        if (bdir && out_region >= base &&
-            (uintptr_t)out_region >= (uintptr_t)base) {
-            size_t obyte = (uintptr_t)out_region - (uintptr_t)base;
-            if ((obyte & 16383) == 0) {
-                ob = bdir;
-                ooff_b = obyte;
-            }
-        }
-        /* compact staging fallback: copy q|k|v regions in, scatter rows out */
-        id<MTLBuffer> stage = nil;
-        if (!bdir) {
-            if (!g_ncbatn_qkv || g_ncbatn_cap < qb) {
-                g_ncbatn_qkv = [g_device newBufferWithLength:qb * 3
-                    options:MTLResourceStorageModeShared];
-                g_ncbatn_cap = qb;
-            }
-            if (!g_ncbatn_qkv) return -1;
-            char* b = (char*)[g_ncbatn_qkv contents];
-            for (int r = 0; r < S; r++) {
-                memcpy(b + (size_t)r * qb / S,
-                       base + (size_t)r * rowstride + qoff, (size_t)H * Hd * 4);
-                memcpy(b + qb + (size_t)r * (qb / S),
-                       base + (size_t)r * rowstride + koff, (size_t)H * Hd * 4);
-                memcpy(b + 2 * qb + (size_t)r * (qb / S),
-                       base + (size_t)r * rowstride + voff, (size_t)H * Hd * 4);
-            }
-            stage = g_ncbatn_qkv;
-        }
-        static id<MTLBuffer> obuf = nil; static size_t obuf_cap = 0;
-        if (!ob) {
-            if (obuf_cap < qb) {
-                obuf = [g_device newBufferWithLength:qb
-                    options:MTLResourceStorageModeShared];
-                obuf_cap = qb;
-            }
-            if (!obuf) return -1;
-            ob = obuf;
-        }
-        id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-        [enc setComputePipelineState:(g_use_tp == 3 ? ttso
-                                    : g_use_tp == 2 ? tp2so
-                                    : g_use_tp == 1 ? tpso : spso)];
-        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 0 : 0) atIndex:0];
-        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? qb : 0) atIndex:1];
-        [enc setBuffer:(stage ? stage : bdir) offset:(stage ? 2 * qb : 0) atIndex:2];
-        [enc setBuffer:ob offset:(NSUInteger)ooff_b atIndex:3];
-        uint32_t s=S, h=H, hd=Hd;
-        [enc setBytes:&s length:4 atIndex:4];
-        [enc setBytes:&h length:4 atIndex:5];
-        [enc setBytes:&hd length:4 atIndex:6];
-        [enc setBytes:&scale length:4 atIndex:7];
-        if (stage) {
-            /* staging slab is token-major compact [S, H*Hd]: row stride =
-             * H*Hd (kernel is the strided variant bound to compact slabs) */
-            uint32_t g0[4] = { (uint)(H * Hd), 0, 0, 0 },
-                     g1[4] = { (uint)(H * Hd), 0, 0, 0 };
-            [enc setBytes:&g0 length:16 atIndex:8];
-            [enc setBytes:&g1 length:16 atIndex:9];
-        } else {
-            uint32_t g0[4] = { (uint)rowstride, (uint)qoff, (uint)koff, (uint)voff };
-            uint32_t g1[4];
-            if (ob == obuf) {
-                /* compact obuf out (scattered at flush): out rows H*Hd apart */
-                g1[0] = (uint)(H * Hd); g1[1] = 0; g1[2] = 0; g1[3] = 0;
-            } else {
-                /* direct fbuf write: out stride = rowstride; the ooff region
-                 * offset is already folded into the buffer offset (ooff_b) */
-                g1[0] = (uint)rowstride; g1[1] = 0; g1[2] = 0; g1[3] = 0;
-            }
-            [enc setBytes:&g0 length:16 atIndex:8];
-            [enc setBytes:&g1 length:16 atIndex:9];
-        }
-        if (g_use_tp >= 1) {
-            uint grid = (g_use_tp == 3) ? (uint)(H * ((S + 15) / 16))
-                                        : (uint)((size_t)H * S);
-            [enc dispatchThreadgroups:MTLSizeMake(grid,1,1)
-                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
-        } else {
-            uint qtiles = (uint)((S + 63) / 64);
-            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(H*qtiles),1,1)
-                threadsPerThreadgroup:MTLSizeMake(64,1,1)];
-        }
-        [enc endEncoding];
-        g_ncb_ytasks[g_ncb_ny].dst = out_region;
-        g_ncb_ytasks[g_ncb_ny].dsts = NULL;
-        g_ncb_ytasks[g_ncb_ny].off = 0;
-        g_ncb_ytasks[g_ncb_ny].bytes = qb;
-        g_ncb_ytasks[g_ncb_ny].B = 1;
-        g_ncb_ytasks[g_ncb_ny].N = S;
-        g_ncb_ytasks[g_ncb_ny].is_streams = 0;
-        g_ncb_ytasks[g_ncb_ny].rows = (ob == obuf) ? S : 0;
-        g_ncb_ytasks[g_ncb_ny].rowbytes = (size_t)H * Hd * 4;
-        g_ncb_ytasks[g_ncb_ny].out_stride = rowstride;
-        g_ncb_ytasks[g_ncb_ny].src_buf = (ob == obuf) ? obuf : nil;
-        g_ncb_ytasks[g_ncb_ny].dst_buf = (ob == obuf) ? nil : ob;
-        g_ncb_ny++;
-        return 0;
-    }
+    if (stratum_metal_nc_attn_prepare(base, rowstride, qoff, koff, voff,
+                                      S, H, Hd) != 0) return -1;
+    return stratum_metal_nc_attn_group(out_region, S, H, Hd, scale, 0, H);
 }
+/* (legacy single-batch body superseded by nc_attn_prepare/group above) */
