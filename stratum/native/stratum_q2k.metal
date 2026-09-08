@@ -178,3 +178,78 @@ DEFINE_Q2K_BATCH_KERNEL(30)
 DEFINE_Q2K_BATCH_KERNEL(31)
 DEFINE_Q2K_BATCH_KERNEL(32)
 #undef DEFINE_Q2K_BATCH_KERNEL
+
+/* q2k_sgemv_row_coalesced32 (2026-09-07, opt-in via STRATUM_Q2K_COAL=1)
+ * Byte-optimal coalesced Q2_K GEMV: 8 threads per row, 32 rows/tg (256 thr).
+ * Thread t8 covers (n=t8>>2, hb=(t8>>1)&1, hsel=t8&1): one 8-byte qs window
+ * read ONCE per 256-block, all four 2-bit shift groups extracted in-thread —
+ * kills the 4x qs re-read of the per-row kernel. Butterfly reduce over the
+ * 8-lane row group (rows 8-aligned within each 32-lane simd).
+ * Micro-bench (metal_q2k_coalesced_probe, N=51200 K=5120, M4 Pro):
+ *   q2k_sgemv_row 51-73 GB/s -> coalesced32 90-107 GB/s (1.46-1.77x),
+ *   max|d| vs CPU scalar reference 1.2e-3, 0 bad rows.
+ * Tail-safe: rows past N_total compute on a clamped row and are not written;
+ * all lanes still execute the shuffle (no divergent-exit UB). */
+kernel void q2k_sgemv_row_coalesced32(
+    device const block_q2_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],
+    constant uint&           N_total     [[buffer(4)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 3;    /* 0..31 */
+    const uint t8        = tid & 7;     /* 0..7  */
+    const uint row = tgid * 32u + local_row;
+    const uint rr  = min(row, N_total - 1u);   /* clamp: OOB rows read row N-1 */
+    device const block_q2_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint n    = t8 >> 2;
+    const uint hb   = (t8 >> 1) & 1;
+    const uint hsel = t8 & 1;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q2_K& b = row_blocks[blk];
+        const float d    = float(b.d);
+        const float dmin = float(b.dmin);
+        const device uchar* qp = b.qs + 32u*n + 16u*hb + hsel*8u;
+        const uint xbase = blk*256u + 128u*n + 16u*hb + hsel*8u;
+
+        float qx[4], xs[4];
+        #pragma unroll
+        for (int j = 0; j < 4; j++) { qx[j] = 0.0f; xs[j] = 0.0f; }
+
+        #pragma unroll
+        for (int l4 = 0; l4 < 2; l4++) {
+            uchar4 raw = *(device const uchar4*)(qp + 4u*l4);
+            #pragma unroll
+            for (int j = 0; j < 4; j++) {
+                uchar4 w = (raw >> uchar4((uchar)(2u*j))) & uchar4(0x3);
+                float4 xv = *(device const float4*)(x + xbase + 32u*j + 4u*l4);
+                qx[j] += dot(float4(w), xv);
+                xs[j] += xv.x + xv.y + xv.z + xv.w;
+            }
+        }
+
+        const uint sbase = 8u*n + hb;
+        #pragma unroll
+        for (int j = 0; j < 4; j++) {
+            const uchar scb = b.scales[sbase + 2u*j];
+            const float dl = d    * float(scb & 0xF);
+            const float ml = dmin * float(scb >> 4);
+            partial += dl * qx[j] - ml * xs[j];
+        }
+    }
+
+    /* 8-lane butterfly reduction (rows are 8-aligned in each simd) */
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (t8 == 0 && row < N_total) y[row] = tot;
+}

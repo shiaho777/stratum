@@ -33,6 +33,8 @@ static id<MTLComputePipelineState> g_q5k_sgemv = nil;
 static id<MTLComputePipelineState> g_q6k_sgemv = nil;
 static id<MTLComputePipelineState> g_q6k_sgemv_b[33] = {nil};
 static id<MTLComputePipelineState> g_q2k_sgemv = nil;
+static id<MTLComputePipelineState> g_q2k_sgemv_coal = nil;
+static id<MTLComputePipelineState> g_q4k_sgemv_coal16 = nil;
 static id<MTLComputePipelineState> g_q2k_sgemv_b[33] = {nil};
 static id<MTLComputePipelineState> g_q6k_sgemv_bp = nil;
 static id<MTLComputePipelineState> g_q6k_sgemv_bp_add = nil;
@@ -327,6 +329,30 @@ int stratum_metal_init(const char* metallib_path,
             if (!g_q2k_sgemv) {
                 fprintf(stderr, "Metal: q2k pipeline creation failed: %s\n",
                         [[err localizedDescription] UTF8String]);
+            }
+        }
+        /* opt-in coalesced Q2K GEMV (STRATUM_Q2K_COAL=1): byte-optimal
+         * 8-thread/row mapping, 1.46-1.77x the per-row kernel at 27B shapes */
+        id<MTLFunction> fnq2c = [g_lib newFunctionWithName:@"q2k_sgemv_row_coalesced32"];
+        if (fnq2c) {
+            g_q2k_sgemv_coal = [g_device newComputePipelineStateWithFunction:fnq2c error:&err];
+            if (!g_q2k_sgemv_coal) {
+                fprintf(stderr, "Metal: q2k_coal pipeline creation failed: %s\n",
+                        [[err localizedDescription] UTF8String]);
+            } else if (getenv("STRATUM_Q2K_COAL") && atoi(getenv("STRATUM_Q2K_COAL"))) {
+                fprintf(stderr, "  Metal: loaded q2k_sgemv_row_coalesced32 (STRATUM_Q2K_COAL=1)\n");
+            }
+        }
+        /* opt-in coalesced16 Q4K GEMV (STRATUM_Q4K_COAL=1): 16 rows/tg,
+         * 1.02-1.59x the per-row kernel at N >= 4096 (probe: K 5120/17408) */
+        id<MTLFunction> fnq4c = [g_lib newFunctionWithName:@"q4k_sgemv_row_coalesced16"];
+        if (fnq4c) {
+            g_q4k_sgemv_coal16 = [g_device newComputePipelineStateWithFunction:fnq4c error:&err];
+            if (!g_q4k_sgemv_coal16) {
+                fprintf(stderr, "Metal: q4k_coal16 pipeline creation failed: %s\n",
+                        [[err localizedDescription] UTF8String]);
+            } else if (getenv("STRATUM_Q4K_COAL") && atoi(getenv("STRATUM_Q4K_COAL"))) {
+                fprintf(stderr, "  Metal: loaded q4k_sgemv_row_coalesced16 (STRATUM_Q4K_COAL=1)\n");
             }
         }
         id<MTLFunction> fnsg = [g_lib newFunctionWithName:@"swiglu_inplace"];
@@ -2140,6 +2166,39 @@ int stratum_metal_nc_sgemv2(const void* wptr, size_t nbytes, int gguf_type,
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
             [enc endEncoding];
         } else {
+        static int s_q2k_coal = -1;
+        if (s_q2k_coal < 0) s_q2k_coal = getenv("STRATUM_Q2K_COAL") ? atoi(getenv("STRATUM_Q2K_COAL")) : 0;
+        static int s_q4k_coal = -1;
+        if (s_q4k_coal < 0) s_q4k_coal = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
+        static int s_q4k_coal_nmin = -1;
+        if (s_q4k_coal_nmin < 0) { const char* e = getenv("STRATUM_Q4K_COAL_NMIN"); s_q4k_coal_nmin = e ? atoi(e) : 4096; }
+        if (gguf_type == 10 && B == 1 && s_q2k_coal && g_q2k_sgemv_coal) {
+            /* opt-in coalesced path (STRATUM_Q2K_COAL=1): 32 rows/tg, 8 thr/row */
+            uint32_t N_u32 = (uint32_t)N;
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+            [enc setComputePipelineState:g_q2k_sgemv_coal];
+            [enc setBuffer:wbuf     offset:0 atIndex:0];
+            [enc setBuffer:g_xbatch offset:0 atIndex:1];
+            [enc setBuffer:g_ybatch offset:0 atIndex:2];
+            [enc setBytes:&K_u32    length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32    length:sizeof(uint32_t) atIndex:4];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32),1,1)
+                threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            [enc endEncoding];
+        } else if (gguf_type == 12 && B == 1 && N >= s_q4k_coal_nmin && s_q4k_coal && g_q4k_sgemv_coal16) {
+            /* opt-in coalesced16 path (STRATUM_Q4K_COAL=1): 16 rows/tg, 16 thr/row */
+            uint32_t N_u32 = (uint32_t)N;
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+            [enc setComputePipelineState:g_q4k_sgemv_coal16];
+            [enc setBuffer:wbuf     offset:0 atIndex:0];
+            [enc setBuffer:g_xbatch offset:0 atIndex:1];
+            [enc setBuffer:g_ybatch offset:0 atIndex:2];
+            [enc setBytes:&K_u32    length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32    length:sizeof(uint32_t) atIndex:4];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 15) / 16),1,1)
+                threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            [enc endEncoding];
+        } else {
         for (int b = 0; b < B; b++) {
             id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
             [enc setComputePipelineState:pso];
@@ -2150,6 +2209,7 @@ int stratum_metal_nc_sgemv2(const void* wptr, size_t nbytes, int gguf_type,
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
             [enc endEncoding];
+        }
         }
         }
         [cmd commit];
@@ -3185,6 +3245,39 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
             [enc endEncoding];
         } else {
+            static int s_q2k_coal = -1;
+            if (s_q2k_coal < 0) s_q2k_coal = getenv("STRATUM_Q2K_COAL") ? atoi(getenv("STRATUM_Q2K_COAL")) : 0;
+            static int s_q4k_coal = -1;
+            if (s_q4k_coal < 0) s_q4k_coal = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
+            static int s_q4k_coal_nmin = -1;
+            if (s_q4k_coal_nmin < 0) { const char* e = getenv("STRATUM_Q4K_COAL_NMIN"); s_q4k_coal_nmin = e ? atoi(e) : 4096; }
+            if (gguf_type == 10 && B == 1 && s_q2k_coal && g_q2k_sgemv_coal) {
+                /* opt-in coalesced Q2K GEMV in the batch path (STRATUM_Q2K_COAL=1) */
+                uint32_t N_u32 = (uint32_t)N;
+                id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+                [enc setComputePipelineState:g_q2k_sgemv_coal];
+                [enc setBuffer:wbuf      offset:woff atIndex:0];
+                [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff atIndex:1];
+                [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff atIndex:2];
+                [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
+                [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 31) / 32),1,1)
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                [enc endEncoding];
+            } else if (gguf_type == 12 && B == 1 && N >= s_q4k_coal_nmin && s_q4k_coal && g_q4k_sgemv_coal16) {
+                /* opt-in coalesced16 Q4K GEMV in the batch path (STRATUM_Q4K_COAL=1) */
+                uint32_t N_u32 = (uint32_t)N;
+                id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+                [enc setComputePipelineState:g_q4k_sgemv_coal16];
+                [enc setBuffer:wbuf      offset:woff atIndex:0];
+                [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff atIndex:1];
+                [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff atIndex:2];
+                [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
+                [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 15) / 16),1,1)
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                [enc endEncoding];
+            } else {
             for (int b = 0; b < B; b++) {
                 id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
                 [enc setComputePipelineState:pso];
@@ -3195,6 +3288,7 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
                     threadsPerThreadgroup:MTLSizeMake(64,1,1)];
                 [enc endEncoding];
+            }
             }
         }
         return 0;
