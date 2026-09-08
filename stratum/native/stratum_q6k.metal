@@ -74,6 +74,87 @@ kernel void q6k_sgemv_row(
     }
 }
 
+/* V2: Q6_K sgemv coalesced16 — 16 rows per threadgroup (vs 1 row/tg above).
+ * 256 threads = 16 rows x 16 threads/row. lane in [0,16): half_idx = lane>>3
+ * (which 128-value half), t8 = lane&7 (thread within half, l0 = t8*4, is = t8>>2).
+ * Each thread covers 4 consecutive l-iterations of its half: 4 values each
+ * from ql[l], ql[l+32], qh[l] — full 210-byte block coverage across the
+ * 16 lanes. Butterfly reduction over the 16 lanes of each row (rows are
+ * 16-aligned within the 32-lane simd group). Lane 0 writes y[row].
+ * Tail-safe: rr clamp + write guarded by row < N_total.
+ *
+ * Opt-in via STRATUM_Q6K_COAL=1, dispatched for gguf_type 14, B==1.
+ * Probe (metal_q6k_coalesced16_probe.m, batched x8 submission):
+ * 221.7 GB/s at N=10240 K=5120 (attn_qkv shape) and 211-245 GB/s at
+ * N=248320 (LM head) vs 117-133 GB/s for q6k_sgemv_row — 1.80x,
+ * saturating the ~200 GB/s NoCopy read ceiling. Numeric check vs engine
+ * scalar: max|d| 3.2e-3 (same magnitude as the production kernel's own
+ * 2.0e-3 vs the same reference — FP reassociation noise, not a mapping
+ * difference; the two GPU kernels agree with each other within 3.9e-3). */
+kernel void q6k_sgemv_row_coalesced16(
+    device const block_q6_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],
+    constant uint&           N_total     [[buffer(4)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;    /* 0..15 */
+    const uint lane      = tid & 15;    /* 0..15 */
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q6_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint half_idx = lane >> 3;    /* 0..1: which 128-value half */
+    const uint t8       = lane & 7;     /* 0..7: thread within half */
+    const uint l0       = t8 * 4;       /* starting l: 0,4,8,...,28 */
+    const uint is       = t8 >> 2;      /* 0 for t8<4, 1 for t8>=4 */
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q6_K& b = row_blocks[blk];
+        const float d = float(b.d);
+        const uint n = half_idx * 128;
+        const device uchar* ql = b.ql + n / 2;
+        const device uchar* qh = b.qh + n / 4;
+        const device char*  s  = b.scales + n / 16;
+        const uint base = blk * 256 + n;
+
+        float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
+        #pragma unroll
+        for (int dl = 0; dl < 4; dl++) {
+            const uint l = l0 + (uint)dl;
+            const uchar ql_lo = ql[l];
+            const uchar ql_hi = ql[l + 32];
+            const uchar qh_b  = qh[l];
+            const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
+            const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
+            const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
+            const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
+            a1 += float(q1) * x[base + l +  0];
+            a2 += float(q2) * x[base + l + 32];
+            a3 += float(q3) * x[base + l + 64];
+            a4 += float(q4) * x[base + l + 96];
+        }
+        partial += d * float(s[is + 0]) * a1;
+        partial += d * float(s[is + 2]) * a2;
+        partial += d * float(s[is + 4]) * a3;
+        partial += d * float(s[is + 6]) * a4;
+    }
+
+    /* 16-lane reduction within each row group */
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] = tot;
+}
+
 /* Batched Q6_K, generated per literal BC for exact register allocation. */
 #define DEFINE_Q6K_BATCH_KERNEL(BC) \
 kernel void q6k_sgemv_row_batched_b##BC( \
