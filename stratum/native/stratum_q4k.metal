@@ -123,10 +123,13 @@ kernel void q4k_sgemv_row_coalesced(
         uint shift = (sub_block & 1) ? 4u : 0u;
         uint elem_offset = blk * 256 + sub_block * 32;
 
-        /* 4 elements per thread, 8 threads per sub-block = 32 elements */
+        /* 4 elements per thread x 2 loads at stride 16: threads (elem=0..3)
+         * cover byte offsets {0,16},{4,20},{8,24},{12,28} = full 32-byte window.
+         * (An earlier version looped l<4 — one load, only bytes 0..15: it read
+         * HALF the sub-block. Wrong results; inflated bandwidth. Fixed.) */
         float qx = 0.0f, xs = 0.0f;
         uchar4 mask = uchar4(0xF);
-        for (int l = 0; l < 4; l += 4) {
+        for (int l = 0; l < 32; l += 16) {
             uchar4 raw = *(device const uchar4*)(qs_pair + elem * 4 + l);
             uchar4 nib = (raw >> uchar4((uchar)shift)) & mask;
             float4 nf  = float4(nib);
@@ -168,6 +171,75 @@ kernel void q4k_sgemv_row_coalesced(
         }
         if (sb_idx == 0) y[row] = sum;
     }
+}
+
+/* V15: Q4_K sgemv coalesced16 — 16 rows per threadgroup (vs V12's 8).
+ * 256 threads = 16 rows x 16 threads/row. lane in [0,16): sub_block = lane>>1,
+ * elem = lane&1 — 2 threads per sub-block, each covers 4 uchar4 loads at
+ * stride 8 (byte offsets {0,8,16,24}+{4,12,20,28} = full 32-byte window).
+ * Butterfly reduction over the 16 lanes of each row (rows are 16-aligned
+ * within the 32-lane simd group, so masks 8/4/2/1 stay in-row).
+ * Lane 0 writes y[row]. Tail-safe: rr clamp + write guarded by row < N_total.
+ *
+ * Opt-in via STRATUM_Q4K_COAL=1, dispatched for gguf_type 12, B==1, N >= 4096.
+ * Probe (metal_q4k_coalesced16_probe.m, batched x8 submission): 166-184 GB/s
+ * vs q4k_sgemv_row's 105-175 GB/s at N in [6144, 51200], K in {5120, 17408}
+ * (1.02-1.59x); parity at N=2048. max|d| vs engine scalar ~1.7e-5 (same as
+ * production kernels' FP reassociation noise). */
+kernel void q4k_sgemv_row_coalesced16(
+    device const block_q4_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],
+    constant uint&           N_total     [[buffer(4)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;    /* 0..15 */
+    const uint lane      = tid & 15;    /* 0..15 */
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint sub_block = lane >> 1;   /* 0..7 */
+    const uint elem      = lane & 1;    /* 0..1 */
+    const uint shift     = (sub_block & 1) ? 4u : 0u;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q4_K& b = row_blocks[blk];
+        const float d    = float(b.d);
+        const float dmin = float(b.dmin);
+        uchar sc, m;
+        unpack_scale_min(sub_block, b.scales, sc, m);
+        const float d_sc   = d    * float(sc);
+        const float dmin_m = dmin * float(m);
+
+        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+
+        float qx = 0.0f, xs = 0.0f;
+        #pragma unroll
+        for (int l4 = 0; l4 < 4; l4++) {
+            uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
+            uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xv  = *(device const float4*)(x + xoff + 8u*l4);
+            qx += dot(float4(nib), xv);
+            xs += xv.x + xv.y + xv.z + xv.w;
+        }
+        partial += d_sc * qx - dmin_m * xs;
+    }
+
+    /* 16-lane reduction within each row group */
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] = tot;
 }
 
 /* V7: Q4_K sgemv with sparse block skip.

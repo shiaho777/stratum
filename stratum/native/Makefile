@@ -64,6 +64,11 @@ else
   METAL_LIB :=
 endif
 
+# METAL_LIB is only defined above, after `all:` was first declared — and
+# prerequisite lists expand at parse time, so `all: stratum $(METAL_LIB)`
+# saw an empty $(METAL_LIB). Re-declare to append the real prerequisite.
+all: $(METAL_LIB)
+
 # Architecture implementations are auto-collected: drop a new
 # stratum_arch_*.inc.c into this directory and rebuild — stratum.c
 # never needs to be edited to register an architecture.
