@@ -1,0 +1,69 @@
+MULTISEQ B>1 GEMV kernel scaling on the 27B shapes
+====================================================
+Date: 2026-09-08 (config recorded per AGENTS.md "Recording experiment
+configuration")
+
+Motivation: the best-of-N sampling mode (PR #52) forces ISC off, so every
+stream runs independent compute through the B>1 batched GEMV kernels. The
+B=1 collapse (fixed by the coalesced kernels, PRs #46/#48) had never been
+measured for the B>1 family.
+
+Configuration (all measurements):
+  probe            : metal_q4k_batched_probe.m (synthetic Q4_K weights,
+                     engine layout; batched x8 command-buffer submission)
+  shape            : N=6144 K=5120 (27B attn_gate/output/ssm_out class)
+  numeric reference: stratum_q4k.h q4k_dot_row_scalar per stream
+  B=1 reference    : prod row64 140.7 / coal16 170.8 GB/s sweep (PR #46 data)
+
+Results (weight-sweep GB/s — weights read once per pass by design):
+
+  B | batched_b | bparallel | coal_mb v1 | coal_mb v2 (merged)
+  --+-----------+-----------+------------+-----------
+  1 |    (140.7 ref)         |            | 170.8 (B=1 coal16)
+  2 |    ~101   |           |            |
+  4 |    43.8   |   44.3    |   48.5     |   56.5
+  8 |    14.9   |   19.6    |   23.3     |   37.8
+ 16 |     4.9   |    8.2    |   11.5     |   (not generated, B cap 8)
+
+Kernel families:
+  batched_b  : 1 tg/row, dequant once + partial[BC] register array —
+               register spills at high BC collapse it.
+  bparallel  : 2D (N,B) grid — re-reads the weights per stream; L2 does
+               not absorb the re-reads at these sizes.
+  coal_mb v1 : coalesced16 mapping, runtime-B, s-loop outer — re-dequants
+               per stream (B x dequant ALU).
+  coal_mb v2 : per-BC literal, dequant hoisted out of the stream loop,
+               partial[BC] registers, x[] L2-resident (2.5x at B=8).
+               MERGED as q4k_sgemv_coal16_mb_b{2..8} behind
+               STRATUM_Q4K_COAL=1.
+
+Numeric validation: v2 max|d|=3.4e-3 vs CPU scalar per stream (same
+magnitude as every production kernel's own deviation — FP reassociation
+noise). End-to-end tiny qwen35 Q4_K, MULTISEQ=4 greedy: NC+COAL_MB vs
+CPU token-identical. Under temp>0 sampling, NC and CPU sequences diverge
+(pre-existing NC-vs-CPU FP drift amplified by sampling; plain-NC control
+diverges identically without any COAL kernel).
+
+Interpretation — why B>1 sweeps cannot stay at 170 GB/s:
+  Per weight value the sweep does B FMAs; at B=8 the kernel is ALU-bound,
+  not bandwidth-bound (B=1 coal16 is simultaneously near the 200 GB/s
+  DRAM ceiling and near ALU peak — a balanced kernel). The measured
+  aggregate-per-tensor rate B/t improves ~2-2.5x from B=1 to B=8, NOT 8x:
+  compute scales with B and becomes the wall. Consequences:
+  - MULTISEQ aggregate throughput on the NC path is compute-bounded, not
+    bandwidth-bounded; per-stream rate falls as B grows (0.29 tok/s @ N=8
+    vs 0.25 single, streaming mode, 2026-09-08).
+  - Any "N streams = N x aggregate" claim needs independent-prompt
+    verification. Same-prompt CLI runs fan out through ISC (logical=N,
+    phys=1) and count replicas — do not read them as serving throughput.
+  - The documented 130 tok/s @ 64 streams (AGENTS.md, legacy
+    STRATUM_GPU/GPU_BATCH_FULL path — a different code path, not
+    re-measured here) deserves re-verification with distinct prompts.
+
+Caveats:
+  - Synthetic weights, single shape class (N=6144 K=5120); the FFN
+    Q2_K tensors (52% of every layer) use a different B>1 kernel family
+    not measured here.
+  - Streaming-mode CPU multiseq numbers are I/O-bound and hide this
+    compute wall; hot-mode end-to-end was not measurable on this
+    machine (swap 89-97% throughout).

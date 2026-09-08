@@ -242,6 +242,95 @@ kernel void q4k_sgemv_row_coalesced16(
     if (lane == 0 && row < N_total) y[row] = tot;
 }
 
+/* V16: multi-stream coalesced16 — fixes the B>1 sweep collapse on the
+ * multiseq / best-of-N compute path. The per-row batched_b family
+ * collapses under register pressure (B=8 sweep 14.9 GB/s vs 170.8 at B=1)
+ * and bparallel re-reads weights per stream (19.6 GB/s). This keeps the
+ * coalesced16 mapping (16 rows/tg, 16 thr/row, full 32-byte window) and
+ * hoists the dequant OUT of the stream loop: nib4 registers are computed
+ * once per weight chunk, all BC streams' FMA chains run against the
+ * L2-resident x. Per-BC literal generation keeps partial[BC] in registers.
+ * Probe (N=6144 K=5120, batched x8): B=4 56.5 GB/s, B=8 37.8 GB/s sweep
+ * — 1.3x/2.5x over the incumbent kernels. Numeric: max|d| 3.4e-3 vs
+ * engine scalar (same FP-noise magnitude as production kernels).
+ * Opt-in STRATUM_Q4K_COAL=1 (same flag as the B=1 coalesced16), B 2..8,
+ * nc_batch_add_streams path only (where qwen35 multiseq dispatches). */
+#define DEFINE_Q4K_COAL_MB(BC) \
+kernel void q4k_sgemv_coal16_mb_b##BC( \
+    device const block_q4_K* W           [[buffer(0)]], \
+    device const float*      x           [[buffer(1)]], \
+    device float*            y           [[buffer(2)]], \
+    constant uint&           K           [[buffer(3)]], \
+    constant uint&           N_total     [[buffer(4)]], \
+    constant uint&           B           [[buffer(5)]], \
+    uint tgid    [[threadgroup_position_in_grid]], \
+    uint tid     [[thread_position_in_threadgroup]], \
+    uint tg_size [[threads_per_threadgroup]]) \
+{ \
+    if (tg_size != 256) return; \
+    const uint blocks_per_row = K / 256; \
+    const uint local_row = tid >> 4; \
+    const uint lane      = tid & 15; \
+    const uint row = tgid * 16u + local_row; \
+    const uint rr  = min(row, N_total - 1u); \
+    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row; \
+    const uint sub_block = lane >> 1; \
+    const uint elem      = lane & 1; \
+    const uint shift     = (sub_block & 1) ? 4u : 0u; \
+    float partial[BC]; \
+    for (uint s = 0; s < BC; s++) partial[s] = 0.0f; \
+    for (uint blk = 0; blk < blocks_per_row; blk++) { \
+        const device block_q4_K& b = row_blocks[blk]; \
+        const float d    = float(b.d); \
+        const float dmin = float(b.dmin); \
+        uchar sc, m; \
+        unpack_scale_min(sub_block, b.scales, sc, m); \
+        const float d_sc   = d    * float(sc); \
+        const float dmin_m = dmin * float(m); \
+        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4; \
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 4; \
+        float4 nib4[4]; \
+        _Pragma("unroll") \
+        for (int l4 = 0; l4 < 4; l4++) { \
+            uchar4 raw = *(device const uchar4*)(qp + 8u*l4); \
+            nib4[l4] = float4((raw >> uchar4((uchar)shift)) & uchar4(0xF)); \
+        } \
+        for (uint s = 0; s < BC; s++) { \
+            device const float* xs = x + (size_t)s * K + xoff; \
+            float4 qx4 = float4(0.0f), xs4 = float4(0.0f); \
+            _Pragma("unroll") \
+            for (int l4 = 0; l4 < 4; l4++) { \
+                float4 xv = *(device const float4*)(xs + 8u*l4); \
+                qx4 += nib4[l4] * xv; \
+                xs4 += xv; \
+            } \
+            partial[s] += d_sc * (qx4.x + qx4.y + qx4.z + qx4.w) \
+                        - dmin_m * (xs4.x + xs4.y + xs4.z + xs4.w); \
+        } \
+    } \
+    threadgroup float tgp[16][16]; \
+    for (uint s = 0; s < BC; s++) { \
+        float tot = partial[s]; \
+        tot += simd_shuffle_xor(tot, 8); \
+        tot += simd_shuffle_xor(tot, 4); \
+        tot += simd_shuffle_xor(tot, 2); \
+        tot += simd_shuffle_xor(tot, 1); \
+        if (lane == 0) tgp[local_row][s] = tot; \
+    } \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    if (lane == 0 && row < N_total) { \
+        for (uint s = 0; s < BC; s++) y[(size_t)s * N_total + row] = tgp[local_row][s]; \
+    } \
+}
+
+DEFINE_Q4K_COAL_MB(2)
+DEFINE_Q4K_COAL_MB(3)
+DEFINE_Q4K_COAL_MB(4)
+DEFINE_Q4K_COAL_MB(5)
+DEFINE_Q4K_COAL_MB(6)
+DEFINE_Q4K_COAL_MB(7)
+DEFINE_Q4K_COAL_MB(8)
+
 /* V7: Q4_K sgemv with sparse block skip.
  * If the input x's 32-element sub-block max|x| < threshold * global_max_x,
  * skip that sub-block entirely — saves weight reads + computation.
