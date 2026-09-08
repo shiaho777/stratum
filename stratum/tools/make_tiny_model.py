@@ -26,6 +26,7 @@ import struct
 GGML_F32 = 0
 GGML_F16 = 1
 GGML_Q4_K = 12
+GGML_Q6_K = 14
 
 # Base geometry — small enough to build in milliseconds, big enough to
 # exercise GQA attention, RoPE, FFN, and the F16 dequant matmul path.
@@ -117,17 +118,78 @@ def q4k_encode_mat(vals, k, n):
     return bytes(out)
 
 
+def q6k_encode_mat(vals, k, n):
+    """Encode a [k, n] row-major f32 matrix as Q6_K blocks.
+
+    Layout matches stratum_q6k.h exactly: per 256-element block,
+    ql[128] (low 4 bits) + qh[64] (high 2 bits) + scales[16] (int8) + d(f16).
+    Two 128-value halves, each with 2 scale groups of 64 values. Within a
+    half, l in [0,32) produces 4 values:
+      q1 = ql[l] lo    | qh[l] bits 0-1,  x[g0 + l],     s[is+0]
+      q2 = ql[l+32] lo | qh[l] bits 2-3,  x[g1 + l],     s[is+2]
+      q3 = ql[l] hi    | qh[l] bits 4-5,  x[g0 + l+32],  s[is+4]
+      q4 = ql[l+32] hi | qh[l] bits 6-7,  x[g1 + l+32],  s[is+6]
+    with is = l/16, stored code in [0,63], dequant w = d * s * (code - 32).
+    Encode per 64-value group: s_g = (mx-mn)/62, mid = (mx+mn)/2,
+    code = round((x - mid)/s_g) + 32. d folds the residual scale: the int8
+    scale stores round(s_g * 63) and d = s_g / stored_s approximates 1
+    (kept exact by storing d = s_g*63/stored as fp16 — simplest is d=1.0
+    with stored_s = round(s_g) clamped 1..63; relative error <= ~1%).
+    """
+    assert k % 256 == 0, 'Q6_K requires k % 256 == 0'
+    out = bytearray()
+    nb = k // 256
+    for r in range(n):
+        row = vals[r * k:(r + 1) * k]
+        for b in range(nb):
+            blk = row[b * 256:(b + 1) * 256]
+            ql = bytearray(128)
+            qh = bytearray(64)
+            sc = [0] * 16
+            for half in range(2):
+                n0 = half * 128
+                groups = []
+                for g in range(2):
+                    grp = blk[n0 + g * 64: n0 + g * 64 + 64]
+                    mn, mx = min(grp), max(grp)
+                    s_g = max((mx - mn) / 62.0, 1e-8)
+                    mid = (mx + mn) / 2.0
+                    codes = [max(0, min(63, int(round((x - mid) / s_g) + 32)))
+                             for x in grp]
+                    sc[half * 8 + g * 4 + 0] = max(1, min(63, int(round(s_g))))
+                    groups.append(codes)
+                for l in range(32):
+                    c1 = groups[0][l]          # x[n0+g0+ l]    s[is+0]
+                    c2 = groups[1][l]          # x[n0+g1+ l]    s[is+2]
+                    c3 = groups[0][l + 32]     # x[n0+g0+32+l]  s[is+4]
+                    c4 = groups[1][l + 32]     # x[n0+g1+32+l]  s[is+6]
+                    li = half * 64 + l         # ql: 64 bytes per half
+                    ql[li] = (c1 & 0xF) | ((c3 & 0xF) << 4)
+                    ql[li + 32] = (c2 & 0xF) | ((c4 & 0xF) << 4)
+                    hi = half * 32 + l         # qh: 32 bytes per half
+                    qh[hi] = (((c1 >> 4) & 3) | (((c2 >> 4) & 3) << 2) |
+                              (((c3 >> 4) & 3) << 4) | (((c4 >> 4) & 3) << 6))
+            out += bytes(ql)
+            out += bytes(qh)
+            out += bytes(sc)
+            out += struct.pack('<e', 1.0)
+    return bytes(out)
+
+
 def build_entries(arch, weights, rng):
-    G = Q4K if weights == 'q4k' else BASE
+    G = Q4K if weights in ('q4k', 'q6k') else BASE
     NL, H, NQ, NK, HD, FF, V = (G[k] for k in
                                 ('N_LAYERS', 'H', 'NQ', 'NK', 'HD', 'FF', 'V'))
-    wt = GGML_Q4_K if weights == 'q4k' else GGML_F16
+    wt = (GGML_Q4_K if weights == 'q4k' else
+          GGML_Q6_K if weights == 'q6k' else GGML_F16)
 
     def mat(k, n):
         scale = 1.0 / (k ** 0.5)
         vals = [rng.gauss(0.0, scale) for _ in range(k * n)]
         if weights == 'q4k':
             return wt, q4k_encode_mat(vals, k, n)
+        if weights == 'q6k':
+            return wt, q6k_encode_mat(vals, k, n)
         return GGML_F16, b''.join(struct.pack('<e', v) for v in vals)
 
     def norm_vec(n):
@@ -333,30 +395,30 @@ def kv_pairs(arch, weights):
         p = 'llama-moe'
         kvs = [
             kv_pair('general.architecture', p),
-            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights == 'q4k'
+            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights in ('q4k', 'q6k')
                     else BASE['N_LAYERS']),
             kv_pair(f'{p}.embedding_length',
-                    Q4K['H'] if weights == 'q4k' else BASE['H']),
+                    Q4K['H'] if weights in ('q4k', 'q6k') else BASE['H']),
             kv_pair(f'{p}.feed_forward_length',
-                    Q4K['FF'] if weights == 'q4k' else BASE['FF']),
+                    Q4K['FF'] if weights in ('q4k', 'q6k') else BASE['FF']),
             kv_pair(f'{p}.expert_count', MOE_N_EXP),
             kv_pair(f'{p}.expert_used_count', MOE_USED),
             kv_pair(f'{p}.attention.head_count',
-                    Q4K['NQ'] if weights == 'q4k' else BASE['NQ']),
+                    Q4K['NQ'] if weights in ('q4k', 'q6k') else BASE['NQ']),
             kv_pair(f'{p}.attention.head_count_kv',
-                    Q4K['NK'] if weights == 'q4k' else BASE['NK']),
+                    Q4K['NK'] if weights in ('q4k', 'q6k') else BASE['NK']),
             kv_pair(f'{p}.attention.key_length',
-                    Q4K['HD'] if weights == 'q4k' else BASE['HD']),
+                    Q4K['HD'] if weights in ('q4k', 'q6k') else BASE['HD']),
             kv_pair(f'{p}.attention.layer_norm_rms_epsilon', 1e-5),
             kv_pair(f'{p}.rope.freq_base', 10000.0),
             kv_pair(f'{p}.rope.dimension_count',
-                    Q4K['HD'] if weights == 'q4k' else BASE['HD']),
+                    Q4K['HD'] if weights in ('q4k', 'q6k') else BASE['HD']),
             kv_pair('general.alignment', 32),
         ]
         return b''.join(kvs), len(kvs)
 
     p = 'llama' if arch == 'llama' else 'qwen35'
-    G = Q4K if weights == 'q4k' else BASE
+    G = Q4K if weights in ('q4k', 'q6k') else BASE
     kvs = [
         kv_pair('general.architecture', p),
         kv_pair(f'{p}.block_count', G['N_LAYERS']),
@@ -389,7 +451,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arch', default='llama',
                     choices=['llama', 'qwen35', 'qwen35-hybrid', 'dit', 'moe'])
-    ap.add_argument('--weights', default='f16', choices=['f16', 'q4k'])
+    ap.add_argument('--weights', default='f16', choices=['f16', 'q4k', 'q6k'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
     args = ap.parse_args()
