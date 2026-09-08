@@ -36,6 +36,7 @@ static id<MTLComputePipelineState> g_q2k_sgemv = nil;
 static id<MTLComputePipelineState> g_q2k_sgemv_coal = nil;
 static id<MTLComputePipelineState> g_q4k_sgemv_coal16 = nil;
 static id<MTLComputePipelineState> g_q6k_sgemv_coal16 = nil;
+static id<MTLComputePipelineState> g_q4k_coal_mb[9] = {nil}; /* B=2..8 */
 static id<MTLComputePipelineState> g_q2k_sgemv_b[33] = {nil};
 static id<MTLComputePipelineState> g_q6k_sgemv_bp = nil;
 static id<MTLComputePipelineState> g_q6k_sgemv_bp_add = nil;
@@ -367,6 +368,22 @@ int stratum_metal_init(const char* metallib_path,
             } else if (getenv("STRATUM_Q6K_COAL") && atoi(getenv("STRATUM_Q6K_COAL"))) {
                 fprintf(stderr, "  Metal: loaded q6k_sgemv_row_coalesced16 (STRATUM_Q6K_COAL=1)\n");
             }
+        }
+        /* opt-in multi-stream coalesced16 Q4K (STRATUM_Q4K_COAL=1, B=2..8):
+         * fixes the batched_b B>1 sweep collapse (14.9 -> 37.8 GB/s at B=8) */
+        if (getenv("STRATUM_Q4K_COAL") && atoi(getenv("STRATUM_Q4K_COAL"))) {
+            int loaded_mb = 0;
+            for (int b = 2; b <= 8; b++) {
+                char nmb[48];
+                snprintf(nmb, sizeof(nmb), "q4k_sgemv_coal16_mb_b%d", b);
+                id<MTLFunction> fnmb = [g_lib newFunctionWithName:
+                    [NSString stringWithUTF8String:nmb]];
+                if (!fnmb) continue;
+                g_q4k_coal_mb[b] = [g_device newComputePipelineStateWithFunction:fnmb error:&err];
+                if (g_q4k_coal_mb[b]) loaded_mb++;
+            }
+            fprintf(stderr, "  Metal: loaded q4k coalesced16 multi-stream B=2..8 (%d PSOs)\n",
+                    loaded_mb);
         }
         id<MTLFunction> fnsg = [g_lib newFunctionWithName:@"swiglu_inplace"];
         if (fnsg) {
@@ -3246,6 +3263,11 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
         g_ncb_ytasks[g_ncb_ny].holen = 0;
         g_ncb_ny++;
 
+        static int s_q4k_coal = -1;
+        if (s_q4k_coal < 0) s_q4k_coal = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
+        static int s_q4k_coal_nmin = -1;
+        if (s_q4k_coal_nmin < 0) { const char* e = getenv("STRATUM_Q4K_COAL_NMIN"); s_q4k_coal_nmin = e ? atoi(e) : 4096; }
+
         if (use_bp2d) {
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
             id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
@@ -3258,6 +3280,23 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, (NSUInteger)B, 1)
                 threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+            [enc endEncoding];
+        } else if (B > 1 && gguf_type == 12 && B >= 2 && B <= 8
+                   && s_q4k_coal && g_q4k_coal_mb[B]
+                   && N >= s_q4k_coal_nmin) {
+            /* opt-in multi-stream coalesced16 Q4K (STRATUM_Q4K_COAL=1):
+             * 2.5x the batched_b sweep rate at B=8 (probe-measured) */
+            uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            [enc setComputePipelineState:g_q4k_coal_mb[B]];
+            [enc setBuffer:wbuf      offset:woff atIndex:0];
+            [enc setBuffer:g_ncb_xbuf offset:(size_t)xoff atIndex:1];
+            [enc setBuffer:g_ncb_ybuf offset:(size_t)yoff atIndex:2];
+            [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32     length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 15) / 16),1,1)
+                threadsPerThreadgroup:MTLSizeMake(256,1,1)];
             [enc endEncoding];
         } else if (B > 1 && bpso) {
             uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
@@ -3275,12 +3314,8 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
         } else {
             static int s_q2k_coal = -1;
             if (s_q2k_coal < 0) s_q2k_coal = getenv("STRATUM_Q2K_COAL") ? atoi(getenv("STRATUM_Q2K_COAL")) : 0;
-            static int s_q4k_coal = -1;
-            if (s_q4k_coal < 0) s_q4k_coal = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
             static int s_q6k_coal = -1;
             if (s_q6k_coal < 0) s_q6k_coal = getenv("STRATUM_Q6K_COAL") ? atoi(getenv("STRATUM_Q6K_COAL")) : 0;
-            static int s_q4k_coal_nmin = -1;
-            if (s_q4k_coal_nmin < 0) { const char* e = getenv("STRATUM_Q4K_COAL_NMIN"); s_q4k_coal_nmin = e ? atoi(e) : 4096; }
             if (gguf_type == 10 && B == 1 && s_q2k_coal && g_q2k_sgemv_coal) {
                 /* opt-in coalesced Q2K GEMV in the batch path (STRATUM_Q2K_COAL=1) */
                 uint32_t N_u32 = (uint32_t)N;
