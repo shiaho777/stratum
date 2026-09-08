@@ -13544,6 +13544,35 @@ static float q35_rng_uniform(void) {
     return (float)(q35_pcg32() >> 8) * (1.0f / 16777216.0f);
 }
 
+/* §8 MULTISEQ per-stream sampling: N streams through one weight sweep
+ * with INDEPENDENT RNGs — same prompt, N diverse continuations
+ * (best-of-N executor). ISC must be off in sampling mode (replica state
+ * fork has no path), so every stream is uniq and owns a phys slot. */
+static uint64_t q35_g_ms_rng_st[q35_B_MAX];
+static uint64_t q35_g_ms_rng_inc[q35_B_MAX];
+static int q35_g_ms_sampling = 0;
+static uint32_t q35_ms_pcg32(int s) {
+    if (s < 0) s = 0;
+    if (s >= q35_B_MAX) s = q35_B_MAX - 1;
+    uint64_t old = q35_g_ms_rng_st[s];
+    q35_g_ms_rng_st[s] = old * 6364136223846793005ULL + q35_g_ms_rng_inc[s];
+    uint32_t xorshifted = (uint32_t)(((old >> 18u) ^ old) >> 27u);
+    uint32_t rot = (uint32_t)(old >> 59u);
+    return (xorshifted >> rot) | (xorshifted << ((-(int)rot) & 31));
+}
+static void q35_ms_rng_seed_streams(uint64_t seed, int B) {
+    for (int s = 0; s < B && s < q35_B_MAX; s++) {
+        q35_g_ms_rng_st[s] = 0u;
+        q35_g_ms_rng_inc[s] = ((seed + (uint64_t)s * 0x9E3779B97F4A7C15ULL) << 1u) | 1u;
+        (void)q35_ms_pcg32(s);
+        q35_g_ms_rng_st[s] += 0x853c49e6748fea9bULL;
+        (void)q35_ms_pcg32(s);
+    }
+}
+static float q35_ms_rng_uniform(int s) {
+    return (float)(q35_ms_pcg32(s) >> 8) * (1.0f / 16777216.0f);
+}
+
 static float q35_g_temp       = 0.0f;
 static float q35_g_draft_temp = 0.0f;
 static float q35_g_top_p      = 1.0f;
@@ -13628,6 +13657,25 @@ static int q35_sample_from_dist(const q35_Dist* d) {
         if (r < cum) return d->it[i].id;
     }
     return d->it[d->n - 1].id;
+}
+
+/* temp-aware per-stream pick (§8 MULTISEQ sampling): greedy (temp<=0)
+ * stays bit-exact argmax; temp>0 samples from the top-k/top-p dist with
+ * stream s's own RNG. For the chain second position the logits were
+ * computed by feeding the accepted draft token, so this samples from the
+ * exact continued distribution — Leviathan-Chen exactness is preserved. */
+static int q35_ms_pick_from_logits(const float* logits, int s) {
+    int V = q35_g_cfg.vocab_size;
+    if (q35_g_temp <= 0.0f) return stratum_argmax(logits, V);
+    q35_Dist d;
+    q35_build_dist(logits, V, q35_g_temp, q35_g_top_k, q35_g_top_p, &d);
+    float r = q35_ms_rng_uniform(s);
+    double cum = 0.0;
+    for (int i = 0; i < d.n; i++) {
+        cum += d.it[i].p;
+        if (r < cum) return d.it[i].id;
+    }
+    return d.it[d.n - 1].id;
 }
 
 static float q35_dist_prob(const q35_Dist* d, int id) {
@@ -14470,6 +14518,30 @@ server_request:
             if (strcmp(e_ms, "auto") == 0 || strcmp(e_ms, "AUTO") == 0) ms_B = -1;
             else ms_B = atoi(e_ms);
         }
+        /* Sampler env must be parsed BEFORE §8: multiseq honors STRATUM_TEMP
+         * as per-stream independent sampling (best-of-N executor). The parse
+         * further down (single-seq path) used to be the only one — multiseq
+         * ran before it and silently ignored the sampler. */
+        {
+            const char* e;
+            if ((e = getenv("STRATUM_TEMP"))) q35_g_temp = (float)atof(e);
+            if ((e = getenv("STRATUM_TOP_P"))) q35_g_top_p = (float)atof(e);
+            if ((e = getenv("STRATUM_TOP_K"))) q35_g_top_k = atoi(e);
+            uint64_t seed = 0x243F6A8885A308D3ULL;
+            if ((e = getenv("STRATUM_SEED"))) seed = (uint64_t)strtoull(e, NULL, 10);
+            if (ms_B >= 1 && q35_g_temp > 0.0f) {
+                q35_g_ms_sampling = 1;
+                q35_rng_seed(seed);
+                q35_ms_rng_seed_streams(seed, (ms_B > q35_B_MAX ? q35_B_MAX : ms_B));
+                fprintf(stderr,
+                        "  MULTISEQ sampler: temp=%.3f top_p=%.3f top_k=%d "
+                        "seed=%llu — %d streams sample INDEPENDENTLY "
+                        "(best-of-N; ISC off)\n",
+                        q35_g_temp, q35_g_top_p, q35_g_top_k,
+                        (unsigned long long)seed,
+                        (ms_B > q35_B_MAX ? q35_B_MAX : ms_B));
+            }
+        }
         if (ms_B == -1) {
             size_t fr = q35_free_reclaim_bytes();
             size_t conv_one = (size_t)q35_g_cfg.ssm_conv_dim * (size_t)q35_g_cfg.ssm_conv_kernel;
@@ -14516,11 +14588,14 @@ server_request:
         }
         if (ms_B >= 1) {
             if (ms_B < 1) ms_B = 1;
-            int isc_env = 1;
-            {
-                const char* ie = getenv("STRATUM_MS_ISC");
-                if (ie) isc_env = atoi(ie) != 0;
-            }
+                int isc_env = 1;
+                {
+                    const char* ie = getenv("STRATUM_MS_ISC");
+                    if (ie) isc_env = atoi(ie) != 0;
+                    /* sampling mode: replicas must own their state (no fork
+                     * path) — force the full per-stream prefill */
+                    if (q35_g_ms_sampling) isc_env = 0;
+                }
             int sparse_env = 1;
             {
                 const char* se = getenv("STRATUM_MS_SPARSE");
@@ -14649,6 +14724,19 @@ server_request:
             int* slot_of_stream = (int*)calloc((size_t)ms_B, sizeof(int));
             int* class_n = (int*)calloc((size_t)ms_B, sizeof(int));
             int* uniq_idx = (int*)calloc((size_t)ms_B, sizeof(int));
+            /* per-stream emitted-token log (sampling mode): rows=stream,
+             * cols=step — printed at the end so each continuation is a
+             * self-contained candidate for best-of-N scoring. seq_len[s]
+             * is an explicit counter: t0 comes from the post-prefill pick,
+             * t1/t2 from emit/chain — decoupled from gen_done's index. */
+            int* seq_log = NULL;
+            int* seq_len = NULL;
+            if (q35_g_ms_sampling) {
+                seq_log = (int*)calloc((size_t)ms_B * (size_t)(n_gen > 0 ? n_gen + 1 : 1),
+                                       sizeof(int));
+                seq_len = (int*)calloc((size_t)ms_B, sizeof(int));
+                if (!seq_log || !seq_len) { fprintf(stderr, "  ms sampling alloc failed\n"); return 1; }
+            }
             if (!nxt || !gen_done || !prev_tok || !uniq || !rep_of || !draft
                 || !have_draft || !slot_of_stream || !class_n || !uniq_idx) {
                 fprintf(stderr, "  V181 multiseq logical alloc failed B=%d\n", ms_B);
@@ -14701,6 +14789,7 @@ server_request:
                             free(nxt); free(gen_done); free(prev_tok);
                             free(uniq); free(rep_of); free(draft); free(have_draft);
                             free(slot_of_stream); free(class_n); free(uniq_idx);
+                            free(seq_log); free(seq_len);
                             return 1;
                         }
                         q35_g_ms_kvlen[0]++;
@@ -14718,6 +14807,7 @@ server_request:
                             free(nxt); free(gen_done); free(prev_tok);
                             free(uniq); free(rep_of); free(draft); free(have_draft);
                             free(slot_of_stream); free(class_n); free(uniq_idx);
+                            free(seq_log); free(seq_len);
                             return 1;
                         }
                         for (int s = 0; s < brun; s++) q35_g_ms_kvlen[s]++;
@@ -14737,10 +14827,19 @@ server_request:
                 }
             }
             {
-                int t0s = stratum_argmax(q35_g_logits_b[0], q35_g_cfg.vocab_size);
-                for (int s = 0; s < ms_B; s++) nxt[s] = t0s;
+                if (q35_g_ms_sampling) {
+                    /* per-stream independent first pick from the shared
+                     * prefill logits — N samples from one distribution */
+                    for (int s = 0; s < ms_B; s++) {
+                        nxt[s] = q35_ms_pick_from_logits(q35_g_logits_b[0], s);
+                        seq_log[(size_t)s * (n_gen + 1) + seq_len[s]++] = nxt[s];
+                    }
+                } else {
+                    int t0s = stratum_argmax(q35_g_logits_b[0], q35_g_cfg.vocab_size);
+                    for (int s = 0; s < ms_B; s++) nxt[s] = t0s;
+                }
                 if (n_prompt > 0 && ms_B > 0)
-                    q35_bg_observe(prompt[n_prompt - 1], t0s);
+                    q35_bg_observe(prompt[n_prompt - 1], nxt[0]);
             }
             clock_gettime(CLOCK_MONOTONIC, &t1);
             double pf = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
@@ -14749,6 +14848,9 @@ server_request:
             {
                 const char* ie = getenv("STRATUM_MS_ISC");
                 if (ie) isc_on = atoi(ie) != 0;
+                /* sampling mode: every stream is uniq (independent picks);
+                 * replica state-fork has no path — keep ISC off */
+                if (q35_g_ms_sampling) isc_on = 0;
             }
             int seal_env = 1;
             {
@@ -15950,6 +16052,7 @@ server_request:
                     free(nxt); free(gen_done); free(prev_tok);
                     free(uniq); free(rep_of); free(draft); free(have_draft);
                     free(slot_of_stream); free(class_n); free(uniq_idx);
+                    free(seq_log); free(seq_len);
                     return 1;
                 }
             }
@@ -16188,6 +16291,7 @@ server_request:
                         free(nxt); free(gen_done); free(prev_tok);
                         free(uniq); free(rep_of); free(draft); free(have_draft);
                         free(slot_of_stream); free(class_n); free(uniq_idx);
+                        free(seq_log); free(seq_len);
                         return 1;
                     }
                     if (n_u > q35_g_ms_B) n_u = q35_g_ms_B;
@@ -16232,6 +16336,7 @@ server_request:
                     free(nxt); free(gen_done); free(prev_tok);
                     free(uniq); free(rep_of); free(draft); free(have_draft);
                     free(slot_of_stream); free(class_n); free(uniq_idx);
+                    free(seq_log); free(seq_len);
                     return 1;
                 }
                 q35_g_ms_chain = 0;
@@ -16251,7 +16356,9 @@ server_request:
                 for (int u = 0; u < n_u; u++) {
                     int s = uniq[u];
                     if (gen_done[s] >= n_gen) continue;
-                    int t1tok = stratum_argmax(q35_g_logits_b[u], q35_g_cfg.vocab_size);
+                    int t1tok = q35_ms_pick_from_logits(q35_g_logits_b[u], s);
+                    if (seq_log && seq_len[s] <= n_gen)
+                        seq_log[(size_t)s * (n_gen + 1) + seq_len[s]++] = t1tok;
                     prev_tok[s] = nxt[s];
                     q35_bg_observe(nxt[s], t1tok);
                     {
@@ -16271,7 +16378,9 @@ server_request:
                                sizeof(float) * (size_t)q35_g_cfg.n_embed);
                     if (use_chain && gen_done[s] < n_gen) {
                         if (draft[s] == t1tok) {
-                            int t2tok = stratum_argmax(q35_g_logits_b[n_u + u], q35_g_cfg.vocab_size);
+                            int t2tok = q35_ms_pick_from_logits(q35_g_logits_b[n_u + u], s);
+                            if (seq_log && seq_len[s] <= n_gen)
+                                seq_log[(size_t)s * (n_gen + 1) + seq_len[s]++] = t2tok;
                             size_t conv_one = (size_t)q35_g_cfg.ssm_conv_dim * (size_t)q35_g_cfg.ssm_conv_kernel;
                             size_t rec_one = (size_t)q35_g_cfg.ssm_value_heads
                                           * (size_t)q35_g_cfg.ssm_state_size
@@ -16395,6 +16504,34 @@ server_request:
                     q35_g_ms_rail_ticks,
                     (q35_g_ms_seal_steps > 0) ? "on" : "off",
                     q35_g_ms_chain_try, q35_g_ms_chain_hit, q35_g_ms_chain_tok);
+            if (q35_g_ms_sampling && seq_log) {
+                /* best-of-N dump: each stream's continuation, ids + text */
+                for (int s = 0; s < ms_B; s++) {
+                    int len = seq_len[s];
+                    if (len > n_gen) len = n_gen;
+                    fprintf(stderr, "  MS-STREAM %d (%d toks):", s, len);
+                    for (int t = 0; t < len; t++)
+                        fprintf(stderr, " %d", seq_log[(size_t)s * (n_gen + 1) + t]);
+                    fprintf(stderr, "\n");
+                }
+                if (q35_vocab_ready) {
+                    char txt[256];
+                    for (int s = 0; s < ms_B; s++) {
+                        int len = seq_len[s];
+                        if (len > n_gen) len = n_gen;
+                        fprintf(stdout, "stream %d: ", s);
+                        for (int t = 0; t < len; t++) {
+                            stratum_decode_token(&q35_vocab,
+                                                 seq_log[(size_t)s * (n_gen + 1) + t],
+                                                 txt, sizeof(txt));
+                            fprintf(stdout, "%s", txt);
+                        }
+                        fprintf(stdout, "\n");
+                    }
+                    fflush(stdout);
+                }
+            }
+            free(seq_log); free(seq_len);
             free(nxt); free(gen_done); free(prev_tok);
             free(uniq); free(rep_of); free(draft); free(have_draft);
             free(slot_of_stream); free(class_n); free(uniq_idx);
