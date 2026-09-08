@@ -1,0 +1,68 @@
+MTP tree acceptance on the 27B (qwen3.6-27b-mixed.gguf)
+=======================================================
+Date: 2026-09-08 (config recorded per AGENTS.md "Recording experiment
+configuration")
+
+Motivation: the single-stream speed roadmap treats MTP-tree speculative
+decoding as the main legal multiplier (same 12 GB weight sweep emits
+multiple tokens). This file measures what the 27B's own nextn head
+(blk.64.nextn.*) actually delivers, so the roadmap rests on data.
+
+Configuration (all runs):
+  architecture        : qwen35 (65 blk, 48 SSM + 17 full-attn + 1 nextn)
+  model               : qwen3.6-27b-mixed.gguf (Q2_K 48% / Q4_K 35% / Q6_K 18%)
+  CPU/Metal/SDOT      : CPU-only path (STRATUM_NO_GPU=1); SDOT on
+  cache state         : streaming mode — swap 90%, model evicted between
+                        forwards (h3_test_gate.sh check: "streaming mode")
+  env                 : STRATUM_TREE_B=4 STRATUM_TREE_STATS=1
+                        (auto-spec engaged MTP TREE B=7 maxw=2 ngram=6
+                        + async I/O by default)
+  sampler             : greedy (bit-exact path); tree verify is exact-compare
+  command form        : ./stratum <model> 24 <prompt token ids>
+
+Results (three prompt classes, 24 generated tokens each):
+
+  1) digits      "1 2 3 4 5 6 7 8"
+     tok/main = 1.04   (24 tokens / 23 main forwards)
+     MTP accuracy-by-depth: depth1 4.5% (1/22), depth2 100% (1/1)
+     top-k coverage depth1: top1 14% top8 14%
+
+  2) fairy tale  "Once upon a time there was a little girl ... She liked to"
+     tok/main = 1.09   (24 tokens / 22 main forwards, 1 emit=3 step)
+     MTP accuracy-by-depth: depth1 4.5% (1/22)
+     top-k coverage depth1: top1 14% top8 14%
+     ngram/bigram bank: bigram_props=0 union_inserts=0 (cold context)
+
+  3) narrative   "<|im_start|> The quick brown fox ... walked into the"
+     tok/main = 1.00   (24 tokens / 24 main forwards)
+     MTP accuracy-by-depth: depth1 0.0% (0/23)
+     top-k coverage depth1: top1 9% top4 17% top8 17%
+
+Engine-side sanity (draft/verify chain is mechanically correct):
+  - greedy NOSPEC run on prompt 2 emits 248046 198 248045 74455 ...; the
+    tree run's accepted path matches token-for-token (exact-compare verify)
+  - when a draft does match (prompt 2, one step), the chain accepted 3 in a
+    row (emit=3, depth2 100%) — acceptance machinery works
+  - top-1 coverage 9-14% is ~300x above random (1/248320), so the head is
+    wired correctly and genuinely predictive — just not top-1 accurate
+
+Conclusions:
+  - The 27B's nextn head gives a theoretical ceiling of 1.09-1.27
+    tokens/sweep at these contexts (top-1/top-8 coverage bound). Measured
+    1.00-1.09 tok/main. MTP-tree speculation yields ~nothing on this model.
+  - The v217 gate's "tok/main >= 8.0" comes from n-gram speculation on
+    tiny deterministic models (which have 0 nextn layers) — it is not an
+    MTP quality statement and must not be read as one.
+  - Single-stream speedup from speculation on THIS model is bounded by the
+    head, not the engine. Legal remaining levers: kernel bandwidth (done:
+    Q2K/Q4K/Q6K coalesced, PRs #46/#48), I/O overlap, and batched serving
+    (MULTISEQ, already 130 tok/s aggregate @ 64 streams).
+
+Caveats:
+  - 24-token samples, three prompts; acceptance is context-dependent and
+    n-gram spec can fire on long repetitive generations (code, lists) —
+    these samples were all short fresh contexts.
+  - Streaming-mode runs; tok/s numbers from these runs are I/O-bound and
+    say nothing about hot-cache speed (see pressure_test_results.txt for
+    the methodology; hot-regime single-stream measurement still needs a
+    memory-clean machine).
