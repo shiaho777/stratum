@@ -220,3 +220,48 @@ Consequences:
 Engine support already exists (STRATUM_Q2K_NIB=<path> sidecar +
 embedded type-42 detection, V55/V55.2); no engine work remains — only
 the measurement.
+
+
+Part 8 — The streaming regime is environmentally pinned: complete lever matrix
+--------------------------------------------------------------------------------
+Hardware ceilings measured on this machine (swap 87-97% throughout):
+  SSD sequential, 1 FD  (F_NOCACHE): 3.21 GB/s
+  SSD sequential, 2 FDs:             3.82 GB/s
+  SSD sequential, 4 FDs:             6.59 GB/s  <- queue-depth scaling is real
+  Engine streaming effective:        ~2.2-2.5 GB/s (11.2GB / 2.5-3.0s fwd)
+  CPU streaming fwd decomposition:   cpumm 0.72-0.86s (10.3GB = 12.9 GB/s,
+                                     faults included), pread 0.000 (staged
+                                     path never engages), iostall ~0.03,
+                                     wall 2.5-3.0s -> ~1.7-2.2s untracked
+                                     (background pread threads + lm/elementwise
+                                     with dead counters in the batched path).
+
+Every streaming-regime lever, measured (4-token 27B runs, same prompt,
+sequences identical in all arms):
+  lever                          | wall     | verdict
+  -------------------------------+----------+---------------------------
+  default (mmap faults + sched)  | 27.1-28.3s | baseline (drifts with machine)
+  + STRATUM_ASYNC_PREFETCH=1     | 31.9s    | WORSE (readahead self-evicts)
+  + PARPREF (4 thr, 6 ahead)     | 32.2s    | WORSE
+  + STRATUM_GPU2=1 (staged GPU)  | 38.2s    | WORSE
+  + STRATUM_FORCE_WSTAGE=1       | 32.8s    | no effect (same path; pages
+                                 |          | not hot either way)
+  + STRATUM_IOSKIP=1 (V61: kill  | 37.8 vs  | NO EFFECT — the I/O scheduling
+    all layer I/O scheduling)    | 37.3s    | is neither helping nor hurting
+                                 |          | measurably in streaming
+  NC GPU (any variant)           | 2-7x     | WORSE in every regime tested
+
+Interpretation: the fault-driven read path achieves ~69% of the single-FD
+SSD ceiling. The 4-FD ceiling (6.59 GB/s, 2-3x headroom) is NOT reachable
+by tuning existing knobs — it would require restructuring the decode loop
+around explicit parallel staged reads (the wt-stage tiles use single
+preads; V56's 4-FD fanout machinery exists but pread=0.000 shows the
+staged path never even engages in this regime — q35_wt_stage_want() gates
+it off). That redesign is the only remaining streaming lever, and its
+payoff (~1.5-2x at best, single-FD-vs-fault gap plus fanout) is bounded
+by the same memory pressure that evicts whatever it stages.
+
+V61 (STRATUM_IOSKIP) ships as the experiment flag it is: default off,
+CPU-only, documented NC hazard (same as V59). Baseline drift during the
+session (28.3s -> 37.3s for the identical config) is itself evidence:
+on this machine, environment state dominates every engine-side lever.
