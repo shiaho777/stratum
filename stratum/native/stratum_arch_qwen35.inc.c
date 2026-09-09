@@ -14413,6 +14413,20 @@ int run_qwen35_arch(int argc, char** argv) {
         if (q35_g_hf_ioskip)
             fprintf(stderr, "  V59 hot_fast ioskip: layer I/O scheduling OFF (EXPERIMENT — breaks NC NoCopy residency; CPU-only)\n");
     }
+    {
+        /* V61 experiment: independent ioskip force for the STREAMING regime.
+         * hot_fast is off there, but the layer I/O scheduling (wt_next
+         * background preads + mincore checks) may be net-negative when
+         * prefetched pages get evicted before consumption under memory
+         * pressure (measured: ASYNC_PREFETCH made streaming slower;
+         * 4-FD hardware ceiling 6.59 GB/s vs engine 2.2 GB/s effective).
+         * CPU-only experiment — same NC caveat as V59. */
+        const char* efs = getenv("STRATUM_IOSKIP");
+        if (efs && atoi(efs) != 0) {
+            q35_g_hf_ioskip = 1;
+            fprintf(stderr, "  V61 ioskip FORCE: layer I/O scheduling OFF (streaming experiment; CPU-only — breaks NC)\n");
+        }
+    }
 
     /* V56.1: 确定性流式 —— 跳过 mincore 热冷检测税(每 forward 数百-上千次系统调用),
      * 默认全冷走预取流水线(I/O 已由 V152 wt-stage 隐藏)。适合内存紧张/流式环境。 */
