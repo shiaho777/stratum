@@ -68,3 +68,49 @@ Lesson recorded: any new batch window in this engine MUST pair its
 flush with consume() unless the consumer provably runs after the next
 begin()'s drain. Async submission is an overlap optimization, not a
 license to skip the copy-back fence.
+
+
+Part 3 — The NC in-engine pathology: measured decomposition (V58 work)
+-----------------------------------------------------------------------
+With the model at 100% residency (first clean window of the session),
+NC + all three COAL kernels measured 3.2s/token marginal vs CPU 0.465s
+— NC is ~7x SLOWER in-engine despite its kernels probing at 170-245
+GB/s. STRATUM_TIMING + the (previously never-called) nc_time_report
+decompose it:
+
+  [nc-time] NoCopy reg: 632 x 11.0us = 0.007s   <- cheap, NOT the problem
+            commit+wait: 320 x 6.0ms = 1.92s    <- 15x the probe's 0.4ms
+  [fwd B=1] wall=2.5-3.0s  gpu=0.22  cpumm=0.20  iostall=0.11-0.19
+            (all tracked buckets sum ~0.75s — ~1.8s/forward UNTRACKED)
+
+V58 (STRATUM_NC_WCACHE=1): reuse one MTLBuffer per distinct aligned
+window instead of creating a fresh NoCopy window per dispatch (hash on
+aligned ptr; opt-in; bounded by tensor count):
+  commit+wait 6.00 -> 5.25ms avg (-12%); NoCopy reg 11.0 -> 3.2us.
+  Sequences identical. Helps, does NOT cure.
+
+Remaining suspects for the 5.25ms commits + 1.8s untracked (ranked):
+  1. Per-layer I/O scheduling calls (io_tpl_kick_layer, wt_next_start,
+     layer_tail_hide, main_scan_warm, tensor_pages_hot/mincore) still
+     run under hot_fast — it only short-circuits multix_pipe, not the
+     layer-block calls. mincore over GPU-windowed pages may serialize
+     against VM state.
+  2. GPU page-in during kernels: at 81-100% residency the tail % of
+     weight pages still fault via the GPU at SSD speed inside
+     commit+wait (the wait absorbs it).
+  3. Command-buffer lifecycle at ~29 commits/forward: each begin/flush
+     allocates and tears down driver objects; probes reused patterns.
+The CPU path's advantage in this regime is that its "overhead" (page
+faults) IS its I/O, while NC pays fault-equivalent costs PLUS the GPU
+submission stack. Until the untracked 1.8s is attributed, CPU remains
+the correct default and NC stays opt-in.
+
+Part 4 — zsh word-splitting trap (cost a full A/B session)
+-----------------------------------------------------------
+`env $VARS ./stratum ... $P` in zsh does NOT split unquoted parameters:
+the whole env string became ONE assignment (only the first flag took
+effect, value contaminated) and the prompt collapsed to its first
+token. An entire manual hot A/B ran three "configs" that were actually
+one. Fixed in benchmarks/hot_ab_27b.sh via ${=VAR}; recorded here
+because every future shell-driven measurement on this repo must use
+${=...} (or arrays) for env/prompt expansion under zsh.

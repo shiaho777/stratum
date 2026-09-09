@@ -58,7 +58,7 @@ if (( SP >= 60 )); then
 fi
 resident=0
 for attempt in 1 2 3 4; do
-    env STRATUM_NO_GPU=1 STRATUM_NOSPEC=1 $BIN "$MODEL" 2 $P > "$TMP/warm.log" 2>&1
+    env STRATUM_NO_GPU=1 STRATUM_NOSPEC=1 $BIN "$MODEL" 2 ${=P} > "$TMP/warm.log" 2>&1
     resident=$(grep -oE 'resident [0-9]+%' "$TMP/warm.log" | tail -1 | grep -oE '[0-9]+')
     resident=${resident:-0}
     echo "  warm attempt $attempt: resident=${resident}%"
@@ -77,7 +77,11 @@ run_timed() {  # $1=tag $2=env-string $3=n
     local best=999999 S E i
     for i in 1 2; do
         S=$(now)
-        env $2 STRATUM_NOSPEC=1 $BIN "$MODEL" $3 $P > "$TMP/$1_$3.log" 2>&1
+        # ${=2}/${=P}: zsh does NOT word-split unquoted parameters — without
+        # the split flag the whole env string becomes ONE assignment and the
+        # prompt collapses to its first token (this exact bug silently faked
+        # an entire manual A/B session before it was caught).
+        env ${=2} STRATUM_NOSPEC=1 $BIN "$MODEL" $3 ${=P} > "$TMP/${1}_${3}.log" 2>&1
         E=$(now)
         best=$(python3 -c "print(min($best, $E-$S))")
     done
