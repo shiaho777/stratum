@@ -55,16 +55,28 @@ static void la_swiglu(const float* g, const float* u, int N, float* y) {
     }
 }
 
+/* RoPE pair layout: ggml has two conventions and the GGUF keeps the
+ * model's own — Llama-family weights are stored interleaved and rotated
+ * as adjacent pairs (NORM); Qwen-family weights keep the original HF
+ * layout and rotate (x[k], x[k+n/2]) pairs (NEOX). Selected from the
+ * file's general.architecture — no model names, just arch ids. */
+static int la_g_rope_neox = 0;
+
 static void la_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
     int n_pairs = rope_dim / 2;
     for (int k = 0; k < n_pairs; k++) {
         float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)rope_dim);
         float angle = (float)position * freq;
         float c = cosf(angle), s = sinf(angle);
-        float x0 = x[2 * k];
-        float x1 = x[2 * k + 1];
-        x[2 * k]     = x0 * c - x1 * s;
-        x[2 * k + 1] = x0 * s + x1 * c;
+        if (la_g_rope_neox) {
+            float x0 = x[k], x1 = x[k + n_pairs];
+            x[k]           = x0 * c - x1 * s;
+            x[k + n_pairs] = x0 * s + x1 * c;
+        } else {
+            float x0 = x[2 * k], x1 = x[2 * k + 1];
+            x[2 * k]     = x0 * c - x1 * s;
+            x[2 * k + 1] = x0 * s + x1 * c;
+        }
     }
     (void)head_dim;
 }
@@ -229,6 +241,22 @@ static void la_forward_block(int li, int position) {
                  b->attn_q, la_g_q_buf, Nq * Hd,
                  b->attn_k, la_g_k_buf, Nk * Hd,
                  b->attn_v, la_g_v_buf, Nk * Hd);
+
+    /* Qwen3-style per-head q/k RMSNorm — optional tensors; applied
+     * pre-rope with the same eps as the block norms. NULL for plain
+     * Llama-family files, which skip this entirely. */
+    if (b->attn_q_norm) {
+        const float* gain = st_f32_tensor_ptr(b->attn_q_norm);
+        for (int h = 0; h < Nq; h++)
+            la_rmsnorm(la_g_q_buf + h * Hd, gain, Hd, la_g_cfg.rms_eps,
+                       la_g_q_buf + h * Hd);
+    }
+    if (b->attn_k_norm) {
+        const float* gain = st_f32_tensor_ptr(b->attn_k_norm);
+        for (int h = 0; h < Nk; h++)
+            la_rmsnorm(la_g_k_buf + h * Hd, gain, Hd, la_g_cfg.rms_eps,
+                       la_g_k_buf + h * Hd);
+    }
 
     for (int h = 0; h < Nq; h++) {
         la_rope(la_g_q_buf + h * Hd, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
@@ -564,6 +592,20 @@ static int la_forward_batch(const int* tokens, const int* positions, int B) {
         }
 
         for (int s = 0; s < B; s++) {
+            /* Qwen3-style per-head q/k RMSNorm — optional, pre-rope (same
+             * as the single-token path in la_forward_block) */
+            if (b->attn_q_norm) {
+                const float* gain = st_f32_tensor_ptr(b->attn_q_norm);
+                for (int h = 0; h < Nq; h++)
+                    la_rmsnorm(qb[s] + h * Hd, gain, Hd, la_g_cfg.rms_eps,
+                               qb[s] + h * Hd);
+            }
+            if (b->attn_k_norm) {
+                const float* gain = st_f32_tensor_ptr(b->attn_k_norm);
+                for (int h = 0; h < Nk; h++)
+                    la_rmsnorm(kb[s] + h * Hd, gain, Hd, la_g_cfg.rms_eps,
+                               kb[s] + h * Hd);
+            }
             for (int h = 0; h < Nq; h++)
                 la_rope(qb[s] + h*Hd, Hd, la_g_cfg.rope_dim, positions[s], la_g_cfg.rope_theta);
             for (int h = 0; h < Nk; h++)
@@ -788,6 +830,15 @@ int run_llama_arch(int argc, char** argv) {
             la_g_gguf.version,
             (unsigned long long)la_g_gguf.n_tensors,
             (unsigned long long)la_g_gguf.body_offset);
+    {
+        char* a = gguf_get_string_dup(&la_g_gguf, "general.architecture");
+        if (a) {
+            la_g_rope_neox = (strcmp(a, "qwen3") == 0);
+            fprintf(stderr, "  rope layout: %s (arch %s)\n",
+                    la_g_rope_neox ? "NEOX half-split" : "NORM adjacent-pairs", a);
+            free(a);
+        }
+    }
 
     stratum_linear_init(la_g_gguf.mmap_base, la_g_gguf.mmap_size);
     stratum_engine_init(la_g_gguf.mmap_size);
@@ -1345,7 +1396,7 @@ int run_llama_arch(int argc, char** argv) {
 /* ------------------------------------------------------------------ */
 
 static const StratumArch stratum_arch_llama = {
-    .arch_names   = "llama",
+    .arch_names   = "llama,qwen3",
     .description  = "Llama-family (Llama 1/2/3, TinyLlama, Mistral, Qwen2-dense, etc.)",
     .run          = run_llama_arch,
 };
