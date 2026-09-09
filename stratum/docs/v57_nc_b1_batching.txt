@@ -1,0 +1,60 @@
+V57: single-stream NC batching — root cause and fix
+=====================================================
+Date: 2026-09-08 (config recorded per AGENTS.md "Recording experiment
+configuration")
+
+Question: why did single-stream NC (STRATUM_GPU_NC=1) measure SLOWER than
+CPU on the 27B (45s vs 34s, pre-COAL kernels) even though the NC kernels
+read page cache at ~200 GB/s vs CPU's ~64 GB/s effective?
+
+Root cause (traced through the actual decode path):
+  1. The real B=1 decode path is q35_forward_*_batched (B=1 is a special
+     case of the batched forwards) — verified by instrumenting every
+     forward variant; q35_forward_full_attn/ssm (non-batched) never run.
+  2. With the model resident, V56 hot_fast activates and
+     q35_linear_dispatch_multix_pipe SHORT-CIRCUITS to q35_linear_dispatch
+     -> q35_gpu2_matmul_nc -> stratum_metal_nc_sgemv2: the SYNC per-tensor
+     path. Every tensor paid a full commit+wait (~0.4ms measured in
+     probes).
+  3. The batched forwards DO wrap q/k/v in nc_batch_begin/flush (V54.4),
+     but the sync path ignored the open batch — the batching was silently
+     defeated for B=1.
+  4. At 27B tensor sizes (17-43MB, GPU compute 0.1-0.3ms each), the 0.4ms
+     per-tensor commit+wait EXCEEDS the kernel time — NC lost to CPU on
+     overhead, not bandwidth.
+
+Fix (V57):
+  - q35_gpu2_matmul_nc is now batch-aware: when a batch is open it joins
+    via nc_batch_add_streams (-2 = no batch -> sync fallback, unchanged).
+    Same contract as the B>=2 multix path (y filled at flush).
+  - The batched forwards' FFN fallback (gate+up, all 65 layers) is now
+    wrapped in begin/flush, mirroring the existing q/k/v window.
+  - Size gate: only tensors >= STRATUM_NC_B1_MIN_MB (default 4) join a
+    batch. Measured on the tiny model: batching tiny tensors is SLOWER
+    (begin/flush bookkeeping + ybuf copy-back exceed the saved wait) —
+    1.65 vs 1.50 ms/token ungated. Gated: 1.16 vs 1.28 ms/token (no
+    regression, slight win).
+  - Rollback: STRATUM_NC_B1_GROUP=0 restores the exact pre-V57 behavior.
+
+Validation:
+  - tiny qwen35 Q4_K (NMIN=0 forcing all tensors through NC): V57 on/off
+    greedy sequences identical (287 345 335 780 554 915).
+  - 27B 4-token greedy, NC + Q2K/Q4K/Q6K COAL + V57: sequence identical
+    to the established baseline (10 4838 1665 25).
+  - make tests 4/4 PASS. ENVVARS regenerated (218 vars).
+
+Expected effect (NOT yet measured — needs a hot 27B):
+  Per token the 27B has ~65 FFN gate/up pairs + 17 q/k/v triples that now
+  batch: ~82 windows replace ~216 sync commit+waits with ~82, saving
+  ~134 x 0.4ms ~= 54ms/token of pure dispatch latency. Combined with the
+  COAL kernels (170-245 GB/s vs CPU ~64 GB/s effective on the same
+  weights), hot-mode single-stream NC should now beat CPU substantially.
+  The machine has been at 87-97% swap all session; the hot measurement
+  is the one remaining blocked experiment.
+
+Caveats:
+  - In streaming mode (swap-pressured), I/O dominates and V57 shows no
+    wall-time effect (measured: prefetch/GPU2 variants all within noise
+    of the 27s 4-token baseline).
+  - The ~0.4ms commit+wait figure is from probe measurements on this
+    machine (M4 Pro, macOS 26); the saving estimate scales with it.

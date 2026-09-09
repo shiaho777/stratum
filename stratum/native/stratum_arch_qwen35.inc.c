@@ -1354,8 +1354,38 @@ static int q35_gpu2_matmul_nc(const GgufTensor* w, const float* x, float* y, int
     if (K % 256 != 0) return -1;
     if (N < q35_g_gpu2_minrows) return -1;
     struct timespec _g0; clock_gettime(CLOCK_MONOTONIC, &_g0);
-    int rc = stratum_metal_nc_sgemv2(q35_tensor_data(w), (size_t)w->nbytes, gt,
+    int rc = -2;
+    if (q35_g_nc_batch) {
+        /* V57: join an open batch when one exists. The batched forwards wrap
+         * q/k/v (and now ffn gate/up) in begin/flush; before this, B=1 —
+         * including the hot_fast short-circuit — always took the sync
+         * per-tensor path and paid a full commit+wait (~0.4ms) per tensor,
+         * which is why single-stream NC measured slower than CPU on the 27B.
+         * -2 = no batch open -> sync fallback below. Contract: when added to
+         * a batch, y is filled at FLUSH, not on return — callers inside a
+         * begin/flush window must consume after the flush.
+         * Size gate: batching only pays when GPU compute per tensor exceeds
+         * the commit+wait it saves; tiny tensors (<4MB default) measured
+         * SLOWER batched (bookkeeping + copy-back dominate), so they stay
+         * sync. STRATUM_NC_B1_MIN_MB tunes; STRATUM_NC_B1_GROUP=0 disables. */
+        static int s_b1g = -1;
+        static long s_b1min = -1;
+        if (s_b1g < 0) {
+            const char* e = getenv("STRATUM_NC_B1_GROUP");
+            s_b1g = (e && atoi(e) == 0) ? 0 : 1;
+            const char* em = getenv("STRATUM_NC_B1_MIN_MB");
+            s_b1min = em ? atol(em) : 4;
+        }
+        if (s_b1g && (long)(w->nbytes >> 20) >= s_b1min) {
+            float* ys1[1] = { y };
+            rc = stratum_metal_nc_batch_add_streams(q35_tensor_data(w), (size_t)w->nbytes,
+                                                    gt, x, ys1, N, K, 1);
+        }
+    }
+    if (rc == -2) {
+        rc = stratum_metal_nc_sgemv2(q35_tensor_data(w), (size_t)w->nbytes, gt,
                                      x, y, N, K, 1);
+    }
     struct timespec _g1; clock_gettime(CLOCK_MONOTONIC, &_g1);
     q35_g_gpu_secs += (_g1.tv_sec-_g0.tv_sec)+(_g1.tv_nsec-_g0.tv_nsec)/1e9;
     if (rc == 0) q35_g_gpu2_tiles++;
@@ -1368,9 +1398,18 @@ static int q35_gpu2_matmul_multix_nc(const GgufTensor* w,
                                      const float* const* xs, float* const* ys,
                                      int B, int N, int K) {
     int gt = (int)w->type;
-    /* V54.6: Q2K-only GPU (computed-bound, GPU 1.5-1.8x vs CPU 7GB/s).
-     * Q4K/Q6K stay on CPU (bandwidth-bound, CPU 40GB/s already beats GPU). */
-    if (gt != 10) return -1;
+    /* V54.6 kept Q4K/Q6K on CPU when the GPU kernels measured 35-66 GB/s
+     * at mid-size shapes ("CPU 40GB/s already beats GPU"). The coalesced16
+     * kernels (PRs #46/#48) measure 170-245 GB/s on the same shapes — 4-6x
+     * the CPU path — so with their opt-in flags set, route Q4K/Q6K through
+     * NC as well. minrows below still keeps genuinely tiny tensors (e.g.
+     * ssm_alpha N=48) on the CPU where dispatch overhead would dominate. */
+    if (gt != 10) {
+        static int s_coal4 = -1, s_coal6 = -1;
+        if (s_coal4 < 0) s_coal4 = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
+        if (s_coal6 < 0) s_coal6 = getenv("STRATUM_Q6K_COAL") ? atoi(getenv("STRATUM_Q6K_COAL")) : 0;
+        if (!((gt == 12 && s_coal4) || (gt == 14 && s_coal6))) return -1;
+    }
     if (K % 256 != 0) return -1;
     if (N < q35_g_gpu2_minrows) return -1;
     if (B < 1 || B > 32) return -1;
@@ -1408,6 +1447,61 @@ static int q35_gpu2_matmul_multix_nc(const GgufTensor* w,
     return rc;
 }
 
+/* V57: B=1 NC group — several independent single-stream matmuls sharing
+ * ONE command buffer. Mirrors q35_gpu2_group_b1 (staging path) and the
+ * B>=2 group_multix_nc. Rationale: sync nc_sgemv2 pays a full commit+wait
+ * (~0.4ms measured) per tensor; at 27B FFN sizes (29MB Q2_K each) that
+ * overhead rivals the GPU compute itself, which is why single-stream NC
+ * measured slower than CPU before. Batching gate+up (all 65 layers) and
+ * q/k/v (17 full-attn layers) cuts the waits from nmat to 1 per group.
+ * Returns -1 (caller falls back to per-tensor dispatch) unless every
+ * tensor is NC-eligible. */
+static int q35_gpu_nc_group_b1(const GgufTensor* const* ws, float* const* ys,
+                               const int* Ns, int nmat, const float* x, int K) {
+    if (!q35_g_gpu_nc || !q35_g_nc_batch) return -1;
+    {
+        /* rollback switch: STRATUM_NC_B1_GROUP=0 restores per-tensor sync */
+        static int s_b1g = -1;
+        if (s_b1g < 0) {
+            const char* e = getenv("STRATUM_NC_B1_GROUP");
+            s_b1g = (e && atoi(e) == 0) ? 0 : 1;
+        }
+        if (!s_b1g) return -1;
+    }
+    if (nmat < 2 || nmat > 4 || !x || K <= 0) return -1;
+    if (K % 256 != 0) {
+        return -1;
+    }
+    for (int i = 0; i < nmat; i++) {
+        const GgufTensor* w = ws[i];
+        if (!w || !ys[i] || Ns[i] < 1) return -1;
+        int gt = (int)w->type;
+        if (gt != 10 && gt != 12 && gt != 13 && gt != 14) {
+            return -1;
+        }
+        if (Ns[i] < q35_g_gpu2_minrows) {
+            return -1;
+        }
+    }
+    struct timespec _g0; clock_gettime(CLOCK_MONOTONIC, &_g0);
+    if (stratum_metal_nc_batch_begin() != 0) return -1;
+    int added = 0;
+    for (int i = 0; i < nmat; i++) {
+        float* ys1[1] = { ys[i] };
+        if (stratum_metal_nc_batch_add_streams(q35_tensor_data(ws[i]),
+                                               (size_t)ws[i]->nbytes,
+                                               (int)ws[i]->type, x, ys1,
+                                               Ns[i], K, 1) == 0)
+            added++;
+    }
+    stratum_metal_nc_batch_flush();
+    struct timespec _g1; clock_gettime(CLOCK_MONOTONIC, &_g1);
+    q35_g_gpu_secs += (_g1.tv_sec-_g0.tv_sec)+(_g1.tv_nsec-_g0.tv_nsec)/1e9;
+    if (added != nmat) return -1;
+    q35_g_gpu2_tiles += added;
+    return 0;
+}
+
 /* V54.5: NC (zero-copy) group multix — several matmuls sharing the same
  * input batched into ONE command buffer (17.3x vs per-matmul wait). No
  * staging: GPU reads each weight straight from the mmap. All matmuls must
@@ -1418,11 +1512,19 @@ static int q35_gpu2_group_multix_nc(const GgufTensor* const* ws,
     if (!q35_g_gpu_nc || !q35_g_nc_batch) return -1;
     if (nmat < 2 || nmat > 4 || B < 2 || B > q35_B_MAX) return -1;
     if (K % 256 != 0) return -1;
-    for (int i = 0; i < nmat; i++) {
-        const GgufTensor* w = ws[i];
-        if (!w || !ys[i] || Ns[i] < 1) return -1;
-        if ((int)w->type != 10) return -1;   /* V54.6: Q2K-only (GPU advantage) */
-        if (K % 256 != 0 || Ns[i] < q35_g_gpu2_minrows) return -1;
+    {
+        /* same V54.6 update as q35_gpu2_matmul_multix_nc: Q4K/Q6K join the
+         * NC path when their coalesced kernels are opt-in enabled */
+        static int s_coal4 = -1, s_coal6 = -1;
+        if (s_coal4 < 0) s_coal4 = getenv("STRATUM_Q4K_COAL") ? atoi(getenv("STRATUM_Q4K_COAL")) : 0;
+        if (s_coal6 < 0) s_coal6 = getenv("STRATUM_Q6K_COAL") ? atoi(getenv("STRATUM_Q6K_COAL")) : 0;
+        for (int i = 0; i < nmat; i++) {
+            const GgufTensor* w = ws[i];
+            if (!w || !ys[i] || Ns[i] < 1) return -1;
+            int t = (int)w->type;
+            if (!(t == 10 || (t == 12 && s_coal4) || (t == 14 && s_coal6))) return -1;
+            if (K % 256 != 0 || Ns[i] < q35_g_gpu2_minrows) return -1;
+        }
     }
     static float* xpack = NULL; static size_t xcap = 0;
     size_t need_x = (size_t)B * (size_t)K;
@@ -8915,14 +9017,28 @@ static void q35_forward_full_attn(int li, int position) {
                 q35_prequant_x_q8_multix(xs1, 1, H);
         }
 #endif
-        q35_linear_dispatch_multix_pipe(b->attn_q, xs1, yq, 1, 2 * Nq * Hd, H, b->attn_k);
+        int did_qkv = 0;
+#ifdef STRATUM_USE_METAL
+        if (q35_g_gpu_nc && b->attn_q && b->attn_k && b->attn_v) {
+            /* V57: q/k/v in ONE NC command buffer (1 commit+wait, not 3) */
+            const GgufTensor* gws[3] = {b->attn_q, b->attn_k, b->attn_v};
+            float* gys[3] = {q35_g_q_buf, q35_g_k_buf, q35_g_v_buf};
+            int gNs[3] = {2 * Nq * Hd, Nk * Hd, Nk * Hd};
+            if (q35_gpu_nc_group_b1(gws, gys, gNs, 3, q35_g_xn, H) == 0)
+                did_qkv = 1;
+        }
+#endif
+        if (!did_qkv)
+            q35_linear_dispatch_multix_pipe(b->attn_q, xs1, yq, 1, 2 * Nq * Hd, H, b->attn_k);
         for (int h = 0; h < Nq; h++) {
             const float* row = q35_g_q_buf + h * 2 * Hd;
             memcpy(q35_g_q_only + h * Hd, row,           sizeof(float) * Hd);
             memcpy(q35_g_q_gate + h * Hd, row + Hd,      sizeof(float) * Hd);
         }
-        q35_linear_dispatch_multix_pipe(b->attn_k, xs1, yk, 1, Nk * Hd, H, b->attn_v);
-        q35_linear_dispatch_multix_pipe(b->attn_v, xs1, yv, 1, Nk * Hd, H, b->attn_output);
+        if (!did_qkv) {
+            q35_linear_dispatch_multix_pipe(b->attn_k, xs1, yk, 1, Nk * Hd, H, b->attn_v);
+            q35_linear_dispatch_multix_pipe(b->attn_v, xs1, yv, 1, Nk * Hd, H, b->attn_output);
+        }
 #if defined(__ARM_FEATURE_DOTPROD)
         if (g_st.use_sdot) q35_prequant_clear();
 #endif
@@ -9057,6 +9173,14 @@ static void q35_forward_full_attn(int li, int position) {
             float* gys[2] = {q35_g_ff_g, q35_g_ff_u};
             int gNs[2] = {Ff, Ff};
             if (q35_gpu2_group_b1(gws, gys, gNs, 2, q35_g_xn, H) == 0)
+                did_g = 1;
+        }
+        if (!did_g && q35_g_gpu_nc && b->ffn_gate && b->ffn_up) {
+            /* V57: gate+up in ONE NC command buffer (1 commit+wait, not 2) */
+            const GgufTensor* gws[2] = {b->ffn_gate, b->ffn_up};
+            float* gys[2] = {q35_g_ff_g, q35_g_ff_u};
+            int gNs[2] = {Ff, Ff};
+            if (q35_gpu_nc_group_b1(gws, gys, gNs, 2, q35_g_xn, H) == 0)
                 did_g = 1;
         }
 #endif
@@ -9365,8 +9489,19 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
         }
 #endif
         if (!did_gu) {
+#ifdef STRATUM_USE_METAL
+        /* V57: gate+up share x=xn and are independent — batch them into ONE
+         * command buffer for the per-tensor fallback path too (B=1 hot_fast
+         * previously paid 2 sync commit+waits here; the batch-aware
+         * q35_gpu2_matmul_nc joins this window automatically). */
+        int gu_batch = (q35_g_gpu_nc && q35_g_nc_batch && b->ffn_gate && b->ffn_up);
+        if (gu_batch) stratum_metal_nc_batch_begin();
+#endif
         q35_linear_dispatch_multix_pipe(b->ffn_gate, xs, yg, B, Ff, H, b->ffn_up);
         q35_linear_dispatch_multix_pipe(b->ffn_up,   xs, yu, B, Ff, H, b->ffn_down);
+#ifdef STRATUM_USE_METAL
+        if (gu_batch) q35_nc_flush();   /* ff_g/ff_u ready for swiglu */
+#endif
         }
 #if defined(__ARM_FEATURE_DOTPROD)
         q35_prequant_clear();
@@ -9895,6 +10030,14 @@ ssm_projections_done:
             float* gys[2] = {q35_g_ff_g, q35_g_ff_u};
             int gNs[2] = {Ff, Ff};
             if (q35_gpu2_group_b1(gws, gys, gNs, 2, q35_g_xn, H) == 0)
+                did_g = 1;
+        }
+        if (!did_g && q35_g_gpu_nc && b->ffn_gate && b->ffn_up) {
+            /* V57: gate+up in ONE NC command buffer (1 commit+wait, not 2) */
+            const GgufTensor* gws[2] = {b->ffn_gate, b->ffn_up};
+            float* gys[2] = {q35_g_ff_g, q35_g_ff_u};
+            int gNs[2] = {Ff, Ff};
+            if (q35_gpu_nc_group_b1(gws, gys, gNs, 2, q35_g_xn, H) == 0)
                 did_g = 1;
         }
 #endif
@@ -10547,8 +10690,19 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
         }
 #endif
         if (!did_gu) {
+#ifdef STRATUM_USE_METAL
+        /* V57: gate+up share x=xn and are independent — batch them into ONE
+         * command buffer for the per-tensor fallback path too (B=1 hot_fast
+         * previously paid 2 sync commit+waits here; the batch-aware
+         * q35_gpu2_matmul_nc joins this window automatically). */
+        int gu_batch = (q35_g_gpu_nc && q35_g_nc_batch && b->ffn_gate && b->ffn_up);
+        if (gu_batch) stratum_metal_nc_batch_begin();
+#endif
         q35_linear_dispatch_multix_pipe(b->ffn_gate, xs, yg, B, Ff, H, b->ffn_up);
         q35_linear_dispatch_multix_pipe(b->ffn_up,   xs, yu, B, Ff, H, b->ffn_down);
+#ifdef STRATUM_USE_METAL
+        if (gu_batch) q35_nc_flush();   /* ff_g/ff_u ready for swiglu */
+#endif
         }
 #if defined(__ARM_FEATURE_DOTPROD)
         q35_prequant_clear();
