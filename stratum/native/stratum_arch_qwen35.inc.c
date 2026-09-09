@@ -271,7 +271,16 @@ static int      q35_g_gpu_nc = 0;   /* V54: zero-copy windowed direct-read (find
 static int      q35_g_nc_batch = 0; /* V54.4: batched NC submission (attn_q/k/v one command buffer) */
 static void q35_nc_flush(void) {
 #ifdef STRATUM_USE_METAL
-    if (q35_g_nc_batch) stratum_metal_nc_batch_flush();
+    if (q35_g_nc_batch) {
+        stratum_metal_nc_batch_flush();
+        /* V57.1 consume fence: every qwen35 batch window consumes its y
+         * results IMMEDIATELY after this flush (q-split, swiglu, resid).
+         * Under STRATUM_NC_ASYNC=1 the flush is commit-only (wait+copy-back
+         * deferred to the next begin) — consumers would read stale y and
+         * silently corrupt the output. consume() is the wait+copy-back
+         * fence; a no-op in sync mode. */
+        stratum_metal_nc_batch_consume();
+    }
 #endif
 }
 static int      q35_g_hot_fast = 0; /* V56: 热 cache 纯计算模式——复用 keep_resident 短路, 不锁 page cache */
@@ -1495,6 +1504,7 @@ static int q35_gpu_nc_group_b1(const GgufTensor* const* ws, float* const* ys,
             added++;
     }
     stratum_metal_nc_batch_flush();
+    stratum_metal_nc_batch_consume();   /* V57.1: caller consumes ys immediately */
     struct timespec _g1; clock_gettime(CLOCK_MONOTONIC, &_g1);
     q35_g_gpu_secs += (_g1.tv_sec-_g0.tv_sec)+(_g1.tv_nsec-_g0.tv_nsec)/1e9;
     if (added != nmat) return -1;
@@ -1540,6 +1550,7 @@ static int q35_gpu2_group_multix_nc(const GgufTensor* const* ws,
             added++;
     }
     stratum_metal_nc_batch_flush();
+    stratum_metal_nc_batch_consume();   /* V57.1: caller consumes ys immediately */
     if (added < 2) return -1;
     q35_g_gpu2_tiles += added;
     return 0;
