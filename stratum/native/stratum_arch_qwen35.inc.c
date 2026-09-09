@@ -284,6 +284,13 @@ static void q35_nc_flush(void) {
 #endif
 }
 static int      q35_g_hot_fast = 0; /* V56: 热 cache 纯计算模式——复用 keep_resident 短路, 不锁 page cache */
+static int      q35_g_hf_ioskip = 0; /* V59: hot_fast 下跳过层级 I/O 调度
+                                      * (wt_next_start/io_tpl_kick/tail_hide/
+                                      * main_scan_warm)。V56 只短路了 multix_pipe,
+                                      * 层级调用仍在跑——热 cache 下是纯税收
+                                      * (V56 作者自注 0.53s/forward 头号嫌疑),
+                                      * 且疑与 GPU NoCopy 窗口有 VM 锁竞争。
+                                      * STRATUM_HOT_FAST_IOSKIP=0 回退。 */
 static int      q35_g_stream_det = 0; /* V56.1: 确定性流式——跳过 mincore 热冷检测税, 默认全冷走预取流水线 */
 static int      q35_g_tree_active = 0;
 static int      q35_g_gpu2_handle[2] = {-1,-1};
@@ -6104,7 +6111,7 @@ static int q35_wt_next_pick_reclaim(const GgufTensor* want) {
 static void q35_wt_next_start(const GgufTensor* w) {
     q35_g_wt_start_try++;
     if (!w || w->nbytes == 0) { q35_g_wt_start_fail_hold++; return; }
-    if (g_st.keep_resident) { q35_g_wt_start_fail_hold++; return; }
+    if (g_st.keep_resident || q35_g_hf_ioskip) { q35_g_wt_start_fail_hold++; return; }
     if (q35_g_last_main_s > 0.0 && q35_g_last_main_s > 2.90) {
     } else if (q35_soft_mostly_hot()) {
         int hot = q35_tensor_pages_hot(w, 5);
@@ -7250,7 +7257,7 @@ static void q35_pre_rec_arm(const q35_BlockTensors* b) {
 }
 
 static void q35_layer_tail_hide(int li, const q35_BlockTensors* b) {
-    if (g_st.keep_resident || !b) return;
+    if (g_st.keep_resident || q35_g_hf_ioskip || !b) return;
     q35_ffn_rec_hide(b);
     if (stratum_soft_io_pressure(&q35_g_soft)) {
         if (b->ffn_down && q35_wt_next_find(b->ffn_down) < 0)
@@ -7399,7 +7406,7 @@ static void q35_layer_madv(int li) {
 }
 
 static void q35_io_tpl_kick_layer(int li, int from, int count) {
-    if (g_st.keep_resident || count <= 0) return;
+    if (g_st.keep_resident || q35_g_hf_ioskip || count <= 0) return;
     if (q35_g_soft_warm) {
         (void)from;
         if (li >= 0 && li < q35_g_cfg.n_layers)
@@ -11627,7 +11634,7 @@ static void q35_thrash_arm_main(int n_pf) {
 }
 
 static void q35_main_scan_warm(int n_layers_hint) {
-    if (g_st.keep_resident || !q35_g_layer_ranges) return;
+    if (g_st.keep_resident || q35_g_hf_ioskip || !q35_g_layer_ranges) return;
     if (n_layers_hint < 1) n_layers_hint = 1;
     if (n_layers_hint > q35_g_cfg.n_layers) n_layers_hint = q35_g_cfg.n_layers;
     if ((q35_g_stage_sticky || q35_runtime_thrash()) && q35_g_in_mtp) {
@@ -14390,6 +14397,21 @@ int run_qwen35_arch(int argc, char** argv) {
                         (double)res * 100.0 / (double)g_st.mmap_size);
             }
         }
+    }
+    if (q35_g_hot_fast) {
+        /* V59 EXPERIMENT (default OFF — measured, refuted, kept opt-in):
+         * skipping the layer I/O scheduling under hot_fast looked like pure
+         * tax removal, but the 27B measurement showed it is LOAD-BEARING for
+         * the NC path: wt_next_start's preads keep the next tensors' pages
+         * resident, and newBufferWithBytesNoCopy FAILS on non-resident
+         * file-backed pages -> NC dispatches fell back to CPU (NoCopy reg
+         * count 632->334, CPU weight bytes 0->7.4GB, wall 28.8->34.8s).
+         * STRATUM_HOT_FAST_IOSKIP=1 re-enables the experiment; see
+         * docs/hot_ab_and_nc_async_bug.txt Part 5. */
+        const char* eio = getenv("STRATUM_HOT_FAST_IOSKIP");
+        q35_g_hf_ioskip = (eio && atoi(eio) != 0) ? 1 : 0;
+        if (q35_g_hf_ioskip)
+            fprintf(stderr, "  V59 hot_fast ioskip: layer I/O scheduling OFF (EXPERIMENT — breaks NC NoCopy residency; CPU-only)\n");
     }
 
     /* V56.1: 确定性流式 —— 跳过 mincore 热冷检测税(每 forward 数百-上千次系统调用),
