@@ -253,3 +253,99 @@ kernel void q2k_sgemv_row_coalesced32(
     tot += simd_shuffle_xor(tot, 1);
     if (t8 == 0 && row < N_total) y[row] = tot;
 }
+
+/* V17: multi-stream coalesced16 Q2K — same disease and cure as the Q4K
+ * family (PR #54): the batched_b B>1 kernels collapse (B=8 sweep 11.9
+ * GB/s at the 27B FFN shapes vs 90-111 at B=1 coal32). coal32's 8-thr/row
+ * mapping starves the GPU at high B (v1 probe: 8.8 GB/s — too few
+ * threads); this variant uses 16 thr/row (2 threads per 8-byte window,
+ * each covering 4 bytes / 16 values) with the dequant hoisted out of the
+ * stream loop: the 2-bit nibbles and the group scale decode are computed
+ * ONCE per weight window, all BC streams run independent FMA chains
+ * against L2-resident x. Probe (FFN shapes, batched x8):
+ *   N=17408 K=5120 (gate/up): B=2 88.0 (1.33x), B=4 51.5, B=8 26.1 (2.0-2.3x)
+ *   N=5120  K=17408 (down):   B=8 21.5 (1.8x)
+ * vs the incumbent batched_b. Numeric: max|d| 1.4e-3 vs engine scalar per
+ * stream (FP-noise level). Opt-in STRATUM_Q2K_COAL=1, B 2..8,
+ * nc_batch_add_streams path (qwen35 multiseq / best-of-N compute). */
+#define DEFINE_Q2K_COAL16_MB(BC) \
+kernel void q2k_sgemv_coal16_mb_b##BC( \
+    device const block_q2_K* W           [[buffer(0)]], \
+    device const float*      x           [[buffer(1)]], \
+    device float*            y           [[buffer(2)]], \
+    constant uint&           K           [[buffer(3)]], \
+    constant uint&           N_total     [[buffer(4)]], \
+    constant uint&           B           [[buffer(5)]], \
+    uint tgid    [[threadgroup_position_in_grid]], \
+    uint tid     [[thread_position_in_threadgroup]], \
+    uint tg_size [[threads_per_threadgroup]]) \
+{ \
+    if (tg_size != 256) return; \
+    const uint blocks_per_row = K / 256; \
+    const uint local_row = tid >> 4; \
+    const uint t16       = tid & 15; \
+    const uint row = tgid * 16u + local_row; \
+    const uint rr  = min(row, N_total - 1u); \
+    device const block_q2_K* row_blocks = W + (uint)rr * blocks_per_row; \
+    const uint sl   = t16 >> 1;   /* 0..7: (n,hb,hsel) slice */ \
+    const uint hh   = t16 & 1;   /* 0..1: which 4 bytes of the window */ \
+    const uint n    = sl >> 2; \
+    const uint hb   = (sl >> 1) & 1; \
+    const uint hsel = sl & 1; \
+    float partial[BC]; \
+    for (uint s = 0; s < BC; s++) partial[s] = 0.0f; \
+    for (uint blk = 0; blk < blocks_per_row; blk++) { \
+        const device block_q2_K& b = row_blocks[blk]; \
+        const float d    = float(b.d); \
+        const float dmin = float(b.dmin); \
+        const device uchar* qp = b.qs + 32u*n + 16u*hb + hsel*8u + 4u*hh; \
+        const uint xbase = blk*256u + 128u*n + 16u*hb + hsel*8u + 4u*hh; \
+        uchar4 raw = *(device const uchar4*)(qp); \
+        float4 wj[4]; \
+        _Pragma("unroll") \
+        for (int j = 0; j < 4; j++) \
+            wj[j] = float4((raw >> uchar4((uchar)(2u*j))) & uchar4(0x3)); \
+        const uint sbase = 8u*n + hb; \
+        float dl[4]; float ml[4]; \
+        _Pragma("unroll") \
+        for (int j = 0; j < 4; j++) { \
+            const uchar scb = b.scales[sbase + 2u*j]; \
+            dl[j] = d    * float(scb & 0xF); \
+            ml[j] = dmin * float(scb >> 4); \
+        } \
+        for (uint s = 0; s < BC; s++) { \
+            device const float* xs = x + (size_t)s * K + xbase; \
+            float qv[4]; float sv[4]; \
+            _Pragma("unroll") \
+            for (int j = 0; j < 4; j++) { \
+                float4 xv = *(device const float4*)(xs + 32u*j); \
+                qv[j] = dot(wj[j], xv); \
+                sv[j] = xv.x + xv.y + xv.z + xv.w; \
+            } \
+            _Pragma("unroll") \
+            for (int j = 0; j < 4; j++) \
+                partial[s] += dl[j] * qv[j] - ml[j] * sv[j]; \
+        } \
+    } \
+    threadgroup float tgp[16][16]; \
+    for (uint s = 0; s < BC; s++) { \
+        float tot = partial[s]; \
+        tot += simd_shuffle_xor(tot, 8); \
+        tot += simd_shuffle_xor(tot, 4); \
+        tot += simd_shuffle_xor(tot, 2); \
+        tot += simd_shuffle_xor(tot, 1); \
+        if (t16 == 0) tgp[local_row][s] = tot; \
+    } \
+    threadgroup_barrier(mem_flags::mem_threadgroup); \
+    if (t16 == 0 && row < N_total) { \
+        for (uint s = 0; s < BC; s++) y[(size_t)s * N_total + row] = tgp[local_row][s]; \
+    } \
+}
+
+DEFINE_Q2K_COAL16_MB(2)
+DEFINE_Q2K_COAL16_MB(3)
+DEFINE_Q2K_COAL16_MB(4)
+DEFINE_Q2K_COAL16_MB(5)
+DEFINE_Q2K_COAL16_MB(6)
+DEFINE_Q2K_COAL16_MB(7)
+DEFINE_Q2K_COAL16_MB(8)
