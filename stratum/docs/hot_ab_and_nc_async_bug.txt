@@ -114,3 +114,47 @@ token. An entire manual hot A/B ran three "configs" that were actually
 one. Fixed in benchmarks/hot_ab_27b.sh via ${=VAR}; recorded here
 because every future shell-driven measurement on this repo must use
 ${=...} (or arrays) for env/prompt expansion under zsh.
+
+
+Part 5 — The decisive hot A/B (clean same-cache-state) + V59 refuted
+----------------------------------------------------------------------
+Machine state: model warmed to 95-100% residency, hot_fast ENABLED,
+all runs back-to-back in one cache window. 27B, prompt 1..8, NOSPEC,
+greedy; NC runs add the three COAL flags. STRATUM_TIMING per-forward:
+
+  config              | fwd wall | tracked buckets          | sequence
+  --------------------+----------+--------------------------+-----------
+  CPU hot             |  0.468s  | cpumm 0.366 (Q2 5.23G +  | 10 4838
+                      |          | Q4 3.11G + Q6 1.96G all  | 1665 ...
+                      |          | on CPU, 28 GB/s)         |
+  NC hot (V56 behav.) |  2.024s  | gpu 0.355, commit+wait   | identical
+                      |          | ~0.2-0.3, rest ~0        |
+  NC hot (V59 ioskip) |  3.617s  | iostall 0.333 REAPPEARS, | identical
+                      |          | CPU weights 7.4GB        |
+
+Conclusions:
+  1. CPU hot is 4.3x FASTER than NC hot on the 27B (0.468 vs 2.024
+     s/forward), sequences identical. The engine's CPU default is right.
+  2. The non-matmul compute (SSM scan + attention + elementwise) is only
+     ~0.1s/forward (CPU fwd 0.468 - cpumm 0.366) — so the NC path's
+     ~1.6s untracked is NOT model compute. It lives in the NC submission
+     stack: ~130 begin/flush/consume window lifecycles + ~350 encoder
+     cycles per forward, each pathologically slow on this machine
+     (commit+wait 6.1ms avg vs 0.4ms in probes). Attributing the rest
+     needs Metal-level profiling (Instruments/signposts) — beyond shell
+     instrumentation.
+  3. V59 (skip layer I/O scheduling under hot_fast) is REFUTED and ships
+     default-OFF (opt-in STRATUM_HOT_FAST_IOSKIP=1): the scheduling is
+     LOAD-BEARING for NC — wt_next_start's preads keep the next tensors
+     resident, and newBufferWithBytesNoCopy FAILS on non-resident
+     file-backed pages, so with ioskip ON ~300 dispatches fell back to
+     CPU (NoCopy reg 632->334, CPU weight bytes 0->7.4GB, iostall
+     reappears, wall 28.8->34.8s). The V56 author's "pure tax" note
+     applies to the multix_pipe decision chain only — not to the pread
+     residency maintenance the GPU path depends on.
+  4. Net session verdict on single-stream: on this machine the honest
+     hot number is CPU ~2.1 tok/s marginal (0.468s/fwd). NC's kernel-
+     level wins (170-245 GB/s probes) are real but swamped by the
+     in-engine submission-stack overhead; making NC win requires
+     profiling that stack (next session's first move: Metal signposts
+     around begin/encode/flush/consume).
