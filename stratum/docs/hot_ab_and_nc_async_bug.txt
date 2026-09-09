@@ -189,3 +189,34 @@ Conclusions:
      level — it lives inside commit+wait's GPU execution window and the
      driver's per-commit path. Next tool: Metal signposts / Instruments
      GPU trace; shell instrumentation is exhausted.
+
+
+Part 7 — The Q2K nibble layout (type-42): a HOT-ONLY single-stream lever
+--------------------------------------------------------------------------
+The CPU hot decomposition (Part 5) shows cpumm=0.366s for 10.3GB =
+28 GB/s effective — the CPU path is dequant-compute-bound, and Q2_K is
+48% of those bytes (5.23GB). The sanctioned nibble layout (AGENTS.md:
+byte re-arrangement, values unchanged, 2.2x unpack measured) has an
+end-to-end trade-off that the file sizes confirm exactly:
+
+  block layout: orig 84B (scales16+qs64+d2+dmin2)
+                nib  148B (scales16+qs128+d2+dmin2)  = 1.76x expansion
+  Q2K bytes:    5.70GB -> 10.04GB
+  working set:  6.28 (main non-Q2K) + 10.04 = 16.32GB predicted
+                vs 16.31GB actual nib file  <- layout inference confirmed
+
+Consequences:
+  - HOT regime (everything resident): Q2K dequant ~2.2x faster ->
+    projected cpumm 0.366 -> ~0.265s, fwd ~0.37s = ~1.27x single-stream.
+    The extra 4.3GB of page-cache reads is free when resident.
+  - STREAMING regime: 36% more bytes from SSD -> strictly worse.
+    nib is a hot-only optimization; never enable it in streaming.
+  - Testability: needs 16.3GB resident — more than this machine's
+    avail window all session (6-16GB). The end-to-end nib A/B joins the
+    NC-hot measurement as blocked-on-clean-machine; benchmarks/
+    hot_ab_27b.sh now takes the nib file as an optional second argument
+    and runs the fourth arm when the window opens.
+
+Engine support already exists (STRATUM_Q2K_NIB=<path> sidecar +
+embedded type-42 detection, V55/V55.2); no engine work remains — only
+the measurement.
