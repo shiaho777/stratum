@@ -2833,6 +2833,12 @@ static int g_ncb_async = -1;
  * measurable instead of guessed. */
 static double g_t_nocopy = 0.0, g_t_commit = 0.0;
 static long   g_n_nocopy = 0,   g_n_commit = 0;
+/* V60: submission-stack decomposition — the hot A/B left ~1.6s/forward
+ * untracked on the NC path; these three timers split the remaining
+ * suspects: command-buffer creation (begin), encoder lifecycle (add),
+ * and the drain/consume copy-backs. */
+static double g_t_begin = 0.0, g_t_encode = 0.0, g_t_copyback = 0.0;
+static long   g_n_begin = 0,   g_n_encode = 0;
 static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
 static int g_ncb_ny = 0;
 static id<MTLBuffer> g_ncb_wbufs[512];
@@ -2985,6 +2991,7 @@ static void ncb_drain_pending(void) {
     double _tc0 = now_s();
     [g_ncb_pending waitUntilCompleted];
     g_t_commit += now_s() - _tc0;
+    double _tcb0 = now_s();
     const char* ybase = g_ncb_pybuf ? (const char*)[g_ncb_pybuf contents] : nil;
     for (int i = 0; i < g_ncb_pn; i++) {
         const NCBatchYTask* t = &g_ncb_ptasks[i];
@@ -3019,14 +3026,17 @@ static void ncb_drain_pending(void) {
             memcpy(t->dst, ybase + t->off, t->bytes);
         }
     }
+    g_t_copyback += now_s() - _tcb0;
     g_ncb_pn = 0;
     g_ncb_pending = nil;
     g_ncb_pybuf = nil;
 }
 
 int stratum_metal_nc_batch_begin(void) {
+    double _tb0 = now_s();
     ncb_drain_pending();   /* async mode: wait+copyback BEFORE reusing staging */
     if (!g_ncb_cmd) g_ncb_cmd = [g_queue commandBuffer];
+    g_t_begin += now_s() - _tb0; g_n_begin++;
     g_ncb_ny = 0;
     g_ncb_xpos = 0;
     g_ncb_ypos = 0;
@@ -3477,6 +3487,7 @@ int stratum_metal_nc_batch_flush(void) {
     }
     [g_ncb_cmd waitUntilCompleted];
     g_t_commit += now_s() - _tc0; g_n_commit++;
+    double _tcb0 = now_s();
     const char* ybase = (const char*)[g_ncb_ybuf contents];
     for (int i = 0; i < g_ncb_ny; i++) {
         const NCBatchYTask* t = &g_ncb_ytasks[i];
@@ -3519,6 +3530,7 @@ int stratum_metal_nc_batch_flush(void) {
             memcpy(t->dst, ybase + t->off, t->bytes);
         }
     }
+    g_t_copyback += now_s() - _tcb0;
     g_ncb_cmd = nil;
     g_ncb_ny = 0;
     g_ncb_nw = 0;   /* release weight buffers (command buffer done) */
@@ -3560,9 +3572,12 @@ void stratum_metal_nc_batch_consume(void) {
 void stratum_metal_nc_time_report(void) {
     if (!g_n_commit) return;
     fprintf(stderr,
-        "  [nc-time] NoCopy reg: %ld x %.1f us = %.3f s | commit+wait: %ld x %.1f us = %.3f s\n",
+        "  [nc-time] NoCopy reg: %ld x %.1f us = %.3f s | commit+wait: %ld x %.1f us = %.3f s\n"
+        "  [nc-time] begin(drain+cmdbuf): %ld x %.1f us = %.3f s | copy-back: %.3f s\n",
         g_n_nocopy, g_n_nocopy ? g_t_nocopy / g_n_nocopy * 1e6 : 0.0, g_t_nocopy,
-        g_n_commit, g_t_commit / g_n_commit * 1e6, g_t_commit);
+        g_n_commit, g_t_commit / g_n_commit * 1e6, g_t_commit,
+        g_n_begin, g_n_begin ? g_t_begin / g_n_begin * 1e6 : 0.0, g_t_begin,
+        g_t_copyback);
 }
 
 /* ================= H3 prefill attention (flash-style) ================= */

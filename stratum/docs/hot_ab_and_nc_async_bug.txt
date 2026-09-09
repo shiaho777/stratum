@@ -158,3 +158,34 @@ Conclusions:
      in-engine submission-stack overhead; making NC win requires
      profiling that stack (next session's first move: Metal signposts
      around begin/encode/flush/consume).
+
+
+Part 6 — V60 submission-stack decomposition (begin/encode/copy-back timers)
+----------------------------------------------------------------------------
+Added metal-side timers (printed by nc_time_report under STRATUM_TIMING):
+begin (drain-check + command-buffer alloc), copy-back (flush/drain memcpy
+loops); encode is already bounded by the engine's gpu= bucket (it wraps
+add_streams end-to-end).
+
+27B NC run (residency had decayed to 43% — a streaming-regime sample):
+  NoCopy reg:    331 x 70.4us = 0.023s
+  commit+wait:   320 x 5.77ms = 1.846s   <- the dominant metal-side cost
+  begin:         320 x 8.1us  = 0.003s   <- REFUTES cmd-buffer-alloc theory
+  copy-back:                  = 0.003s   <- negligible
+  fwd wall 3.4-3.8s; tracked buckets ~1.0-1.1s + commit ~0.37s/fwd.
+
+Conclusions:
+  1. begin and copy-back are NOT the untracked time (ruled out, us-scale).
+  2. commit+wait at 5.8-6.7ms avg (vs 0.4ms for identical kernels in
+     probes) is the single largest metal-side anomaly. The wait absorbs
+     GPU execution INCLUDING page-ins; at 43% residency the GPU faults
+     weights from SSD inside the wait.
+  3. NoCopy reg count is a residency canary: 632 regs at 99% residency
+     vs 331 at 43% — failed NoCopy creations (non-resident pages) fall
+     back to CPU (6GB CPU weights in this run). Reconfirms Part 5's
+     load-bearing-pread finding from the other direction.
+  4. In the HOT NC run (Part 5: fwd 2.024s), after V60 rules out
+     begin/copyback, ~1.3s/forward remains unattributable at shell
+     level — it lives inside commit+wait's GPU execution window and the
+     driver's per-commit path. Next tool: Metal signposts / Instruments
+     GPU trace; shell instrumentation is exhausted.
