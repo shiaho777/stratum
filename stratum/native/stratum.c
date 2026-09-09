@@ -16,6 +16,9 @@
 #include "stratum_arch.h"
 #include "stratum_linear.h"
 #include "stratum_gguf.h"
+#ifdef STRATUM_USE_METAL
+#include "stratum_metal.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,7 +95,11 @@ int main(int argc, char** argv) {
     /* Dispatch to architecture handler — no hardcoded logic here.
      * The handler owns its full lifecycle (init → run → cleanup).
      * In STRATUM_SERVER mode, the handler may loop internally on stdin. */
-    return handler->run(argc, argv);
+    int _rc = handler->run(argc, argv);
+#ifdef STRATUM_USE_METAL
+    if (getenv("STRATUM_TIMING")) stratum_metal_nc_time_report();
+#endif
+    return _rc;
 }
 
 /* Architecture implementations — each registers itself via constructor.

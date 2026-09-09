@@ -2843,6 +2843,51 @@ static int g_ncb_nw = 0;   /* NoCopy weight buffers must outlive autoreleasepool
  * the header is small and the pages are our own mmap. */
 static id<MTLBuffer> g_ncw_keep[8192];
 static int g_ncw_keep_n = 0;
+/* V58: NoCopy window cache — reuse ONE MTLBuffer per distinct aligned
+ * (ptr,len) window across dispatches. The nc-time report showed NoCopy
+ * creation is cheap (45.5us avg) but commit+wait averaged 6.25ms in-engine
+ * vs ~0.4ms for the same kernels in probes: every dispatch bound a FRESH
+ * NoCopy window, forcing GPU page-table revalidation at each commit.
+ * Rebinding the same MTLBuffer keeps the GPU mapping warm.
+ * Opt-in STRATUM_NC_WCACHE=1. Bounded by distinct tensor windows (the
+ * model's tensor count, ~866 for the 27B); the cache holds the strong
+ * ref, replacing append-only keep churn for cached windows. */
+typedef struct { uintptr_t key; size_t len; __strong id<MTLBuffer> buf; } NCWReg;
+#define NCW_SLOTS 2048
+static NCWReg g_ncw_cache[NCW_SLOTS];
+static int g_ncw_cache_on = -1;
+
+static id<MTLBuffer> nc_window_cached(void* aptr, size_t alen) {
+    if (g_ncw_cache_on < 0) {
+        const char* e = getenv("STRATUM_NC_WCACHE");
+        g_ncw_cache_on = (e && atoi(e)) ? 1 : 0;
+    }
+    if (g_ncw_cache_on) {
+        uintptr_t k = (uintptr_t)aptr;
+        unsigned h = (unsigned)(((k >> 14) * 2654435761u) & (NCW_SLOTS - 1));
+        for (unsigned p = 0; p < 8; p++) {
+            unsigned idx = (h + p) & (NCW_SLOTS - 1);
+            if (g_ncw_cache[idx].buf) {
+                if (g_ncw_cache[idx].key == k && g_ncw_cache[idx].len == alen)
+                    return g_ncw_cache[idx].buf;
+                continue;
+            }
+            id<MTLBuffer> b = [g_device newBufferWithBytesNoCopy:aptr
+                                                          length:alen
+                                                         options:MTLResourceStorageModeShared
+                                                     deallocator:nil];
+            if (b) {
+                g_ncw_cache[idx].key = k;
+                g_ncw_cache[idx].len = alen;
+                g_ncw_cache[idx].buf = b;
+            }
+            return b;
+        }
+    }
+    return [g_device newBufferWithBytesNoCopy:aptr length:alen
+                                      options:MTLResourceStorageModeShared
+                                  deallocator:nil];
+}
 /* y direct-write registry: recurring dst allocations (same malloc block reused
  * across layers) register once as NoCopy MTLBuffers; the GPU writes them in
  * place and flush skips the copy-back. Falls back to copy on any failure. */
@@ -3062,13 +3107,11 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
             nbytes_a = (size_t)(aend - astart);
         }
         double _tnc0 = now_s();
-        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
-                                                         length:nbytes_a
-                                                        options:MTLResourceStorageModeShared
-                                                    deallocator:nil];
+        id<MTLBuffer> wbuf = nc_window_cached(wptr_a, nbytes_a);
         g_t_nocopy += now_s() - _tnc0; g_n_nocopy++;
         if (!wbuf) return -1;
-        if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
+        if (g_ncw_cache_on == 0 && g_ncw_keep_n < 8192)
+            g_ncw_keep[g_ncw_keep_n++] = wbuf;   /* cache holds its own ref when on */
         uint32_t K_u32 = (uint32_t)K;
         /* x region: direct-read via the x registry when the caller's buffer
          * is page-aligned and registered (zero-copy); otherwise copy into
@@ -3237,13 +3280,11 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             nbytes_a = (size_t)(aend - astart);
         }
         double _tnc0 = now_s();
-        id<MTLBuffer> wbuf = [g_device newBufferWithBytesNoCopy:wptr_a
-                                                         length:nbytes_a
-                                                        options:MTLResourceStorageModeShared
-                                                    deallocator:nil];
+        id<MTLBuffer> wbuf = nc_window_cached(wptr_a, nbytes_a);
         g_t_nocopy += now_s() - _tnc0; g_n_nocopy++;
         if (!wbuf) return -1;
-        if (g_ncw_keep_n < 8192) g_ncw_keep[g_ncw_keep_n++] = wbuf;
+        if (g_ncw_cache_on == 0 && g_ncw_keep_n < 8192)
+            g_ncw_keep[g_ncw_keep_n++] = wbuf;   /* cache holds its own ref when on */
         uint32_t K_u32 = (uint32_t)K;
         int xoff;
         {
