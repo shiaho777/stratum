@@ -1,0 +1,70 @@
+Hot-regime 27B A/B + the NC_ASYNC stale-y corruption bug
+==========================================================
+Date: 2026-09-08 (config recorded per AGENTS.md "Recording experiment
+configuration")
+
+Part 1 — The hot-regime measurement finally ran (and what it showed)
+---------------------------------------------------------------------
+Machine state at measurement: swap 94% (15.4/16.4GB), but free+inactive
+reached 12.65GB — the best window of the session, enough for the 11.2GB
+model to approach full residency. Three warm-up runs pushed weight-cache
+residency 69% -> 78% -> 99%; hot_fast engaged at 99%.
+
+Config (all runs): qwen3.6-27b-mixed.gguf, prompt "1 2 3 4 5 6 7 8",
+STRATUM_NOSPEC=1, greedy; NC runs add STRATUM_GPU_NC=1 + Q2K/Q4K/Q6K
+COAL=1 (+ V57 batching, merged in PR #58). External wall timing.
+
+  run                          | wall (8 tok) | sequence
+  -----------------------------+--------------+---------------------------
+  NC+COAL+V57 (resident 99%)   |    38.6s     | 10 4838 1665 25 33898 ...
+  CPU       (resident 99%)     |    20.7s     | identical
+  NC+COAL+V57+NC_ASYNC (pre-fix)|   25.9s     | CORRUPT (69582 32969 ...)
+
+Findings:
+  1. CPU beats NC by 1.86x even "hot" — but the hot label is misleading:
+     20.7s/8tok ~= 2.1s/token marginal = ~5.3 GB/s effective = SSD speed,
+     NOT the ~200 GB/s page-cache speed. On a swap-saturated machine the
+     model does not STAY resident: other processes' paging continuously
+     evicts it mid-run. Both arms were streaming; NC's GPU page-in path
+     thrashes worse than CPU faults.
+  2. Run-to-run variance is extreme (a later CPU n=8 run took 7.9s vs
+     n=4's 19.1s — cache state swings between runs). Precise hot A/B is
+     not measurable while the machine swaps.
+  3. Conclusion: on THIS machine state, CPU is the correct default (the
+     engine's shipped default is right). The NC+COAL kernel-bandwidth
+     advantage (170-245 GB/s, probe-measured) can only materialize on a
+     machine where the model actually stays resident. That measurement
+     remains open; nothing in the engine blocks it.
+
+Part 2 — NC_ASYNC silently corrupted output (found + fixed)
+------------------------------------------------------------
+The NC_ASYNC run above produced a completely wrong sequence (69582
+32969 56194 ... instead of 10 4838 1665 25) while running FASTER
+(25.9s) — the classic signature of skipped waits.
+
+Root cause: STRATUM_NC_ASYNC=1 makes stratum_metal_nc_batch_flush()
+commit-only (wait + y copy-back deferred to the next begin). Every
+qwen35 batch window consumes its y results IMMEDIATELY after flush
+(q-split memcpy, swiglu, residual add) — so consumers read stale y.
+Pre-V57 this was latent: B=1 never opened batch windows (hot_fast
+short-circuit), and NC_ASYNC had only ever been exercised by the H3
+spikes (separate binaries whose consumers sit after the next-begin
+drain). V57's B=1 windows made the hazard reachable in the main engine.
+
+Fix (V57.1): call stratum_metal_nc_batch_consume() — the engine's
+existing purpose-built fence ("same wait + copy-back as drain, safe
+between a flush and its immediate CPU consumer, no-op in sync mode") —
+after every qwen35 window flush: q35_nc_flush() and the two group
+functions (q35_gpu2_group_multix_nc, q35_gpu_nc_group_b1).
+
+Validation:
+  - tiny qwen35 Q4_K: NC_ASYNC on/off greedy sequences identical
+    (287 345 335 780 554 915)
+  - 27B 4-token: NC+COALs+NC_ASYNC sequence restored to the baseline
+    (10 4838 1665 25), wall 20.2s
+  - make tests 4/4 PASS
+
+Lesson recorded: any new batch window in this engine MUST pair its
+flush with consume() unless the consumer provably runs after the next
+begin()'s drain. Async submission is an overlap optimization, not a
+license to skip the copy-back fence.

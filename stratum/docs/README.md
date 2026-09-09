@@ -10,6 +10,7 @@ This directory holds the **measured evidence behind the claims in the root READM
 | `manifesto_v2_tinyllama-1.1b-chat-q4km.json` | Re-measured manifesto with the current engine revision |
 | `memory_floor.json` | Memory-floor experiment: wired memory as a function of model size |
 | `pressure_test_results.txt` | Pressure test: how tok/s degrades when sibling processes force page-cache eviction |
+| `hot_ab_and_nc_async_bug.txt` | Hot-regime 27B A/B (CPU 20.7s vs NC 38.6s — residency doesn't survive 94% swap) + the NC_ASYNC stale-y corruption bug and its consume-fence fix |
 | `v57_nc_b1_batching.txt` | Root cause of single-stream NC losing to CPU (hot_fast short-circuit defeated batching; ~0.4ms commit+wait per tensor) + the V57 batch-aware fix |
 | `multiseq_b_scaling.txt` | B>1 GEMV sweep collapse measured; coal_mb v2 (2.5x at B=8) merged; MULTISEQ aggregate is compute-bounded, not N x free |
 | `mtp_tree_acceptance_27b.txt` | Measured MTP-tree acceptance on the 27B: 1.00-1.09 tok/main, top-1 coverage 9-14% — the nextn head bounds speculation at ~1.27x |
