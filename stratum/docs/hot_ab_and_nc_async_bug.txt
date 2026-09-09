@@ -265,3 +265,35 @@ V61 (STRATUM_IOSKIP) ships as the experiment flag it is: default off,
 CPU-only, documented NC hazard (same as V59). Baseline drift during the
 session (28.3s -> 37.3s for the identical config) is itself evidence:
 on this machine, environment state dominates every engine-side lever.
+
+
+Part 8 addendum — the staged-path redesign was TESTED, not just theorized
+---------------------------------------------------------------------------
+The main Part 8 text said the 4-FD ceiling "would require a decode-loop
+redesign around explicit parallel staged reads". Correction: that path
+ALREADY EXISTS (q35_linear_tiled_multix: double-buffered 128MB tiles,
+q35_pread_full fans out via dispatch_apply across the 4-FD pool) — it is
+gated off by wt_stage_want (model_res >= 75%) and the V56 pages-hot bail.
+Both gates were forced open (STRATUM_WSTAGE=1 + STRATUM_FORCE_WSTAGE=1)
+and A/B'd cold-vs-cold (page cache dropped before each arm):
+
+  arm                     | total wall | fwd wall | cpumm    | sequence
+  ------------------------+------------+----------+----------+----------
+  cold default (faults)   |   38.3s    |  2.433s  | 0.656s   | 10 4838 1665 25
+  cold staged (forced)    |   36.1s    |  2.544s  | 0.720s   | identical
+
+Readings:
+  - The staged preads land INSIDE the cpumm bucket (tile loop preads then
+    computes within the dispatch call) — pread=0.000 does not mean
+    non-engagement; B's higher cpumm is the staged reads showing up.
+  - Cold default already achieves ~4.6 GB/s (11.2GB / 2.43s fwd) — 70% of
+    the measured 4-FD ceiling (6.59), well above single-FD (3.21). The
+    earlier ~2.2 GB/s figures were partially-warm mixed states where
+    eviction churn, not raw read rate, dominated.
+  - Forced staged ties the fault-driven default (36.1 vs 38.3 total,
+    within the session's noise band). The redesign lever does not exist —
+    it was already built, and it does not win.
+
+Final streaming verdict: the engine's I/O architecture is at this
+machine's hardware limit. No knob, path, or redesign remaining; the
+regime's numbers move only with the machine's memory state.
