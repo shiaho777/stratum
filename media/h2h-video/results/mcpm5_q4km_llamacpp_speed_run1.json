@@ -6,285 +6,285 @@
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1789011799.261947,
+ "t0": 1789023344.161931,
  "stdout_events": [
   {
-   "t": 1.9317,
+   "t": 2.2676,
    "bytes": 165,
    "text": "--temp 0 --no-warmup --log-disable --ignore-eos <|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
   },
   {
-   "t": 1.9455,
+   "t": 2.3043,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 1.9595,
+   "t": 2.3246,
    "bytes": 2,
    "text": "We"
   },
   {
-   "t": 1.9735,
+   "t": 2.3419,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 1.9874,
+   "t": 2.3596,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 2.0017,
+   "t": 2.3778,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 2.016,
+   "t": 2.3972,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 2.0296,
+   "t": 2.4134,
    "bytes": 9,
    "text": " question"
   },
   {
-   "t": 2.0436,
+   "t": 2.4321,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 2.0577,
+   "t": 2.4507,
    "bytes": 2,
    "text": " \""
   },
   {
-   "t": 2.0713,
+   "t": 2.4698,
    "bytes": 4,
    "text": "What"
   },
   {
-   "t": 2.0857,
+   "t": 2.4874,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 2.1,
+   "t": 2.5056,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 2.1137,
+   "t": 2.5203,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 2.1278,
+   "t": 2.5374,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 2.1426,
+   "t": 2.5522,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 2.1595,
+   "t": 2.5672,
    "bytes": 2,
    "text": "?\""
   },
   {
-   "t": 2.175,
+   "t": 2.5823,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 2.1898,
+   "t": 2.5983,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 2.2041,
+   "t": 2.6145,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 2.219,
+   "t": 2.6313,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 2.234,
+   "t": 2.6481,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 2.2503,
+   "t": 2.6643,
    "bytes": 3,
    "text": "The"
   },
   {
-   "t": 2.2644,
+   "t": 2.6797,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 2.2788,
+   "t": 2.6955,
    "bytes": 6,
    "text": " wants"
   },
   {
-   "t": 2.2933,
+   "t": 2.7145,
    "bytes": 2,
    "text": " a"
   },
   {
-   "t": 2.308,
+   "t": 2.7304,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 2.3219,
+   "t": 2.7471,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 2.336,
+   "t": 2.7644,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 2.3501,
+   "t": 2.7799,
    "bytes": 2,
    "text": "We"
   },
   {
-   "t": 2.3656,
+   "t": 2.7991,
    "bytes": 7,
    "text": " should"
   },
   {
-   "t": 2.3839,
+   "t": 2.8168,
    "bytes": 5,
    "text": " just"
   },
   {
-   "t": 2.3983,
+   "t": 2.8335,
    "bytes": 4,
    "text": " say"
   },
   {
-   "t": 2.413,
+   "t": 2.8506,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 2.4268,
+   "t": 2.8685,
    "bytes": 4,
    "text": " The"
   },
   {
-   "t": 2.4411,
+   "t": 2.8845,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 2.4556,
+   "t": 2.9004,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 2.47,
+   "t": 2.9169,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 2.4853,
+   "t": 2.9337,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 2.5005,
+   "t": 2.9534,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 2.5173,
+   "t": 2.9705,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 2.5341,
+   "t": 2.9871,
    "bytes": 4,
    "text": "That"
   },
   {
-   "t": 2.5501,
+   "t": 3.0041,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 2.5638,
+   "t": 3.0211,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 2.5777,
+   "t": 3.0402,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 2.5918,
+   "t": 3.06,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 2.6052,
+   "t": 3.0797,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 2.6191,
+   "t": 3.0984,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 2.6332,
+   "t": 3.1154,
    "bytes": 3,
    "text": "The"
   },
   {
-   "t": 2.6465,
+   "t": 3.1336,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 2.6605,
+   "t": 3.1502,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 2.6751,
+   "t": 3.168,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 2.6897,
+   "t": 3.1859,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 2.7074,
+   "t": 3.2024,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 2.724,
+   "t": 3.2178,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 2.7793,
+   "t": 3.287,
    "bytes": 1,
    "text": "\n"
   }
@@ -294,14 +294,14 @@
  "peak_file_mb": 0.0,
  "llama_no_mmap": false,
  "exit_code": 0,
- "wall_s": 2.78,
- "stderr_tail": "put buffer size =     0.50 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache: layer  28: dev = CPU\nllama_kv_cache: layer  29: dev = CPU\nllama_kv_cache: layer  30: dev = CPU\nllama_kv_cache: layer  31: dev = CPU\nllama_kv_cache: layer  32: dev = CPU\nllama_kv_cache: layer  33: dev = CPU\nllama_kv_cache: layer  34: dev = CPU\nllama_kv_cache: layer  35: dev = CPU\nllama_kv_cache: layer  36: dev = CPU\nllama_kv_cache: layer  37: dev = CPU\nllama_kv_cache: layer  38: dev = CPU\nllama_kv_cache: layer  39: dev = CPU\nllama_kv_cache: layer  40: dev = CPU\nllama_kv_cache: layer  41: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    10.50 MiB\nllama_kv_cache: size =   10.50 MiB (   256 cells,  42 layers,  1/1 seqs), K (f16):    5.25 MiB, V (f16):    5.25 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 3048\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 39, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\nsched_reserve:        CPU compute buffer size =    20.03 MiB\nsched_reserve: graph nodes  = 1308\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 2.14 ms, sched copies = 1\nmain: decoded 55 tokens in 1.09 s, speed: 50.27 t/s\n\nllama_perf_sampler_print:    samplers time =       2.42 ms /    56 runs\nllama_perf_context_print:        load time =    1871.04 ms\nllama_perf_context_print: prompt eval time =     286.65 ms /    39 tokens (    7.35 ms per token,   136.05 tokens per second)\nllama_perf_context_print:        eval time =     802.89 ms /    55 runs   (   14.60 ms per token,    68.50 tokens per second)\nllama_perf_context_print:       total time =    2678.40 ms /    94 tokens\nllama_perf_context_print:    graphs reused =         54\n\n~llama_context:        CPU compute buffer size is  20.0334 MiB, matches expectation of  20.0334 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
+ "wall_s": 3.289,
+ "stderr_tail": "put buffer size =     0.50 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache: layer  28: dev = CPU\nllama_kv_cache: layer  29: dev = CPU\nllama_kv_cache: layer  30: dev = CPU\nllama_kv_cache: layer  31: dev = CPU\nllama_kv_cache: layer  32: dev = CPU\nllama_kv_cache: layer  33: dev = CPU\nllama_kv_cache: layer  34: dev = CPU\nllama_kv_cache: layer  35: dev = CPU\nllama_kv_cache: layer  36: dev = CPU\nllama_kv_cache: layer  37: dev = CPU\nllama_kv_cache: layer  38: dev = CPU\nllama_kv_cache: layer  39: dev = CPU\nllama_kv_cache: layer  40: dev = CPU\nllama_kv_cache: layer  41: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    10.50 MiB\nllama_kv_cache: size =   10.50 MiB (   256 cells,  42 layers,  1/1 seqs), K (f16):    5.25 MiB, V (f16):    5.25 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 3048\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 39, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\nsched_reserve:        CPU compute buffer size =    20.03 MiB\nsched_reserve: graph nodes  = 1308\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 3.81 ms, sched copies = 1\nmain: decoded 55 tokens in 1.42 s, speed: 38.62 t/s\n\nllama_perf_sampler_print:    samplers time =       2.59 ms /    56 runs\nllama_perf_context_print:        load time =    2176.17 ms\nllama_perf_context_print: prompt eval time =     457.50 ms /    39 tokens (   11.73 ms per token,    85.25 tokens per second)\nllama_perf_context_print:        eval time =     961.44 ms /    55 runs   (   17.48 ms per token,    57.21 tokens per second)\nllama_perf_context_print:       total time =    3142.68 ms /    94 tokens\nllama_perf_context_print:    graphs reused =         54\n\n~llama_context:        CPU compute buffer size is  20.0334 MiB, matches expectation of  20.0334 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
  "gen_chunks": 55,
  "gen_bytes": 235,
- "t_first_gen_chunk_s": 1.946,
- "t_last_gen_chunk_s": 2.779,
- "gen_span_s": 0.834,
- "tok_per_s_stream": 230.27,
- "tok_per_s_wall": 69.06,
+ "t_first_gen_chunk_s": 2.304,
+ "t_last_gen_chunk_s": 3.287,
+ "gen_span_s": 0.983,
+ "tok_per_s_stream": 195.38,
+ "tok_per_s_wall": 58.38,
  "mem_samples": 0
 }

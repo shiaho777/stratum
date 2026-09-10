@@ -882,7 +882,9 @@ int run_llama_arch(int argc, char** argv) {
             g_st.nchunks = atoi(env_nc);
         } else {
             g_st.nchunks = pcpu;
-            if (la_g_cfg.n_embed <= 4096 && g_st.nchunks > 6) g_st.nchunks = 6;
+            /* the old hidden<=4096 -> 6 clamp predates the row-parallel
+             * kernels; measured on MiniCPM5-2B Q4_K_M it costs ~15% decode
+             * throughput. All P-cores now. */
         }
         if (g_st.nchunks < 1) g_st.nchunks = 1;
         fprintf(stderr, "  parallel matmul: %d chunks (%d P-cores, %d physical)\n",

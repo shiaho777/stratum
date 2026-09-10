@@ -5,1063 +5,1084 @@
  "n_prompt_tokens": 21,
  "n_gen": 192,
  "sdot0": false,
- "t0": 1788974714.730884,
+ "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
+ "t0": 1789023760.2358289,
  "stdout_events": [
   {
-   "t": 1.5174,
+   "t": 2.1699,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 1.5368,
+   "t": 2.1974,
    "bytes": 4,
    "text": "Okay"
   },
   {
-   "t": 1.5572,
+   "t": 2.2221,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.5826,
+   "t": 2.2441,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.6083,
+   "t": 2.27,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 1.6344,
+   "t": 2.292,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 2.1495,
+   "t": 2.3166,
    "bytes": 7,
    "text": " asking"
   },
   {
-   "t": 2.1679,
+   "t": 2.3413,
    "bytes": 4,
    "text": " for"
   },
   {
-   "t": 2.1864,
+   "t": 2.3684,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 2.2045,
+   "t": 2.3971,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 2.223,
+   "t": 2.4211,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 2.2417,
+   "t": 2.4457,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 2.2599,
+   "t": 2.9823,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 2.2781,
+   "t": 3.0057,
    "bytes": 2,
    "text": " a"
   },
   {
-   "t": 2.2971,
+   "t": 3.031,
    "bytes": 7,
    "text": " single"
   },
   {
-   "t": 2.3158,
+   "t": 3.0544,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 2.3341,
+   "t": 3.0783,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 2.3527,
+   "t": 3.1048,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 2.3778,
+   "t": 3.1346,
    "bytes": 4,
    "text": " Let"
   },
   {
-   "t": 2.399,
+   "t": 3.1558,
    "bytes": 3,
    "text": " me"
   },
   {
-   "t": 2.4191,
+   "t": 3.1803,
    "bytes": 7,
    "text": " recall"
   },
   {
-   "t": 2.9244,
+   "t": 3.209,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 2.9425,
+   "t": 3.2357,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 2.9613,
+   "t": 3.2588,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 2.9801,
+   "t": 3.7836,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 2.9983,
+   "t": 3.8099,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 3.0168,
+   "t": 3.8376,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 3.035,
+   "t": 3.8645,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 3.0537,
+   "t": 3.8908,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 3.0729,
+   "t": 3.9152,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 3.0917,
+   "t": 3.9407,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 3.1105,
+   "t": 3.9685,
    "bytes": 5,
    "text": " make"
   },
   {
-   "t": 3.1356,
+   "t": 3.997,
    "bytes": 5,
    "text": " sure"
   },
   {
-   "t": 3.1628,
+   "t": 4.0219,
    "bytes": 3,
    "text": " it"
   },
   {
-   "t": 3.1901,
+   "t": 4.554,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 3.7182,
+   "t": 4.5785,
    "bytes": 2,
    "text": " a"
   },
   {
-   "t": 3.7366,
+   "t": 4.6035,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 3.7544,
+   "t": 4.6292,
    "bytes": 2,
    "text": "-s"
   },
   {
-   "t": 3.7725,
+   "t": 4.6544,
    "bytes": 7,
    "text": "entence"
   },
   {
-   "t": 3.7906,
+   "t": 4.6804,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 3.8089,
+   "t": 4.7063,
    "bytes": 8,
    "text": " without"
   },
   {
-   "t": 3.8281,
+   "t": 4.7307,
    "bytes": 4,
    "text": " any"
   },
   {
-   "t": 3.8466,
+   "t": 4.758,
    "bytes": 6,
    "text": " extra"
   },
   {
-   "t": 3.8651,
+   "t": 4.7865,
    "bytes": 12,
    "text": " information"
   },
   {
-   "t": 3.8838,
+   "t": 4.8107,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 3.9021,
+   "t": 4.837,
    "bytes": 4,
    "text": " Let"
   },
   {
-   "t": 3.9201,
+   "t": 5.347,
    "bytes": 3,
    "text": " me"
   },
   {
-   "t": 3.9442,
+   "t": 5.3729,
    "bytes": 6,
    "text": " check"
   },
   {
-   "t": 3.9632,
+   "t": 5.4006,
    "bytes": 3,
    "text": " if"
   },
   {
-   "t": 3.9839,
+   "t": 5.4244,
    "bytes": 6,
    "text": " there"
   },
   {
-   "t": 4.4873,
+   "t": 5.4471,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 4.5068,
+   "t": 5.4732,
    "bytes": 4,
    "text": " any"
   },
   {
-   "t": 4.5251,
+   "t": 5.4944,
    "bytes": 6,
    "text": " other"
   },
   {
-   "t": 4.5432,
+   "t": 5.5165,
    "bytes": 5,
    "text": " city"
   },
   {
-   "t": 4.564,
+   "t": 5.5404,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 4.584,
+   "t": 5.5707,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 4.6049,
+   "t": 5.5946,
    "bytes": 9,
    "text": " commonly"
   },
   {
-   "t": 4.6244,
+   "t": 6.1215,
    "bytes": 6,
    "text": " known"
   },
   {
-   "t": 4.6433,
+   "t": 6.1485,
    "bytes": 3,
    "text": " as"
   },
   {
-   "t": 4.6626,
+   "t": 6.1733,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 4.6818,
+   "t": 6.1996,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 4.7027,
+   "t": 6.2265,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 4.7245,
+   "t": 6.2543,
    "bytes": 3,
    "text": " No"
   },
   {
-   "t": 4.7433,
+   "t": 6.2814,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 5.2454,
+   "t": 6.3049,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 5.2672,
+   "t": 6.334,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 5.2854,
+   "t": 6.3598,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 5.304,
+   "t": 6.3879,
    "bytes": 8,
    "text": " correct"
   },
   {
-   "t": 5.323,
+   "t": 6.9002,
    "bytes": 4,
    "text": " and"
   },
   {
-   "t": 5.3418,
+   "t": 6.9256,
    "bytes": 5,
    "text": " most"
   },
   {
-   "t": 5.3603,
+   "t": 6.95,
    "bytes": 9,
    "text": " commonly"
   },
   {
-   "t": 5.3789,
+   "t": 6.9745,
    "bytes": 6,
    "text": " cited"
   },
   {
-   "t": 5.3976,
+   "t": 7.0024,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 5.416,
+   "t": 7.0304,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 5.4351,
+   "t": 7.0562,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 5.454,
+   "t": 7.0809,
    "bytes": 7,
    "text": " should"
   },
   {
-   "t": 5.4785,
+   "t": 7.1061,
    "bytes": 8,
    "text": " confirm"
   },
   {
-   "t": 5.4989,
+   "t": 7.1373,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 5.5209,
+   "t": 7.1649,
    "bytes": 6,
    "text": " there"
   },
   {
-   "t": 6.0191,
+   "t": 7.1906,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 6.0378,
+   "t": 7.7052,
    "bytes": 3,
    "text": " no"
   },
   {
-   "t": 6.0568,
+   "t": 7.7301,
    "bytes": 10,
    "text": " confusion"
   },
   {
-   "t": 6.0754,
+   "t": 7.7547,
    "bytes": 5,
    "text": " with"
   },
   {
-   "t": 6.0941,
+   "t": 7.7793,
    "bytes": 8,
    "text": " another"
   },
   {
-   "t": 6.1136,
+   "t": 7.8031,
    "bytes": 8,
    "text": " country"
   },
   {
-   "t": 6.1331,
+   "t": 7.8263,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 6.1518,
+   "t": 7.8551,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 6.1709,
+   "t": 7.8797,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 6.1905,
+   "t": 7.9097,
    "bytes": 8,
    "text": " Alright"
   },
   {
-   "t": 6.2096,
+   "t": 7.9377,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 6.2319,
+   "t": 7.963,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 6.253,
+   "t": 8.4836,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 6.273,
+   "t": 8.5091,
    "bytes": 4,
    "text": " all"
   },
   {
-   "t": 6.7708,
+   "t": 8.5329,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 6.7903,
+   "t": 8.5607,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 6.8095,
+   "t": 8.5877,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 6.8316,
+   "t": 8.6136,
    "bytes": 5,
    "text": "Paris"
   },
   {
-   "t": 6.8513,
+   "t": 8.6448,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 6.8704,
+   "t": 8.6856,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 6.8895,
+   "t": 8.7158,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 6.9089,
+   "t": 8.741,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 6.9276,
+   "t": 9.288,
    "bytes": 5,
    "text": "Human"
   },
   {
-   "t": 6.947,
+   "t": 9.3146,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 6.9661,
+   "t": 9.3414,
    "bytes": 5,
    "text": " What"
   },
   {
-   "t": 6.9878,
+   "t": 9.3662,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 7.0103,
+   "t": 9.3937,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 7.0298,
+   "t": 9.422,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 7.5331,
+   "t": 9.4501,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 7.5524,
+   "t": 9.4769,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 7.571,
+   "t": 9.5174,
    "bytes": 1,
    "text": "?"
   },
   {
-   "t": 7.5914,
+   "t": 9.5466,
    "bytes": 3,
    "text": "  \n"
   },
   {
-   "t": 7.61,
+   "t": 9.5739,
    "bytes": 1,
    "text": "A"
   },
   {
-   "t": 7.6299,
+   "t": 10.0946,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 7.649,
+   "t": 10.1241,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 7.6682,
+   "t": 10.1527,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 7.6871,
+   "t": 10.1782,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 7.7059,
+   "t": 10.2048,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 7.7253,
+   "t": 10.2317,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 7.7444,
+   "t": 10.2568,
    "bytes": 4,
    "text": "What"
   },
   {
-   "t": 7.7689,
+   "t": 10.28,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 7.7886,
+   "t": 10.3069,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 7.8089,
+   "t": 10.3331,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 8.3184,
+   "t": 10.3579,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 8.338,
+   "t": 10.8909,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 8.3576,
+   "t": 10.919,
    "bytes": 1,
    "text": "?"
   },
   {
-   "t": 8.3768,
+   "t": 10.9442,
    "bytes": 3,
    "text": "  \n"
   },
   {
-   "t": 8.3961,
+   "t": 10.9731,
    "bytes": 1,
    "text": "A"
   },
   {
-   "t": 8.4159,
+   "t": 11.0018,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 8.435,
+   "t": 11.0293,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 8.4541,
+   "t": 11.0593,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 8.4739,
+   "t": 11.0898,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.4936,
+   "t": 11.1239,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 8.5128,
+   "t": 11.1554,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 8.537,
+   "t": 11.6802,
    "bytes": 4,
    "text": "What"
   },
   {
-   "t": 8.5575,
+   "t": 11.7062,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 8.5776,
+   "t": 11.733,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 9.0827,
+   "t": 11.7621,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 9.1022,
+   "t": 11.7898,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 9.1216,
+   "t": 11.8173,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 9.1411,
+   "t": 11.8457,
    "bytes": 1,
    "text": "?"
   },
   {
-   "t": 9.1611,
+   "t": 11.8718,
    "bytes": 3,
    "text": "  \n"
   },
   {
-   "t": 9.1813,
+   "t": 11.9,
    "bytes": 1,
    "text": "A"
   },
   {
-   "t": 9.2004,
+   "t": 11.9251,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 9.2211,
+   "t": 11.9505,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 9.2413,
+   "t": 12.4647,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 9.2614,
+   "t": 12.4899,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.2845,
+   "t": 12.5151,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 9.3069,
+   "t": 12.5383,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 9.3273,
+   "t": 12.5653,
    "bytes": 3,
    "text": "The"
   },
   {
-   "t": 9.8414,
+   "t": 12.5904,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 9.8697,
+   "t": 12.615,
    "bytes": 6,
    "text": " asked"
   },
   {
-   "t": 9.8953,
+   "t": 12.6401,
    "bytes": 4,
    "text": " for"
   },
   {
-   "t": 9.9164,
+   "t": 12.6653,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 9.9371,
+   "t": 12.6945,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 9.9583,
+   "t": 12.7213,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 9.9792,
+   "t": 13.2248,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 9.9992,
+   "t": 13.2495,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 10.0185,
+   "t": 13.2738,
    "bytes": 2,
    "text": " a"
   },
   {
-   "t": 10.0379,
+   "t": 13.2985,
    "bytes": 7,
    "text": " single"
   },
   {
-   "t": 10.0581,
+   "t": 13.3239,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 10.083,
+   "t": 13.3483,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 10.1037,
+   "t": 13.3713,
    "bytes": 4,
    "text": " The"
   },
   {
-   "t": 10.6091,
+   "t": 13.3954,
    "bytes": 8,
    "text": " correct"
   },
   {
-   "t": 10.6292,
+   "t": 13.4209,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 10.6498,
+   "t": 13.4484,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 10.6705,
+   "t": 13.4735,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 10.6905,
+   "t": 13.4972,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 10.7104,
+   "t": 14.0101,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 10.7309,
+   "t": 14.0324,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 10.7509,
+   "t": 14.0565,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 10.7708,
+   "t": 14.0813,
    "bytes": 4,
    "text": "What"
   },
   {
-   "t": 10.7913,
+   "t": 14.1106,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 10.8112,
+   "t": 14.1366,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 10.8355,
+   "t": 14.1664,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 10.8583,
+   "t": 14.1908,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 10.8783,
+   "t": 14.2214,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 11.3874,
+   "t": 14.2458,
    "bytes": 1,
    "text": "?"
   },
   {
-   "t": 11.4083,
+   "t": 14.2715,
    "bytes": 3,
    "text": "  \n"
   },
   {
-   "t": 11.4288,
+   "t": 14.7827,
    "bytes": 1,
    "text": "A"
   },
   {
-   "t": 11.4501,
+   "t": 14.8058,
    "bytes": 1,
    "text": ":"
   },
   {
-   "t": 11.47,
+   "t": 14.832,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 11.4906,
+   "t": 14.8563,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 11.5107,
+   "t": 14.8801,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 11.5314,
+   "t": 14.9046,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 11.5514,
+   "t": 14.9279,
    "bytes": 13,
    "text": "<|endoftext|>"
   },
   {
-   "t": 11.5711,
+   "t": 14.9519,
    "bytes": 4,
    "text": "What"
   },
   {
-   "t": 11.5938,
+   "t": 14.9765,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 11.6167,
+   "t": 15.0036,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 11.6372,
+   "t": 15.0277,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 12.1385,
+   "t": 15.5361,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 12.1588,
+   "t": 15.5606,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 12.179,
+   "t": 15.5864,
    "bytes": 1,
    "text": "?"
   }
  ],
  "mem_series": [
   {
-   "t": 0.567,
-   "anon_mb": 2.72,
+   "t": 0.586,
+   "anon_mb": 6.64,
    "file_mb": 1433.6
   },
   {
-   "t": 1.353,
-   "anon_mb": 15.6,
+   "t": 1.364,
+   "anon_mb": 15.2,
    "file_mb": 1433.6
   },
   {
-   "t": 2.138,
-   "anon_mb": 18.5,
+   "t": 2.163,
+   "anon_mb": 18.0,
    "file_mb": 1433.6
   },
   {
-   "t": 2.91,
-   "anon_mb": 22.0,
+   "t": 2.983,
+   "anon_mb": 20.6,
    "file_mb": 1433.6
   },
   {
-   "t": 3.707,
-   "anon_mb": 24.9,
+   "t": 3.767,
+   "anon_mb": 23.3,
    "file_mb": 1433.6
   },
   {
-   "t": 4.477,
-   "anon_mb": 28.1,
+   "t": 4.556,
+   "anon_mb": 25.0,
    "file_mb": 1433.6
   },
   {
-   "t": 5.246,
-   "anon_mb": 31.6,
+   "t": 5.33,
+   "anon_mb": 27.7,
    "file_mb": 1433.6
   },
   {
-   "t": 6.006,
-   "anon_mb": 34.5,
+   "t": 6.113,
+   "anon_mb": 30.3,
    "file_mb": 1433.6
   },
   {
-   "t": 6.765,
-   "anon_mb": 37.7,
+   "t": 6.899,
+   "anon_mb": 32.9,
    "file_mb": 1433.6
   },
   {
-   "t": 7.53,
-   "anon_mb": 41.1,
+   "t": 7.686,
+   "anon_mb": 35.5,
    "file_mb": 1433.6
   },
   {
-   "t": 8.304,
-   "anon_mb": 43.9,
+   "t": 8.466,
+   "anon_mb": 37.6,
    "file_mb": 1433.6
   },
   {
-   "t": 9.066,
-   "anon_mb": 47.4,
+   "t": 9.277,
+   "anon_mb": 39.9,
    "file_mb": 1433.6
   },
   {
-   "t": 9.838,
-   "anon_mb": 50.0,
+   "t": 10.082,
+   "anon_mb": 42.6,
    "file_mb": 1433.6
   },
   {
-   "t": 10.607,
-   "anon_mb": 52.6,
+   "t": 10.874,
+   "anon_mb": 44.6,
    "file_mb": 1433.6
   },
   {
-   "t": 11.374,
-   "anon_mb": 56.1,
+   "t": 11.667,
+   "anon_mb": 46.9,
    "file_mb": 1433.6
   },
   {
-   "t": 12.133,
-   "anon_mb": 58.8,
+   "t": 12.453,
+   "anon_mb": 49.6,
+   "file_mb": 1433.6
+  },
+  {
+   "t": 13.222,
+   "anon_mb": 52.1,
+   "file_mb": 1433.6
+  },
+  {
+   "t": 13.989,
+   "anon_mb": 54.0,
+   "file_mb": 1433.6
+  },
+  {
+   "t": 14.764,
+   "anon_mb": 56.6,
+   "file_mb": 1433.6
+  },
+  {
+   "t": 15.531,
+   "anon_mb": 59.2,
    "file_mb": 1433.6
   }
  ],
- "peak_anon_mb": 58.8,
+ "peak_anon_mb": 59.2,
  "peak_file_mb": 1433.6,
  "llama_no_mmap": false,
  "exit_code": 0,
- "wall_s": 12.188,
+ "wall_s": 15.595,
  "stderr_tail": " in=3838  stratum_argmax=374  logit=22.0527\n  step 120  in=374  stratum_argmax=279  logit=22.967\n  step 121  in=279  stratum_argmax=6722  logit=23.1286\n  step 122  in=6722  stratum_argmax=315  logit=24.5853\n  step 123  in=315  stratum_argmax=9625  logit=21.519\n  step 124  in=9625  stratum_argmax=30  logit=22.509\n  step 125  in=30  stratum_argmax=2303  logit=24.8029\n  step 126  in=2303  stratum_argmax=32  logit=24.8869\n  step 127  in=32  stratum_argmax=25  logit=25.4037\n  step 128  in=25  stratum_argmax=12095  logit=23.7766\n  step 129  in=12095  stratum_argmax=13  logit=27.3999\n  step 130  in=13  stratum_argmax=151645  logit=34.1742\n  step 131  in=151645  stratum_argmax=198  logit=31.551\n  step 132  in=198  stratum_argmax=151643  logit=31.9307\n  step 133  in=151643  stratum_argmax=3838  logit=19.2796\n  step 134  in=3838  stratum_argmax=374  logit=22.978\n  step 135  in=374  stratum_argmax=279  logit=23.0589\n  step 136  in=279  stratum_argmax=6722  logit=23.4379\n  step 137  in=6722  stratum_argmax=315  logit=24.3307\n  step 138  in=315  stratum_argmax=9625  logit=22.0851\n  step 139  in=9625  stratum_argmax=30  logit=22.7689\n  step 140  in=30  stratum_argmax=2303  logit=25.6859\n  step 141  in=2303  stratum_argmax=32  logit=26.6109\n  step 142  in=32  stratum_argmax=25  logit=27.7068\n  step 143  in=25  stratum_argmax=12095  logit=23.7368\n  step 144  in=12095  stratum_argmax=13  logit=26.7146\n  step 145  in=13  stratum_argmax=151645  logit=32.3904\n  step 146  in=151645  stratum_argmax=198  logit=32.4036\n  step 147  in=198  stratum_argmax=151643  logit=31.1697\n  step 148  in=151643  stratum_argmax=785  logit=18.9725\n  step 149  in=785  stratum_argmax=1196  logit=20.1885\n  step 150  in=1196  stratum_argmax=4588  logit=19.5732\n  step 151  in=4588  stratum_argmax=369  logit=21.8173\n  step 152  in=369  stratum_argmax=279  logit=25.1353\n  step 153  in=279  stratum_argmax=6722  logit=24.8966\n  step 154  in=6722  stratum_argmax=315  logit=26.0298\n  step 155  in=315  stratum_argmax=9625  logit=25.7784\n  step 156  in=9625  stratum_argmax=304  logit=24.1879\n  step 157  in=304  stratum_argmax=264  logit=25.0744\n  step 158  in=264  stratum_argmax=3175  logit=22.8754\n  step 159  in=3175  stratum_argmax=11652  logit=21.9823\n  step 160  in=11652  stratum_argmax=13  logit=25.2806\n  step 161  in=13  stratum_argmax=576  logit=23.2413\n  step 162  in=576  stratum_argmax=4396  logit=23.1444\n  step 163  in=4396  stratum_argmax=4226  logit=25.3083\n  step 164  in=4226  stratum_argmax=374  logit=24.9812\n  step 165  in=374  stratum_argmax=12095  logit=20.4306\n  step 166  in=12095  stratum_argmax=13  logit=24.7045\n  step 167  in=13  stratum_argmax=151645  logit=23.8876\n  step 168  in=151645  stratum_argmax=198  logit=32.68\n  step 169  in=198  stratum_argmax=151643  logit=31.0748\n  step 170  in=151643  stratum_argmax=3838  logit=19.0801\n  step 171  in=3838  stratum_argmax=374  logit=24.6522\n  step 172  in=374  stratum_argmax=279  logit=24.3321\n  step 173  in=279  stratum_argmax=6722  logit=25.2153\n  step 174  in=6722  stratum_argmax=315  logit=25.4851\n  step 175  in=315  stratum_argmax=9625  logit=23.933\n  step 176  in=9625  stratum_argmax=30  logit=23.7343\n  step 177  in=30  stratum_argmax=2303  logit=26.3466\n  step 178  in=2303  stratum_argmax=32  logit=25.575\n  step 179  in=32  stratum_argmax=25  logit=27.3992\n  step 180  in=25  stratum_argmax=12095  logit=25.0908\n  step 181  in=12095  stratum_argmax=13  logit=27.1679\n  step 182  in=13  stratum_argmax=151645  logit=32.8167\n  step 183  in=151645  stratum_argmax=198  logit=32.643\n  step 184  in=198  stratum_argmax=151643  logit=31.4299\n  step 185  in=151643  stratum_argmax=3838  logit=19.1467\n  step 186  in=3838  stratum_argmax=374  logit=24.817\n  step 187  in=374  stratum_argmax=279  logit=24.518\n  step 188  in=279  stratum_argmax=6722  logit=25.2519\n  step 189  in=6722  stratum_argmax=315  logit=25.702\n  step 190  in=315  stratum_argmax=9625  logit=23.8506\n  step 191  in=9625  stratum_argmax=30  logit=24.1544\n",
  "gen_chunks": 192,
  "gen_bytes": 883,
- "t_first_gen_chunk_s": 1.517,
- "t_last_gen_chunk_s": 12.179,
- "gen_span_s": 10.662,
- "tok_per_s_stream": 18.01,
- "tok_per_s_wall": 15.75,
- "mem_samples": 16
+ "t_first_gen_chunk_s": 2.17,
+ "t_last_gen_chunk_s": 15.586,
+ "gen_span_s": 13.416,
+ "tok_per_s_stream": 14.31,
+ "tok_per_s_wall": 12.31,
+ "mem_samples": 20
 }

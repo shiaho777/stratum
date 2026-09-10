@@ -5,490 +5,491 @@
  "n_prompt_tokens": 21,
  "n_gen": 192,
  "sdot0": false,
- "t0": 1788974726.9581451,
+ "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
+ "t0": 1789023775.874434,
  "stdout_events": [
   {
-   "t": 0.7501,
+   "t": 0.7542,
    "bytes": 165,
    "text": "--temp 0 --no-warmup --log-disable --ignore-eos <|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
   },
   {
-   "t": 0.7568,
+   "t": 0.7608,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 0.7634,
+   "t": 0.7677,
    "bytes": 4,
    "text": "Okay"
   },
   {
-   "t": 0.77,
+   "t": 0.7743,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 0.7766,
+   "t": 0.7809,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 0.7832,
+   "t": 0.7886,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 0.7898,
+   "t": 0.7951,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 0.7965,
+   "t": 0.802,
    "bytes": 7,
    "text": " asking"
   },
   {
-   "t": 0.8032,
+   "t": 0.8086,
    "bytes": 4,
    "text": " for"
   },
   {
-   "t": 0.8097,
+   "t": 0.8156,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 0.8163,
+   "t": 0.822,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 0.823,
+   "t": 0.8285,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 0.8296,
+   "t": 0.8353,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 0.8361,
+   "t": 0.8421,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 0.8427,
+   "t": 0.8486,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 0.8494,
+   "t": 0.8556,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 0.8561,
+   "t": 0.8621,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 0.8628,
+   "t": 0.8695,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.8694,
+   "t": 0.8764,
    "bytes": 4,
    "text": " Let"
   },
   {
-   "t": 0.8761,
+   "t": 0.8836,
    "bytes": 3,
    "text": " me"
   },
   {
-   "t": 0.8828,
+   "t": 0.8907,
    "bytes": 6,
    "text": " think"
   },
   {
-   "t": 0.8897,
+   "t": 0.8971,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.8965,
+   "t": 0.9049,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 0.9032,
+   "t": 0.9119,
    "bytes": 5,
    "text": " know"
   },
   {
-   "t": 0.9099,
+   "t": 0.9183,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 0.9166,
+   "t": 0.9253,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 0.9235,
+   "t": 0.9319,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 0.9303,
+   "t": 0.9384,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 0.9369,
+   "t": 0.945,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 0.9435,
+   "t": 0.9516,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 0.9502,
+   "t": 0.9587,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.9569,
+   "t": 0.9656,
    "bytes": 4,
    "text": " But"
   },
   {
-   "t": 0.9639,
+   "t": 0.972,
    "bytes": 4,
    "text": " how"
   },
   {
-   "t": 0.9706,
+   "t": 0.9786,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 0.9771,
+   "t": 0.9852,
    "bytes": 7,
    "text": " phrase"
   },
   {
-   "t": 0.984,
+   "t": 0.9921,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 0.9907,
+   "t": 0.9991,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 0.9975,
+   "t": 1.0064,
    "bytes": 2,
    "text": " a"
   },
   {
-   "t": 1.0043,
+   "t": 1.0133,
    "bytes": 8,
    "text": " concise"
   },
   {
-   "t": 1.011,
+   "t": 1.0204,
    "bytes": 4,
    "text": " way"
   },
   {
-   "t": 1.0177,
+   "t": 1.0273,
    "bytes": 1,
    "text": "?"
   },
   {
-   "t": 1.0246,
+   "t": 1.0349,
    "bytes": 6,
    "text": " Maybe"
   },
   {
-   "t": 1.0314,
+   "t": 1.043,
    "bytes": 6,
    "text": " start"
   },
   {
-   "t": 1.0382,
+   "t": 1.0499,
    "bytes": 5,
    "text": " with"
   },
   {
-   "t": 1.0448,
+   "t": 1.0569,
    "bytes": 2,
    "text": " \""
   },
   {
-   "t": 1.0516,
+   "t": 1.064,
    "bytes": 5,
    "text": "Paris"
   },
   {
-   "t": 1.0585,
+   "t": 1.0713,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 1.0653,
+   "t": 1.078,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.0724,
+   "t": 1.0848,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 1.0792,
+   "t": 1.092,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 1.0861,
+   "t": 1.0989,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 1.093,
+   "t": 1.1068,
    "bytes": 2,
    "text": ".\""
   },
   {
-   "t": 1.0996,
+   "t": 1.1139,
    "bytes": 5,
    "text": " That"
   },
   {
-   "t": 1.1065,
+   "t": 1.1205,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 1.1134,
+   "t": 1.1277,
    "bytes": 16,
    "text": " straightforward"
   },
   {
-   "t": 1.1201,
+   "t": 1.1443,
    "bytes": 4,
    "text": " and"
   },
   {
-   "t": 1.1268,
+   "t": 1.1519,
    "bytes": 8,
    "text": " answers"
   },
   {
-   "t": 1.1342,
+   "t": 1.1589,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.1413,
+   "t": 1.1659,
    "bytes": 9,
    "text": " question"
   },
   {
-   "t": 1.1484,
+   "t": 1.1728,
    "bytes": 9,
    "text": " directly"
   },
   {
-   "t": 1.1553,
+   "t": 1.1796,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.1622,
+   "t": 1.1867,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 1.169,
+   "t": 1.194,
    "bytes": 7,
    "text": " should"
   },
   {
-   "t": 1.1759,
+   "t": 1.2023,
    "bytes": 6,
    "text": " check"
   },
   {
-   "t": 1.1831,
+   "t": 1.2095,
    "bytes": 3,
    "text": " if"
   },
   {
-   "t": 1.19,
+   "t": 1.2167,
    "bytes": 6,
    "text": " there"
   },
   {
-   "t": 1.197,
+   "t": 1.2241,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 1.2037,
+   "t": 1.2311,
    "bytes": 4,
    "text": " any"
   },
   {
-   "t": 1.2107,
+   "t": 1.2384,
    "bytes": 6,
    "text": " other"
   },
   {
-   "t": 1.2178,
+   "t": 1.2451,
    "bytes": 5,
    "text": " city"
   },
   {
-   "t": 1.225,
+   "t": 1.2522,
    "bytes": 10,
    "text": " mentioned"
   },
   {
-   "t": 1.2322,
+   "t": 1.2596,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.2392,
+   "t": 1.2669,
    "bytes": 4,
    "text": " but"
   },
   {
-   "t": 1.2463,
+   "t": 1.2747,
    "bytes": 3,
    "text": " no"
   },
   {
-   "t": 1.2532,
+   "t": 1.282,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.2603,
+   "t": 1.2891,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 1.2673,
+   "t": 1.2959,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 1.2747,
+   "t": 1.303,
    "bytes": 11,
    "text": " definitely"
   },
   {
-   "t": 1.2816,
+   "t": 1.3105,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.2885,
+   "t": 1.3175,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 1.2955,
+   "t": 1.3245,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.3024,
+   "t": 1.3315,
    "bytes": 8,
    "text": " Alright"
   },
   {
-   "t": 1.3093,
+   "t": 1.3385,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.3164,
+   "t": 1.3453,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 1.3235,
+   "t": 1.3526,
    "bytes": 7,
    "text": " should"
   },
   {
-   "t": 1.3306,
+   "t": 1.3596,
    "bytes": 5,
    "text": " work"
   },
   {
-   "t": 1.3376,
+   "t": 1.3671,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 1.3447,
+   "t": 1.3738,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 1.3517,
+   "t": 1.3807,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 1.3589,
+   "t": 1.3877,
    "bytes": 5,
    "text": "Paris"
   },
   {
-   "t": 1.3659,
+   "t": 1.3949,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 1.3732,
+   "t": 1.402,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.3806,
+   "t": 1.409,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 1.3877,
+   "t": 1.4162,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 1.3949,
+   "t": 1.4231,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 1.4019,
+   "t": 1.43,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.5955,
+   "t": 1.5947,
    "bytes": 1,
    "text": "\n"
   }
@@ -499,13 +500,13 @@
  "llama_no_mmap": false,
  "exit_code": 0,
  "wall_s": 1.598,
- "stderr_tail": "ext: freq_base     = 1000000.0\nllama_context: freq_scale    = 1\nllama_context: n_rs_seq      = 0\nllama_context: n_ctx_seq (256) < n_ctx_train (40960) -- the full capacity of the model will not be utilized\nggml_metal_init: allocating\nggml_metal_init: found device: Apple M4 Pro\nggml_metal_init: picking default device: Apple M4 Pro\nggml_metal_init: use fusion         = true\nggml_metal_init: use concurrency    = true\nggml_metal_init: use graph optimize = true\nset_abort_callback: call\nllama_context:        CPU  output buffer size =     0.58 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    28.00 MiB\nllama_kv_cache: size =   28.00 MiB (   256 cells,  28 layers,  1/1 seqs), K (f16):   14.00 MiB, V (f16):   14.00 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 3\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 2488\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 38, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: Flash Attention was auto, set to enabled\nsched_reserve: resolving fused Gated Delta Net support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: fused Gated Delta Net (autoregressive) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16\nsched_reserve: fused Gated Delta Net (chunked) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\nsched_reserve:        CPU compute buffer size =    22.32 MiB\nsched_reserve: graph nodes  = 987\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 1.93 ms, sched copies = 1\nmain: decoded 96 tokens in 0.82 s, speed: 116.70 t/s\n\nllama_perf_sampler_print:    samplers time =       7.83 ms /    97 runs\nllama_perf_context_print:        load time =     600.24 ms\nllama_perf_context_print: prompt eval time =     163.22 ms /    38 tokens (    4.30 ms per token,   232.82 tokens per second)\nllama_perf_context_print:        eval time =     643.88 ms /    96 runs   (    6.71 ms per token,   149.10 tokens per second)\nllama_perf_context_print:       total time =    1259.64 ms /   134 tokens\nllama_perf_context_print:    graphs reused =         95\n\n~llama_context:       MTL0 compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n~llama_context:        CPU compute buffer size is  22.3214 MiB, matches expectation of  22.3214 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\nggml_metal_free: deallocating\n",
+ "stderr_tail": "ext: freq_base     = 1000000.0\nllama_context: freq_scale    = 1\nllama_context: n_rs_seq      = 0\nllama_context: n_ctx_seq (256) < n_ctx_train (40960) -- the full capacity of the model will not be utilized\nggml_metal_init: allocating\nggml_metal_init: found device: Apple M4 Pro\nggml_metal_init: picking default device: Apple M4 Pro\nggml_metal_init: use fusion         = true\nggml_metal_init: use concurrency    = true\nggml_metal_init: use graph optimize = true\nset_abort_callback: call\nllama_context:        CPU  output buffer size =     0.58 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    28.00 MiB\nllama_kv_cache: size =   28.00 MiB (   256 cells,  28 layers,  1/1 seqs), K (f16):   14.00 MiB, V (f16):   14.00 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 3\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 2488\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 38, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: Flash Attention was auto, set to enabled\nsched_reserve: resolving fused Gated Delta Net support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: fused Gated Delta Net (autoregressive) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16\nsched_reserve: fused Gated Delta Net (chunked) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\nsched_reserve:        CPU compute buffer size =    22.32 MiB\nsched_reserve: graph nodes  = 987\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 2.20 ms, sched copies = 1\nmain: decoded 96 tokens in 0.80 s, speed: 120.69 t/s\n\nllama_perf_sampler_print:    samplers time =       7.76 ms /    97 runs\nllama_perf_context_print:        load time =     599.04 ms\nllama_perf_context_print: prompt eval time =     112.03 ms /    38 tokens (    2.95 ms per token,   339.19 tokens per second)\nllama_perf_context_print:        eval time =     667.53 ms /    96 runs   (    6.95 ms per token,   143.81 tokens per second)\nllama_perf_context_print:       total time =    1282.43 ms /   134 tokens\nllama_perf_context_print:    graphs reused =         95\n\n~llama_context:       MTL0 compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n~llama_context:        CPU compute buffer size is  22.3214 MiB, matches expectation of  22.3214 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\nggml_metal_free: deallocating\n",
  "gen_chunks": 96,
  "gen_bytes": 440,
- "t_first_gen_chunk_s": 0.757,
+ "t_first_gen_chunk_s": 0.761,
  "t_last_gen_chunk_s": 1.595,
- "gen_span_s": 0.839,
- "tok_per_s_stream": 228.93,
+ "gen_span_s": 0.834,
+ "tok_per_s_stream": 230.24,
  "tok_per_s_wall": 120.15,
  "mem_samples": 0
 }
