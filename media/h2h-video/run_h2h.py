@@ -111,6 +111,7 @@ def main():
         "model_size_mb": round(os.path.getsize(model) / 1024 / 1024, 1),
         "n_prompt_tokens": len(prompt_ids), "n_gen": n_gen,
         "sdot0": sdot0,
+        "prompt_text": prompt_text,
         "t0": time.time(),
         "stdout_events": [], "mem_series": [],
         "peak_anon_mb": 0.0, "peak_file_mb": 0.0,
