@@ -1,0 +1,388 @@
+{
+ "engine": "llamacpp",
+ "model_path": "/Users/shiaho/Desktop/0-/MiniCPM5-2B/MiniCPM5-2B-F16.gguf",
+ "model_size_mb": 4805.6,
+ "n_prompt_tokens": 21,
+ "n_gen": 192,
+ "sdot0": false,
+ "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
+ "t0": 1789011874.4980638,
+ "stdout_events": [
+  {
+   "t": 6.8284,
+   "bytes": 165,
+   "text": "--temp 0 --no-warmup --log-disable --ignore-eos <|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  {
+   "t": 6.9077,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 6.932,
+   "bytes": 5,
+   "text": "First"
+  },
+  {
+   "t": 7.5045,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 7.5288,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 7.5528,
+   "bytes": 5,
+   "text": " need"
+  },
+  {
+   "t": 7.5765,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 7.6018,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 7.6251,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 7.6493,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 7.6733,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 7.697,
+   "bytes": 7,
+   "text": " answer"
+  },
+  {
+   "t": 7.7255,
+   "bytes": 3,
+   "text": " in"
+  },
+  {
+   "t": 7.7504,
+   "bytes": 4,
+   "text": " one"
+  },
+  {
+   "t": 7.7747,
+   "bytes": 6,
+   "text": " short"
+  },
+  {
+   "t": 8.3414,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 8.3656,
+   "bytes": 2,
+   "text": ".\n"
+  },
+  {
+   "t": 8.3904,
+   "bytes": 4,
+   "text": "Next"
+  },
+  {
+   "t": 8.4152,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 8.4399,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 8.4645,
+   "bytes": 5,
+   "text": " have"
+  },
+  {
+   "t": 8.4895,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 8.5146,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 8.5416,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 8.5663,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 8.5914,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 9.1628,
+   "bytes": 8,
+   "text": " mention"
+  },
+  {
+   "t": 9.1869,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 9.2121,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 9.2366,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 9.2611,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 9.2858,
+   "bytes": 2,
+   "text": ".\n"
+  },
+  {
+   "t": 9.3108,
+   "bytes": 4,
+   "text": "Then"
+  },
+  {
+   "t": 9.3351,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 9.3593,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 9.3869,
+   "bytes": 5,
+   "text": " need"
+  },
+  {
+   "t": 9.4116,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 10.0505,
+   "bytes": 5,
+   "text": " keep"
+  },
+  {
+   "t": 10.0766,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 10.1038,
+   "bytes": 9,
+   "text": " response"
+  },
+  {
+   "t": 10.1307,
+   "bytes": 8,
+   "text": " concise"
+  },
+  {
+   "t": 10.1565,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 10.1818,
+   "bytes": 9,
+   "text": " maintain"
+  },
+  {
+   "t": 10.208,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 10.2352,
+   "bytes": 6,
+   "text": " short"
+  },
+  {
+   "t": 10.2657,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 10.2923,
+   "bytes": 12,
+   "text": " requirement"
+  },
+  {
+   "t": 10.8803,
+   "bytes": 2,
+   "text": ".\n"
+  },
+  {
+   "t": 10.9048,
+   "bytes": 8,
+   "text": "</think>"
+  },
+  {
+   "t": 10.929,
+   "bytes": 2,
+   "text": "\n\n"
+  },
+  {
+   "t": 10.9538,
+   "bytes": 3,
+   "text": "The"
+  },
+  {
+   "t": 10.9786,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 11.0028,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 11.0283,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 11.0531,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 11.0788,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 11.1068,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 11.5983,
+   "bytes": 1,
+   "text": "\n"
+  }
+ ],
+ "mem_series": [
+  {
+   "t": 0.83,
+   "anon_mb": 44.8,
+   "file_mb": 0.0
+  },
+  {
+   "t": 1.681,
+   "anon_mb": 45.5,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 2.507,
+   "anon_mb": 133.8,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 3.311,
+   "anon_mb": 133.8,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 4.139,
+   "anon_mb": 133.8,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 4.986,
+   "anon_mb": 126.0,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 5.818,
+   "anon_mb": 117.5,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 6.657,
+   "anon_mb": 101.5,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 7.488,
+   "anon_mb": 101.8,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 8.324,
+   "anon_mb": 101.8,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 9.149,
+   "anon_mb": 101.9,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 10.017,
+   "anon_mb": 101.9,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 10.87,
+   "anon_mb": 101.9,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 11.588,
+   "anon_mb": 85.1,
+   "file_mb": 0.0
+  }
+ ],
+ "peak_anon_mb": 133.8,
+ "peak_file_mb": 4812.8,
+ "llama_no_mmap": false,
+ "exit_code": 0,
+ "wall_s": 11.599,
+ "stderr_tail": "B\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache: layer  28: dev = CPU\nllama_kv_cache: layer  29: dev = CPU\nllama_kv_cache: layer  30: dev = CPU\nllama_kv_cache: layer  31: dev = CPU\nllama_kv_cache: layer  32: dev = CPU\nllama_kv_cache: layer  33: dev = CPU\nllama_kv_cache: layer  34: dev = CPU\nllama_kv_cache: layer  35: dev = CPU\nllama_kv_cache: layer  36: dev = CPU\nllama_kv_cache: layer  37: dev = CPU\nllama_kv_cache: layer  38: dev = CPU\nllama_kv_cache: layer  39: dev = CPU\nllama_kv_cache: layer  40: dev = CPU\nllama_kv_cache: layer  41: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    10.50 MiB\nllama_kv_cache: size =   10.50 MiB (   256 cells,  42 layers,  1/1 seqs), K (f16):    5.25 MiB, V (f16):    5.25 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 3048\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 39, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\nsched_reserve:        CPU compute buffer size =    20.03 MiB\nsched_reserve: graph nodes  = 1308\nsched_reserve: graph splits = 422 (with bs=39), 1 (with bs=1)\nsched_reserve: reserve took 2.79 ms, sched copies = 1\nmain: decoded 57 tokens in 9.42 s, speed: 6.05 t/s\n\nllama_perf_sampler_print:    samplers time =       2.39 ms /    58 runs\nllama_perf_context_print:        load time =    6769.52 ms\nllama_perf_context_print: prompt eval time =    5115.23 ms /    39 tokens (  131.16 ms per token,     7.62 tokens per second)\nllama_perf_context_print:        eval time =    4300.05 ms /    57 runs   (   75.44 ms per token,    13.26 tokens per second)\nllama_perf_context_print:       total time =   11073.98 ms /    96 tokens\nllama_perf_context_print:    graphs reused =         56\n\n~llama_context:        CPU compute buffer size is  20.0334 MiB, matches expectation of  20.0334 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
+ "gen_chunks": 57,
+ "gen_bytes": 257,
+ "t_first_gen_chunk_s": 6.908,
+ "t_last_gen_chunk_s": 11.598,
+ "gen_span_s": 4.691,
+ "tok_per_s_stream": 40.93,
+ "tok_per_s_wall": 16.55,
+ "mem_samples": 14
+}

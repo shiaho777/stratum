@@ -68,12 +68,15 @@ class Case:
         self.accent = STRATUM_ACCENT if self.is_stratum else LLAMA_ACCENT
         self.name = "stratum" if self.is_stratum else "llama.cpp"
         # generation text timeline: [(t, text)]
-        # llama-simple echoes the prompt first — drop those leading bytes
+        # llama-simple echoes the prompt first — drop those leading bytes.
+        # prompt text: prefer the record's own (multi-model harness);
+        # fall back to the legacy Qwen3 template for the first video set.
+        prompt_text = self.rec.get("prompt_text") or PROMPT_TEXT
         events = []
         if self.is_stratum:
             events = self.rec["stdout_events"]
         else:
-            skip = len(PROMPT_TEXT)
+            skip = len(prompt_text)
             acc = ""
             for ev in self.rec["stdout_events"]:
                 if skip > 0:
