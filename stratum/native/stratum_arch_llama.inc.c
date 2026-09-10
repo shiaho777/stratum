@@ -41,10 +41,36 @@ static const GgufTensor* la_g_output_norm = NULL;
 static const GgufTensor* la_g_output_w = NULL;
 
 static void la_rmsnorm(const float* x, const float* gain, int N, float eps, float* y) {
+    /* f64x2 pairwise sum (same double domain, vector-pair accumulation
+     * order), then the f32x4 scale/gain pass */
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    float64x2_t vss = vdupq_n_f64(0.0);
+    int i = 0;
+    for (; i + 8 <= N; i += 8) {
+        float32x4_t a = vld1q_f32(x + i), b = vld1q_f32(x + i + 4);
+        vss = vfmaq_f64(vss, vcvt_f64_f32(vget_low_f32(a)),  vcvt_f64_f32(vget_low_f32(a)));
+        vss = vfmaq_f64(vss, vcvt_f64_f32(vget_high_f32(a)), vcvt_f64_f32(vget_high_f32(a)));
+        vss = vfmaq_f64(vss, vcvt_f64_f32(vget_low_f32(b)),  vcvt_f64_f32(vget_low_f32(b)));
+        vss = vfmaq_f64(vss, vcvt_f64_f32(vget_high_f32(b)), vcvt_f64_f32(vget_high_f32(b)));
+    }
+    double ss = vaddvq_f64(vss);
+    for (; i < N; i++) ss += (double)x[i] * x[i];
+    float scale = (float)(1.0 / sqrt(ss / (double)N + (double)eps));
+    i = 0;
+    for (; i + 8 <= N; i += 8) {
+        float32x4_t a = vld1q_f32(x + i), b = vld1q_f32(x + i + 4);
+        float32x4_t ga = vld1q_f32(gain + i), gb = vld1q_f32(gain + i + 4);
+        float32x4_t vs = vdupq_n_f32(scale);
+        vst1q_f32(y + i,     vmulq_f32(vmulq_f32(a, vs), ga));
+        vst1q_f32(y + i + 4, vmulq_f32(vmulq_f32(b, vs), gb));
+    }
+    for (; i < N; i++) y[i] = x[i] * scale * gain[i];
+#else
     double ss = 0.0;
     for (int i = 0; i < N; i++) ss += (double)x[i] * x[i];
     float scale = (float)(1.0 / sqrt(ss / (double)N + (double)eps));
     for (int i = 0; i < N; i++) y[i] = x[i] * scale * gain[i];
+#endif
 }
 
 static void la_swiglu(const float* g, const float* u, int N, float* y) {
