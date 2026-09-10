@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")"
 
 STRATUM=/Users/shiaho/Desktop/Qwen3.5-0.8B-hf/stratum/native/stratum
-LLAMA=/opt/homebrew/bin/llama-simple
+LLAMA=/tmp/llama.cpp/build/bin/llama-simple
 Q4=/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.q4km.llamacpp.gguf
 F16=/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.f16.qwen3.gguf
 PROMPT_TEXT='<|im_start|>user
@@ -25,12 +25,10 @@ for run in 1 2; do
     esac
     # speed pass (no vmmap — sampling suspends the target and skews timing)
     python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_speed_run${run}.json --nomen
-    python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_nommap_speed_run${run}.json --nommap --nomen
     python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_speed_run${run}.json $EXTRA --nomen
     python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_hotfast_speed_run${run}.json $EXTRA --hotfast --nomen
     # memory pass (vmmap sampling; wall time here is not comparable)
     python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_mem_run${run}.json
-    python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_nommap_mem_run${run}.json --nommap
     python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_mem_run${run}.json $EXTRA
     python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_hotfast_mem_run${run}.json $EXTRA --hotfast
   done

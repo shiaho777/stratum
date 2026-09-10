@@ -97,11 +97,12 @@ def main():
         prompt_echo_len = 0            # stratum prints only generated tokens
     elif engine == "llamacpp":
         env = dict(os.environ)
+        # llama-simple's argv parser treats the first unknown flag as the
+        # start of the prompt — anything else silently becomes prompt text.
+        # It understands exactly: -m, -n, -ngl, --ignore-eos (patched in
+        # our local build to honor it). Sampler defaults to greedy.
         cmd = [binpath, "-m", model, "-n", str(n_gen), "-ngl", "0",
-               "--temp", "0", "--no-warmup", "--log-disable", "--ignore-eos"]
-        if "--nommap" in sys.argv:
-            cmd.append("--no-mmap")
-        cmd.append(prompt_text)
+               "--ignore-eos", prompt_text]
         prompt_echo_len = len(prompt_text)   # llama-simple echoes the prompt
     else:
         raise SystemExit(f"unknown engine {engine}")
