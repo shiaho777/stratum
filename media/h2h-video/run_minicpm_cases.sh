@@ -26,10 +26,10 @@ for run in 1 2; do
     esac
     # speed pass
     python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_speed_run${run}.json --nomen
-    python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_speed_run${run}.json --sdot0 --nomen
+    python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_speed_run${run}.json --nomen
     # memory pass
     python3 run_h2h.py $LLAMA  $MODEL llamacpp "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_mem_run${run}.json
-    python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_mem_run${run}.json --sdot0
+    python3 run_h2h.py $STRATUM $MODEL stratum  "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_mem_run${run}.json 
   done
 done
 echo "=== minicpm cases done ==="

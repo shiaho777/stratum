@@ -182,7 +182,11 @@ static inline float q6k_dot_row_sdot(const block_q6_K* row_blocks, int K,
             int8x16_t xv = vld1q_s8(xq + (size_t)(goff + g) * 16);
             int32x4_t acc = vdotq_s32(vdupq_n_s32(0), qv, xv);
             int isum = vaddvq_s32(acc);
-            dot += (double)d * (double)s[g] * (double)xscale[(goff + g) / 2] * (double)isum;
+            /* xscale is per-16 (q6k_quantize_x_q8_g16): group goff+g is
+             * xscale[goff+g]. The old per-32 /2 index read the wrong
+             * group's scale — masked by smooth synthetic data, exposed
+             * by real spiky activations. */
+            dot += (double)d * (double)s[g] * (double)xscale[goff + g] * (double)isum;
         }
         goff += 16;
     }
@@ -238,7 +242,9 @@ static inline void q6k_dot_row_sdot_multix(
                 for (int t = 0; t < 4; t++) {
                     int g = gg[t];
                     double ds = (double)d * (double)sc[g];
-                    int xs_idx = (goff + g) / 2;
+                    /* per-16 xscale (q6k_quantize_x_q8_g16) — index is the
+                     * group number itself, not half of it */
+                    int xs_idx = goff + g;
                     int xoff = (goff + g) * 16;
                     int8x16_t qvv = qv[t];
                     for (int si = 0; si < B; si++) {
