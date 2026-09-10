@@ -77,3 +77,26 @@ per-tensor data_scale。可行架构(下一阶段):
 - rmsnorm NEON(f64x2):tiny gate OK,PPL 不变
 - attention QK/V NEON、rope 查表、Q6_K fused、SDOT xscale 索引修复(前轮)
 - harness EOS 口径 bug 修复 + 全矩阵重测(前轮)
+
+## AMX 集成原型裁决(bench_amx_q4k.c,真实张量验证)
+
+架构:无损 nibble→int8 转置解包([group][row] 布局,值 0..15 不变)+
+per-32 列连续 BNNS 分组调用(AMX)+ scale 累加。三个关键发现:
+
+1. **数值正确**:max|yB − yA(SDOT)| = 0.013236,与 SDOT/NEON 已知量化
+   噪声逐位一致(row 1035,同值)。公式与布局均已被单行手工推导验证。
+2. **BNNS 跨步(strided)权重视图是坏的**:stride[1]≠size[0] 时结果错位
+   —— 必须转置布局给 BNNS 连续视图(已在本原型中解决)。
+3. **瓶颈是 B3(scale 累加)而非 AMX**:稳定测量下 B2(BNNS 分组调用)
+   仅 ~24-27µs;B3 的标量跨步读循环 ~90µs。优化路径明确:转置 partial
+   缓冲 + 每行两个 32 宽连续 row-dot(NEON 化后预计 ~5-10µs)。
+
+**裁决:架构可行但非压倒性**。优化 B3 + 并行化后预计单线程 ~60µs 级
+(对比 SDOT 单线程 ~324µs,5×);但引擎的 SDOT 是 6-10 线程,公平对比
+需 B 全管线并行化。真正决定性的收益仍在批摊销(BNSSFilterApplyBatch,
+MULTISEQ 场景)—— 待安静机器窗口测量。
+
+下一步(下一会话):
+1. B3 NEON 化(转置 partial + row-dot)→ 重测
+2. BNNSFilterApplyBatch B=8/16 批摊销测量 → MULTISEQ 集成决策
+3. 若批摊销成立:prefill/MULTISEQ 走 AMX 路径,单流 SDOT 保留
