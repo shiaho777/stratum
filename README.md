@@ -291,8 +291,9 @@ The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streame
 - Memory accounting via `vmmap --summary` polled every 0.2 s: **anonymous = Physical footprint** (the binding, non-reclaimable cost — same methodology as `stratum/benchmarks/headtohead.sh`), **page cache = mapped-file resident** (reclaimable, never binding).
 - **Two-pass measurement**: a speed pass with no sampler attached (vmmap suspends the target and would skew sub-5-second runs) and a separate memory pass with sampling; each case runs twice and the hot (second) run is reported.
 - Host: the M4 Pro / 24 GB machine above, no thermal throttling. Models reconverted from local HF weights (nothing downloaded); fair comparison became possible only after the Qwen3 handler fixes of #75/#76 — the two engines now produce identical greedy output for the first 12 tokens on the same file and diverge only via f16/f32 accumulation order.
-- stratum runs Q4_K with `STRATUM_SDOT=0` (int8 SDOT is not yet safe on current-generation dense models — see Limitations).
-- llama.cpp side: the Qwen3-0.6B videos use Homebrew `llama-simple` (b9180); the MiniCPM5-2B videos use `llama-simple` built from current master, because the official GGUF's `minicpm5` pre-tokenizer postdates b9180 and the stock build refuses to load it. Same binary family, same flags.
+- int8 SDOT runs enabled on both engines — the Q6_K xscale index bug that corrupted it on current-generation dense models (Qwen3, MiniCPM5) is fixed (#88).
+- llama.cpp side: `llama-simple` built from current master (the official MiniCPM5 GGUF needs the new `minicpm5` pre-tokenizer), with a two-line local patch so `--ignore-eos` is honored (the example ignores it, which would let generation stop at EOS and inflate the harness's tokens/second) and the harness only passes flags the example's parser knows (unknown flags silently become prompt text).
+- **Harness correction (measured, then fixed)**: the first video set overstated llama.cpp's tok/s — llama-simple stopped at EOS while the harness divided by the full 192 tokens. All numbers below are re-measured with both engines forced to exactly 192 tokens. llama-bench cross-check on this host: Qwen3-0.6B Q4_K_M 160.3 tok/s, MiniCPM5-2B Q4_K_M 37.5 tok/s (±9, host under swap pressure).
 
 #### Video — Qwen3-0.6B Q4_K_M (462 MB)
 
@@ -301,7 +302,7 @@ The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streame
 
 | | stratum | llama.cpp |
 |---|---|---|
-| decode throughput (hot) | 56.4 tok/s | 228.9 tok/s |
+| decode throughput (hot, corrected harness) | 44.2 tok/s | 186.6 tok/s |
 | **anonymous RAM (peak)** | **58 MB** | **475 MB** |
 | page cache (reclaimable, peak) | 462 MB | 411–540 MB |
 
@@ -328,16 +329,17 @@ python3 render_h2h.py results/q4km_stratum_speed_run2.json \
 
 | | stratum | llama.cpp |
 |---|---|---|
-| decode throughput (hot) | 44.2 tok/s | 200.8 tok/s |
+| decode throughput (hot, corrected harness) | 29.2 tok/s | 92.4 tok/s |
 | **anonymous RAM (peak)** | **57 MB** | **127 MB** |
 | page cache (reclaimable, peak) | 1434 MB | 1536 MB |
 
 ```text
-# results/f16_*_run2.json (hot run):
-#   [stratum]  wall=4.81s  tok/s(stream)=44.16   peak_anon=57 MB    peak_file=1434 MB
-#   [llamacpp] wall=2.08s  tok/s(stream)=200.79  peak_anon=127 MB   peak_file=1536 MB
+# results/f16_*_run2.json (hot run, forced 192 tokens):
+#   [stratum]  tok/s(stream)=29.2   peak_anon=59 MB   peak_file=1434 MB
+#   [llamacpp] tok/s(stream)=92.4   peak_anon=88 MB   peak_file=1536 MB
 # llama.cpp keeps F16 weights as clean read-only mappings (staying out of the
-# footprint) but rewrites Q4_K_M weight pages dirty at load — hence 127 MB vs 475 MB.
+# footprint) but rewrites Q4_K_M weight pages dirty at load — hence the
+# much larger anonymous gap on the Q4_K_M videos.
 ```
 
 #### Video — MiniCPM5-2B Q4_K_M (1.56 GB, official GGUF)
@@ -347,11 +349,11 @@ python3 render_h2h.py results/q4km_stratum_speed_run2.json \
 
 | | stratum | llama.cpp |
 |---|---|---|
-| decode throughput (hot) | 15.6 tok/s | 155.1 tok/s |
+| decode throughput (hot, corrected harness) | 20.2 tok/s | 61.9 tok/s |
 | **anonymous RAM (peak)** | **31 MB** | **1434 MB** |
 | page cache (reclaimable, peak) | 1536 MB | 1536 MB |
 
-Both engines consume the **official, unmodified `openbmb/MiniCPM5-2B-GGUF`** release — no conversion, no renaming. Two facts from this run: the stock Homebrew llama.cpp (b9180) **refuses to load** this GGUF (`unknown pre-tokenizer type: 'minicpm5'`), so the llama.cpp side runs a build from current master; and llama.cpp rewrites the whole Q4_K_M weight file dirty at load (1.43 GB resident in the footprint), which is where the 46× anonymous-memory gap comes from. stratum runs it with `STRATUM_SDOT=0`.
+Both engines consume the **official, unmodified `openbmb/MiniCPM5-2B-GGUF`** release — no conversion, no renaming. Two facts from this run: the stock Homebrew llama.cpp (b9180) **refuses to load** this GGUF (`unknown pre-tokenizer type: 'minicpm5'`), so the llama.cpp side runs a build from current master; and llama.cpp rewrites the whole Q4_K_M weight file dirty at load (1.43 GB resident in the footprint), which is where the 48× anonymous-memory gap comes from. int8 SDOT is enabled on the stratum side (#88).
 
 ```sh
 cd media/h2h-video && ./run_minicpm_cases.sh
@@ -360,9 +362,11 @@ python3 render_h2h.py results/mcpm5_q4km_stratum_speed_run2.json \
   videos/minicpm5-2b-q4km-stratum-vs-llamacpp.mp4 \
   --title "MiniCPM5-2B Q4_K_M — stratum vs llama.cpp (CPU, greedy, same official GGUF)"
 
-# results/mcpm5_q4km_*_run2.json (hot run):
-#   [stratum]  wall=13.2s  tok/s(stream)=15.63   peak_anon=31 MB     peak_file=1536 MB
-#   [llamacpp] wall=3.8s   tok/s(stream)=155.13  peak_anon=1434 MB   peak_file=1536 MB
+# results/mcpm5_q4km_*_run2.json (hot run, forced 192 tokens):
+#   [stratum]  tok/s(stream)=20.2   peak_anon=30 MB     peak_file=1536 MB
+#   [llamacpp] tok/s(stream)=61.9   peak_anon=1434 MB   peak_file=1536 MB
+# (earlier published llama.cpp figure of ~236 tok/s was the EOS-stop harness
+# artifact — llama-bench cross-check: 37.5 ±9 tok/s on this host)
 ```
 
 #### Video — MiniCPM5-2B F16 (4.7 GB, official GGUF)
@@ -372,16 +376,15 @@ python3 render_h2h.py results/mcpm5_q4km_stratum_speed_run2.json \
 
 | | stratum | llama.cpp |
 |---|---|---|
-| decode throughput (hot, median of 3) | 17.2 tok/s | 105.9 tok/s |
+| decode throughput (hot, corrected harness) | 12.2 tok/s | 29.1 tok/s |
 | **anonymous RAM (peak)** | **33 MB** | **133 MB** |
 | page cache (reclaimable, peak) | 4813 MB | 4813 MB |
 
 ```text
-# results/mcpm5_f16_*_run3.json (median-of-3 speed; memory from the mem pass):
-#   [stratum]  tok/s(stream)=17.19   peak_anon=33 MB    peak_file=4813 MB
-#   [llamacpp] tok/s(stream)=105.86  peak_anon=133 MB   peak_file=4813 MB
-# Speed sampled 3x per engine, median reported: the host had a swap-storm window
-# during one run (a 2.7 tok/s outlier) — medians reject it.
+# results/mcpm5_f16_*_run2.json (hot run, forced 192 tokens):
+#   [stratum]  tok/s(stream)=12.2   peak_anon=34 MB   peak_file=4813 MB
+#   [llamacpp] tok/s(stream)=29.1   peak_anon=61 MB   peak_file=4813 MB
+# (the earlier ~106 tok/s llama.cpp figure was the EOS-stop harness artifact)
 ```
 
 #### Video — Qwen3.6-27B (pending measurement window)
@@ -470,8 +473,7 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 - **Single-model, single-process by design**: architecture state lives in file-scope globals; one process runs one model, and `STRATUM_SERVER` mode is a serial loop, not a concurrent server.
 - **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
 - **Speculative-decode long-run gains are draft-quality-bound** (2.46 tok/main sustained vs 8.0 short-run).
-- **int8 SDOT is not yet safe on current-generation dense models**: measured on both Qwen3-0.6B and MiniCPM5-2B, whose residual-stream norms (thousands) far exceed the llama-family distribution the approximation was validated on — PPL collapses and output turns to noise. Run these with `STRATUM_SDOT=0` until the quantization range is re-derived (older llama-family weights and the 27B hybrid are unaffected).
-- **Small-model decode is slower than llama.cpp** (56 vs 229 tok/s on a hot 0.6B Q4_K_M, see the head-to-head videos): the streaming architecture sweeps the whole model per token and carries scheduler overhead (mincore, prefetch, stage buffers) that dominates at compute sizes this small. The design point is memory footprint and large-model viability, where the per-token sweep is what any engine must pay anyway.
+- **Small-model decode is 2.4–4.2× slower than llama.cpp** on a swap-pressured host (44 vs 187 tok/s on a hot 0.6B Q4_K_M, 20 vs 62 on a 2B Q4_K_M — corrected harness, both engines forced to 192 tokens): the matmul kernels sustain roughly half of llama.cpp's per-core throughput and the remaining gap is kernel microarchitecture. The design point is memory footprint and large-model viability, where the per-token sweep is what any engine must pay anyway. The Q6_K SDOT scale-index bug found along the way (#88) had silently forced current-generation models onto the slower exact-float path.
 - **MemX trades bit-reproducibility for footprint** (~1e-4 mean KL run-to-run variance; token sequences stable).
 - **MoE and H3 are spikes, not products** — `llama-moe` has oracle coverage but no CI gate and no full-scale validation; the H3 pipeline has no memory-floor claim (activations + Metal staging are GB-scale at 768p) and its kernels default to the conservative path pending gate decisions.
 - **Apple Silicon only** — the NEON hot path has no x86_64 port.

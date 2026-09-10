@@ -62,17 +62,62 @@ static void la_swiglu(const float* g, const float* u, int N, float* y) {
  * file's general.architecture — no model names, just arch ids. */
 static int la_g_rope_neox = 0;
 
+/* P2: cos/sin tables — powf/cosf/sinf were recomputed for every pair of
+ * every head of every layer per token (756 rope calls x 64 powf on a
+ * 42-layer model). The table caches cosf/sinf of the SAME angles, so the
+ * rotated values are bit-identical to the scalar path. Positions grow
+ * lazily up to the KV cap; memory is 2 * pos * n_pairs floats (<= 512 KB
+ * at the 1024-token cap) — activation-scale, not weight-scale. */
+static float*  la_g_rope_cos   = NULL;
+static float*  la_g_rope_sin   = NULL;
+static int     la_g_rope_pos_cap = 0;
+static int     la_g_rope_npair = 0;
+static float   la_g_rope_theta = -1.0f;
+
+static void la_rope_tables_grow(int position, int n_pairs, float theta) {
+    if (la_g_rope_theta != theta || la_g_rope_npair != n_pairs) {
+        free(la_g_rope_cos); free(la_g_rope_sin);
+        la_g_rope_cos = la_g_rope_sin = NULL;
+        la_g_rope_pos_cap = 0;
+        la_g_rope_theta = theta;
+        la_g_rope_npair = n_pairs;
+    }
+    if (position < la_g_rope_pos_cap) return;
+    int newcap = la_g_rope_pos_cap ? la_g_rope_pos_cap * 2 : 256;
+    while (newcap <= position) newcap *= 2;
+    float* nc = malloc(sizeof(float) * (size_t)newcap * n_pairs);
+    float* ns = malloc(sizeof(float) * (size_t)newcap * n_pairs);
+    for (int p = 0; p < newcap; p++) {
+        for (int k = 0; k < n_pairs; k++) {
+            float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)(n_pairs * 2));
+            float angle = (float)p * freq;
+            nc[(size_t)p * n_pairs + k] = cosf(angle);
+            ns[(size_t)p * n_pairs + k] = sinf(angle);
+        }
+    }
+    if (la_g_rope_cos) {  /* copy overlapping prefix (bit-identical) */
+        memcpy(nc, la_g_rope_cos, sizeof(float) * (size_t)la_g_rope_pos_cap * n_pairs);
+        memcpy(ns, la_g_rope_sin, sizeof(float) * (size_t)la_g_rope_pos_cap * n_pairs);
+        free(la_g_rope_cos); free(la_g_rope_sin);
+    }
+    la_g_rope_cos = nc; la_g_rope_sin = ns; la_g_rope_pos_cap = newcap;
+}
+
 static void la_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
     int n_pairs = rope_dim / 2;
-    for (int k = 0; k < n_pairs; k++) {
-        float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)rope_dim);
-        float angle = (float)position * freq;
-        float c = cosf(angle), s = sinf(angle);
-        if (la_g_rope_neox) {
+    la_rope_tables_grow(position, n_pairs, theta);
+    const float* cs = la_g_rope_cos + (size_t)position * n_pairs;
+    const float* sn = la_g_rope_sin + (size_t)position * n_pairs;
+    if (la_g_rope_neox) {
+        for (int k = 0; k < n_pairs; k++) {
+            float c = cs[k], s = sn[k];
             float x0 = x[k], x1 = x[k + n_pairs];
             x[k]           = x0 * c - x1 * s;
             x[k + n_pairs] = x0 * s + x1 * c;
-        } else {
+        }
+    } else {
+        for (int k = 0; k < n_pairs; k++) {
+            float c = cs[k], s = sn[k];
             float x0 = x[2 * k], x1 = x[2 * k + 1];
             x[2 * k]     = x0 * c - x1 * s;
             x[2 * k + 1] = x0 * s + x1 * c;
@@ -285,7 +330,25 @@ static void la_forward_block(int li, int position) {
         for (int t = 0; t < kv_len_now; t++) {
             const float* kt = K_layer + (size_t)t * Nk * Hd + kv_h * Hd;
             float dot = 0.0f;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+            /* P2b: QK dot was the last scalar hot loop — 16 q-heads x
+             * kv_len x head_dim MACs per layer. f32x4 FMA accumulation
+             * reorders the reduction; greedy pins are gate-verified. */
+            float32x4_t acc = vdupq_n_f32(0.0f);
+            int d = 0;
+            for (; d + 16 <= Hd; d += 16) {
+                acc = vfmaq_f32(acc, vld1q_f32(qh + d),      vld1q_f32(kt + d));
+                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 4),  vld1q_f32(kt + d + 4));
+                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 8),  vld1q_f32(kt + d + 8));
+                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 12), vld1q_f32(kt + d + 12));
+            }
+            for (; d + 4 <= Hd; d += 4)
+                acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
+            dot = vaddvq_f32(acc);
+            for (; d < Hd; d++) dot += qh[d] * kt[d];
+#else
             for (int d = 0; d < Hd; d++) dot += qh[d] * kt[d];
+#endif
             logits[t] = dot * scale;
         }
         la_softmax_inplace(logits, kv_len_now);
@@ -295,7 +358,20 @@ static void la_forward_block(int li, int position) {
         for (int t = 0; t < kv_len_now; t++) {
             const float* vt = V_layer + (size_t)t * Nk * Hd + kv_h * Hd;
             float p = logits[t];
+#if defined(__ARM_NEON) || defined(__aarch64__)
+            /* element-wise accumulate, same t order — bit-exact vs scalar */
+            float32x4_t vp = vdupq_n_f32(p);
+            int d = 0;
+            for (; d + 16 <= Hd; d += 16) {
+                vst1q_f32(head_out + d, vfmaq_f32(vld1q_f32(head_out + d),      vp, vld1q_f32(vt + d)));
+                vst1q_f32(head_out + d + 4, vfmaq_f32(vld1q_f32(head_out + d + 4),  vp, vld1q_f32(vt + d + 4)));
+                vst1q_f32(head_out + d + 8, vfmaq_f32(vld1q_f32(head_out + d + 8),  vp, vld1q_f32(vt + d + 8)));
+                vst1q_f32(head_out + d + 12, vfmaq_f32(vld1q_f32(head_out + d + 12), vp, vld1q_f32(vt + d + 12)));
+            }
+            for (; d < Hd; d++) head_out[d] += p * vt[d];
+#else
             for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
+#endif
         }
     }
 

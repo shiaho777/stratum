@@ -6,338 +6,1073 @@
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1789023532.3213818,
+ "t0": 1789047225.9148622,
  "stdout_events": [
   {
-   "t": 2.9677,
-   "bytes": 165,
-   "text": "--temp 0 --no-warmup --log-disable --ignore-eos <|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
+   "t": 4.6826,
+   "bytes": 117,
+   "text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
   },
   {
-   "t": 2.9816,
+   "t": 4.7227,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 2.995,
-   "bytes": 2,
-   "text": "We"
+   "t": 4.7914,
+   "bytes": 5,
+   "text": "First"
   },
   {
-   "t": 3.0087,
+   "t": 4.8459,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 5.5347,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 5.5613,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 3.0223,
+   "t": 5.5931,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 3.0358,
+   "t": 5.6354,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 5.6551,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 5.6742,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 5.7065,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 5.7271,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 3.0495,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 3.0632,
-   "bytes": 9,
-   "text": " question"
-  },
-  {
-   "t": 3.0768,
-   "bytes": 1,
-   "text": ":"
-  },
-  {
-   "t": 3.0919,
-   "bytes": 2,
-   "text": " \""
-  },
-  {
-   "t": 3.1068,
-   "bytes": 4,
-   "text": "What"
-  },
-  {
-   "t": 3.1256,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 3.1413,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 3.1576,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 3.1723,
-   "bytes": 3,
-   "text": " of"
-  },
-  {
-   "t": 3.1863,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 3.2005,
-   "bytes": 2,
-   "text": "?\""
-  },
-  {
-   "t": 3.2142,
+   "t": 5.7643,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 3.7905,
+   "t": 5.7799,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 3.807,
+   "t": 5.8242,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 3.8208,
+   "t": 6.5746,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 3.8347,
+   "t": 6.6111,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 3.8483,
-   "bytes": 3,
-   "text": "The"
-  },
-  {
-   "t": 3.8625,
-   "bytes": 5,
-   "text": " user"
-  },
-  {
-   "t": 3.8816,
-   "bytes": 6,
-   "text": " wants"
-  },
-  {
-   "t": 3.8963,
-   "bytes": 2,
-   "text": " a"
-  },
-  {
-   "t": 3.9107,
-   "bytes": 6,
-   "text": " short"
-  },
-  {
-   "t": 3.9247,
-   "bytes": 7,
-   "text": " answer"
-  },
-  {
-   "t": 3.9381,
-   "bytes": 2,
-   "text": ".\n"
-  },
-  {
-   "t": 3.9523,
-   "bytes": 2,
-   "text": "We"
-  },
-  {
-   "t": 3.9676,
-   "bytes": 7,
-   "text": " should"
-  },
-  {
-   "t": 3.9853,
-   "bytes": 5,
-   "text": " just"
-  },
-  {
-   "t": 4.0028,
+   "t": 6.6429,
    "bytes": 4,
-   "text": " say"
+   "text": "Next"
   },
   {
-   "t": 4.0176,
+   "t": 6.6734,
    "bytes": 1,
-   "text": ":"
+   "text": ","
   },
   {
-   "t": 4.0321,
+   "t": 6.7257,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 6.7537,
+   "bytes": 5,
+   "text": " have"
+  },
+  {
+   "t": 6.8099,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 6.8374,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 6.8553,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 6.872,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 6.8986,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 7.6015,
+   "bytes": 6,
+   "text": " state"
+  },
+  {
+   "t": 7.6183,
    "bytes": 4,
-   "text": " The"
+   "text": " the"
   },
   {
-   "t": 4.0481,
+   "t": 7.6361,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 4.6035,
+   "t": 7.653,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 4.6591,
+   "t": 7.6692,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 4.6736,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 4.6872,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 4.702,
+   "t": 7.6865,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 4.716,
+   "t": 7.703,
    "bytes": 4,
-   "text": "That"
+   "text": "Then"
   },
   {
-   "t": 4.7296,
+   "t": 7.7194,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 7.7352,
    "bytes": 2,
-   "text": "'s"
+   "text": " I"
   },
   {
-   "t": 4.744,
+   "t": 7.7511,
+   "bytes": 5,
+   "text": " need"
+  },
+  {
+   "t": 7.7665,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 7.783,
+   "bytes": 5,
+   "text": " keep"
+  },
+  {
+   "t": 7.799,
+   "bytes": 3,
+   "text": " it"
+  },
+  {
+   "t": 7.8168,
+   "bytes": 8,
+   "text": " concise"
+  },
+  {
+   "t": 7.8323,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 7.849,
+   "bytes": 9,
+   "text": " maintain"
+  },
+  {
+   "t": 7.8648,
    "bytes": 4,
-   "text": " one"
+   "text": " the"
   },
   {
-   "t": 4.7616,
+   "t": 7.8806,
+   "bytes": 6,
+   "text": " short"
+  },
+  {
+   "t": 8.4251,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 4.7761,
+   "t": 8.44,
+   "bytes": 12,
+   "text": " requirement"
+  },
+  {
+   "t": 8.4581,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 4.7903,
+   "t": 8.4811,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 4.8045,
+   "t": 8.4984,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 4.8233,
-   "bytes": 3,
-   "text": "The"
+   "t": 8.5146,
+   "bytes": 5,
+   "text": "Paris"
   },
   {
-   "t": 4.8389,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 4.8536,
-   "bytes": 3,
-   "text": " of"
-  },
-  {
-   "t": 4.8676,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 4.882,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 5.4446,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 5.4589,
+   "t": 8.5307,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 5.5156,
+   "t": 8.5467,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 8.5628,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 8.6067,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 8.6259,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 8.6508,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 8.6824,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 8.7179,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 8.7621,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.5176,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.5393,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.5589,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.5739,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.5909,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.6074,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.6241,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.639,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.658,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.6742,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.6904,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.7097,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.7355,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.7602,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 9.7838,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 9.8055,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.4652,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.5,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.5313,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.5601,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.5951,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.6107,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.6285,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.6472,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.6635,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.6878,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.7078,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.7239,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 10.741,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 10.7616,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.3873,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.4044,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.4219,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.4378,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.4543,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.4712,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.4903,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.5064,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.5215,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.5433,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.5614,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.5843,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.6067,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.6356,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.6552,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.6798,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 11.7062,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 11.7283,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.4299,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.4558,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.4746,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.4925,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.5099,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.5357,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.5553,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.5796,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.5989,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.6174,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.6422,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 12.6933,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 12.7243,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.3992,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.4192,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.4359,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.4535,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.4709,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.4874,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.5029,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.5186,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.5343,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.5499,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.5645,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.579,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.5965,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.6134,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.629,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 13.6452,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 13.6613,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.1999,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.2146,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.23,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.2449,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.2592,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.274,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.2892,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.3044,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.3189,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.3333,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.3485,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.3634,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.3784,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.3923,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.407,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.4247,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.44,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 14.455,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 14.4701,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.0034,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.0178,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.0321,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.0471,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.0615,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.0763,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.0907,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.1058,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.1209,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.1356,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.1499,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.1644,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.1788,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.1931,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.2075,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.225,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.2407,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.2556,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.2701,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.815,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.8298,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.8448,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.8593,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.8755,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.8916,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.9066,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.9215,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.9357,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.95,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.9647,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 15.9797,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 15.9945,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 16.0091,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 16.0271,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 16.0449,
+   "bytes": 4,
+   "text": "</s>"
+  },
+  {
+   "t": 16.0597,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 16.5477,
    "bytes": 1,
    "text": "\n"
   }
  ],
  "mem_series": [
   {
-   "t": 0.547,
-   "anon_mb": 44.3,
+   "t": 1.378,
+   "anon_mb": 43.3,
    "file_mb": 0.0
   },
   {
-   "t": 1.329,
-   "anon_mb": 512.9,
+   "t": 2.545,
+   "anon_mb": 629.5,
    "file_mb": 1536.0
   },
   {
-   "t": 2.132,
-   "anon_mb": 1126.4,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 2.934,
+   "t": 3.457,
    "anon_mb": 1433.6,
    "file_mb": 1228.8
   },
   {
-   "t": 3.762,
+   "t": 4.481,
    "anon_mb": 1433.6,
    "file_mb": 1228.8
   },
   {
-   "t": 4.593,
+   "t": 5.521,
    "anon_mb": 1433.6,
    "file_mb": 1228.8
   },
   {
-   "t": 5.443,
+   "t": 6.575,
    "anon_mb": 1433.6,
    "file_mb": 1228.8
+  },
+  {
+   "t": 7.598,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 8.417,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 9.508,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 10.458,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 11.377,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 12.428,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 13.381,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 14.192,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 14.995,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 15.807,
+   "anon_mb": 1433.6,
+   "file_mb": 1228.8
+  },
+  {
+   "t": 16.538,
+   "anon_mb": 36.8,
+   "file_mb": 0.0
   }
  ],
  "peak_anon_mb": 1433.6,
  "peak_file_mb": 1536.0,
  "llama_no_mmap": false,
  "exit_code": 0,
- "wall_s": 5.517,
- "stderr_tail": "put buffer size =     0.50 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache: layer  28: dev = CPU\nllama_kv_cache: layer  29: dev = CPU\nllama_kv_cache: layer  30: dev = CPU\nllama_kv_cache: layer  31: dev = CPU\nllama_kv_cache: layer  32: dev = CPU\nllama_kv_cache: layer  33: dev = CPU\nllama_kv_cache: layer  34: dev = CPU\nllama_kv_cache: layer  35: dev = CPU\nllama_kv_cache: layer  36: dev = CPU\nllama_kv_cache: layer  37: dev = CPU\nllama_kv_cache: layer  38: dev = CPU\nllama_kv_cache: layer  39: dev = CPU\nllama_kv_cache: layer  40: dev = CPU\nllama_kv_cache: layer  41: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    10.50 MiB\nllama_kv_cache: size =   10.50 MiB (   256 cells,  42 layers,  1/1 seqs), K (f16):    5.25 MiB, V (f16):    5.25 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 3048\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 39, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   39, n_seqs =  1, n_outputs =   39\nsched_reserve:        CPU compute buffer size =    20.03 MiB\nsched_reserve: graph nodes  = 1308\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 1.76 ms, sched copies = 1\nmain: decoded 55 tokens in 3.25 s, speed: 16.94 t/s\n\nllama_perf_sampler_print:    samplers time =       2.40 ms /    56 runs\nllama_perf_context_print:        load time =    2914.82 ms\nllama_perf_context_print: prompt eval time =     742.07 ms /    39 tokens (   19.03 ms per token,    52.56 tokens per second)\nllama_perf_context_print:        eval time =    2500.63 ms /    55 runs   (   45.47 ms per token,    21.99 tokens per second)\nllama_perf_context_print:       total time =    5420.13 ms /    94 tokens\nllama_perf_context_print:    graphs reused =         54\n\n~llama_context:        CPU compute buffer size is  20.0334 MiB, matches expectation of  20.0334 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
- "gen_chunks": 55,
- "gen_bytes": 235,
- "t_first_gen_chunk_s": 2.982,
- "t_last_gen_chunk_s": 5.516,
- "gen_span_s": 2.534,
- "tok_per_s_stream": 75.77,
- "tok_per_s_wall": 34.8,
- "mem_samples": 7
+ "wall_s": 16.549,
+ "stderr_tail": "t buffer size =     0.50 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache: layer  28: dev = CPU\nllama_kv_cache: layer  29: dev = CPU\nllama_kv_cache: layer  30: dev = CPU\nllama_kv_cache: layer  31: dev = CPU\nllama_kv_cache: layer  32: dev = CPU\nllama_kv_cache: layer  33: dev = CPU\nllama_kv_cache: layer  34: dev = CPU\nllama_kv_cache: layer  35: dev = CPU\nllama_kv_cache: layer  36: dev = CPU\nllama_kv_cache: layer  37: dev = CPU\nllama_kv_cache: layer  38: dev = CPU\nllama_kv_cache: layer  39: dev = CPU\nllama_kv_cache: layer  40: dev = CPU\nllama_kv_cache: layer  41: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    10.50 MiB\nllama_kv_cache: size =   10.50 MiB (   256 cells,  42 layers,  1/1 seqs), K (f16):    5.25 MiB, V (f16):    5.25 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 3048\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 21, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\nsched_reserve:        CPU compute buffer size =    10.79 MiB\nsched_reserve: graph nodes  = 1308\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 2.64 ms, sched copies = 1\nmain: decoded 192 tokens in 13.20 s, speed: 14.54 t/s\n\nllama_perf_sampler_print:    samplers time =       9.20 ms /   192 runs\nllama_perf_context_print:        load time =    4603.41 ms\nllama_perf_context_print: prompt eval time =    1823.65 ms /    21 tokens (   86.84 ms per token,    11.52 tokens per second)\nllama_perf_context_print:        eval time =   11357.38 ms /   191 runs   (   59.46 ms per token,    16.82 tokens per second)\nllama_perf_context_print:       total time =   15981.01 ms /   212 tokens\nllama_perf_context_print:    graphs reused =        190\n\n~llama_context:        CPU compute buffer size is  10.7872 MiB, matches expectation of  10.7872 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
+ "gen_chunks": 192,
+ "gen_bytes": 1204,
+ "t_first_gen_chunk_s": 4.723,
+ "t_last_gen_chunk_s": 16.548,
+ "gen_span_s": 11.825,
+ "tok_per_s_stream": 16.24,
+ "tok_per_s_wall": 11.6,
+ "mem_samples": 17
 }

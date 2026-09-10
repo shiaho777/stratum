@@ -6,355 +6,970 @@
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1789023721.250884,
+ "t0": 1789046634.936778,
  "stdout_events": [
   {
-   "t": 1.3014,
-   "bytes": 165,
-   "text": "--temp 0 --no-warmup --log-disable --ignore-eos <|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
+   "t": 1.0467,
+   "bytes": 117,
+   "text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
   },
   {
-   "t": 1.3156,
+   "t": 1.0567,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 1.3288,
+   "t": 1.0658,
    "bytes": 4,
    "text": "Okay"
   },
   {
-   "t": 1.3426,
+   "t": 1.0752,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.3585,
+   "t": 1.0844,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.3726,
+   "t": 1.0937,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 1.3879,
+   "t": 1.1031,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 1.4001,
+   "t": 1.1125,
    "bytes": 7,
    "text": " asking"
   },
   {
-   "t": 1.4132,
+   "t": 1.1217,
    "bytes": 4,
    "text": " for"
   },
   {
-   "t": 1.4257,
+   "t": 1.131,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 1.4387,
+   "t": 1.1402,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 1.4509,
+   "t": 1.1498,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 1.4639,
+   "t": 1.1595,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 1.4761,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.4892,
-   "bytes": 2,
-   "text": " I"
-  },
-  {
-   "t": 1.5014,
-   "bytes": 5,
-   "text": " know"
-  },
-  {
-   "t": 1.5142,
-   "bytes": 5,
-   "text": " that"
-  },
-  {
-   "t": 1.5271,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 1.541,
-   "bytes": 2,
-   "text": "'s"
-  },
-  {
-   "t": 1.5541,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 1.5678,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 1.5813,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 1.5942,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.6065,
-   "bytes": 4,
-   "text": " But"
-  },
-  {
-   "t": 1.6185,
-   "bytes": 2,
-   "text": " I"
-  },
-  {
-   "t": 1.6313,
-   "bytes": 5,
-   "text": " need"
-  },
-  {
-   "t": 1.6449,
-   "bytes": 3,
-   "text": " to"
-  },
-  {
-   "t": 1.6571,
-   "bytes": 5,
-   "text": " make"
-  },
-  {
-   "t": 1.6694,
-   "bytes": 5,
-   "text": " sure"
-  },
-  {
-   "t": 1.6819,
-   "bytes": 2,
-   "text": " I"
-  },
-  {
-   "t": 1.6954,
-   "bytes": 2,
-   "text": "'m"
-  },
-  {
-   "t": 1.708,
-   "bytes": 4,
-   "text": " not"
-  },
-  {
-   "t": 1.7216,
-   "bytes": 7,
-   "text": " mixing"
-  },
-  {
-   "t": 1.7357,
-   "bytes": 3,
-   "text": " up"
-  },
-  {
-   "t": 1.7484,
-   "bytes": 4,
-   "text": " any"
-  },
-  {
-   "t": 1.7605,
-   "bytes": 6,
-   "text": " other"
-  },
-  {
-   "t": 1.7733,
-   "bytes": 7,
-   "text": " cities"
-  },
-  {
-   "t": 1.7862,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.7988,
-   "bytes": 4,
-   "text": " Let"
-  },
-  {
-   "t": 1.8116,
-   "bytes": 3,
-   "text": " me"
-  },
-  {
-   "t": 1.8252,
-   "bytes": 6,
-   "text": " think"
-  },
-  {
-   "t": 1.8374,
-   "bytes": 3,
-   "text": "..."
-  },
-  {
-   "t": 1.8499,
-   "bytes": 3,
-   "text": " No"
-  },
-  {
-   "t": 1.8643,
-   "bytes": 1,
-   "text": ","
-  },
-  {
-   "t": 1.8771,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 1.8911,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 1.9129,
-   "bytes": 11,
-   "text": " definitely"
-  },
-  {
-   "t": 1.9337,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 1.9515,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 1.9661,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.9818,
-   "bytes": 2,
-   "text": " I"
-  },
-  {
-   "t": 1.9948,
-   "bytes": 7,
-   "text": " should"
-  },
-  {
-   "t": 2.0076,
-   "bytes": 5,
-   "text": " just"
-  },
-  {
-   "t": 2.0204,
-   "bytes": 6,
-   "text": " state"
-  },
-  {
-   "t": 2.0336,
-   "bytes": 5,
-   "text": " that"
-  },
-  {
-   "t": 2.0464,
-   "bytes": 8,
-   "text": " clearly"
-  },
-  {
-   "t": 2.059,
+   "t": 1.1683,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 2.0722,
-   "bytes": 4,
-   "text": " one"
+   "t": 1.1773,
+   "bytes": 2,
+   "text": " a"
   },
   {
-   "t": 2.0848,
+   "t": 1.1876,
+   "bytes": 7,
+   "text": " single"
+  },
+  {
+   "t": 1.1976,
+   "bytes": 6,
+   "text": " short"
+  },
+  {
+   "t": 1.2089,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 2.0979,
-   "bytes": 2,
-   "text": ".\n"
-  },
-  {
-   "t": 2.1111,
-   "bytes": 8,
-   "text": "</think>"
-  },
-  {
-   "t": 2.1237,
-   "bytes": 2,
-   "text": "\n\n"
-  },
-  {
-   "t": 2.1364,
-   "bytes": 3,
-   "text": "The"
-  },
-  {
-   "t": 2.1491,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 2.162,
-   "bytes": 3,
-   "text": " of"
-  },
-  {
-   "t": 2.1742,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 2.1869,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 2.1999,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 2.2123,
+   "t": 1.2199,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 2.6025,
+   "t": 1.2305,
+   "bytes": 4,
+   "text": " Let"
+  },
+  {
+   "t": 1.2411,
+   "bytes": 3,
+   "text": " me"
+  },
+  {
+   "t": 1.2538,
+   "bytes": 7,
+   "text": " recall"
+  },
+  {
+   "t": 1.2645,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.2756,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 1.2868,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.2971,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 1.3076,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 1.3211,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 1.333,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.3443,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 1.3549,
+   "bytes": 5,
+   "text": " need"
+  },
+  {
+   "t": 1.3652,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 1.3754,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 1.3856,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 1.3962,
+   "bytes": 3,
+   "text": " it"
+  },
+  {
+   "t": 1.4054,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.415,
+   "bytes": 2,
+   "text": " a"
+  },
+  {
+   "t": 1.4246,
+   "bytes": 4,
+   "text": " one"
+  },
+  {
+   "t": 1.4351,
+   "bytes": 2,
+   "text": "-s"
+  },
+  {
+   "t": 1.4449,
+   "bytes": 7,
+   "text": "entence"
+  },
+  {
+   "t": 1.4543,
+   "bytes": 7,
+   "text": " answer"
+  },
+  {
+   "t": 1.4635,
+   "bytes": 8,
+   "text": " without"
+  },
+  {
+   "t": 1.473,
+   "bytes": 4,
+   "text": " any"
+  },
+  {
+   "t": 1.4824,
+   "bytes": 6,
+   "text": " extra"
+  },
+  {
+   "t": 1.4921,
+   "bytes": 12,
+   "text": " information"
+  },
+  {
+   "t": 1.5021,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.5116,
+   "bytes": 4,
+   "text": " Let"
+  },
+  {
+   "t": 1.5208,
+   "bytes": 3,
+   "text": " me"
+  },
+  {
+   "t": 1.5301,
+   "bytes": 6,
+   "text": " check"
+  },
+  {
+   "t": 1.5397,
+   "bytes": 3,
+   "text": " if"
+  },
+  {
+   "t": 1.5492,
+   "bytes": 6,
+   "text": " there"
+  },
+  {
+   "t": 1.5588,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.5689,
+   "bytes": 4,
+   "text": " any"
+  },
+  {
+   "t": 1.5782,
+   "bytes": 6,
+   "text": " other"
+  },
+  {
+   "t": 1.5873,
+   "bytes": 5,
+   "text": " city"
+  },
+  {
+   "t": 1.5967,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 1.6062,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.6169,
+   "bytes": 9,
+   "text": " commonly"
+  },
+  {
+   "t": 1.6281,
+   "bytes": 6,
+   "text": " known"
+  },
+  {
+   "t": 1.6381,
+   "bytes": 3,
+   "text": " as"
+  },
+  {
+   "t": 1.6484,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 1.6597,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 1.6703,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.6806,
+   "bytes": 3,
+   "text": " No"
+  },
+  {
+   "t": 1.6913,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 1.7029,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 1.7132,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 1.723,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 1.7332,
+   "bytes": 8,
+   "text": " correct"
+  },
+  {
+   "t": 1.7442,
+   "bytes": 4,
+   "text": " and"
+  },
+  {
+   "t": 1.7549,
+   "bytes": 5,
+   "text": " most"
+  },
+  {
+   "t": 1.7648,
+   "bytes": 9,
+   "text": " commonly"
+  },
+  {
+   "t": 1.7743,
+   "bytes": 6,
+   "text": " cited"
+  },
+  {
+   "t": 1.7841,
+   "bytes": 4,
+   "text": " one"
+  },
+  {
+   "t": 1.7945,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.8043,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 1.8142,
+   "bytes": 7,
+   "text": " should"
+  },
+  {
+   "t": 1.8258,
+   "bytes": 8,
+   "text": " confirm"
+  },
+  {
+   "t": 1.8367,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 1.8465,
+   "bytes": 6,
+   "text": " there"
+  },
+  {
+   "t": 1.8565,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.8676,
+   "bytes": 3,
+   "text": " no"
+  },
+  {
+   "t": 1.8785,
+   "bytes": 10,
+   "text": " confusion"
+  },
+  {
+   "t": 1.8893,
+   "bytes": 5,
+   "text": " with"
+  },
+  {
+   "t": 1.8997,
+   "bytes": 8,
+   "text": " another"
+  },
+  {
+   "t": 1.9115,
+   "bytes": 8,
+   "text": " country"
+  },
+  {
+   "t": 1.9221,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.9318,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 1.9416,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.9519,
+   "bytes": 8,
+   "text": " Alright"
+  },
+  {
+   "t": 1.9618,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 1.9721,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 1.9823,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.993,
+   "bytes": 4,
+   "text": " all"
+  },
+  {
+   "t": 2.0034,
+   "bytes": 2,
+   "text": ".\n"
+  },
+  {
+   "t": 2.0139,
+   "bytes": 8,
+   "text": "</think>"
+  },
+  {
+   "t": 2.0256,
+   "bytes": 2,
+   "text": "\n\n"
+  },
+  {
+   "t": 2.0369,
+   "bytes": 5,
+   "text": "Paris"
+  },
+  {
+   "t": 2.0474,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.0577,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.0691,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.0792,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.0892,
+   "bytes": 5,
+   "text": "Human"
+  },
+  {
+   "t": 2.0996,
+   "bytes": 1,
+   "text": ":"
+  },
+  {
+   "t": 2.1105,
+   "bytes": 5,
+   "text": " What"
+  },
+  {
+   "t": 2.1217,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.1315,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.1419,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.1541,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 2.164,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 2.1742,
+   "bytes": 1,
+   "text": "?"
+  },
+  {
+   "t": 2.1858,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.1959,
+   "bytes": 1,
+   "text": "A"
+  },
+  {
+   "t": 2.2056,
+   "bytes": 1,
+   "text": ":"
+  },
+  {
+   "t": 2.2158,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.2279,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.238,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.2479,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.2582,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.2694,
+   "bytes": 4,
+   "text": "What"
+  },
+  {
+   "t": 2.2803,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.2908,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.3022,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.3127,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 2.3231,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 2.3342,
+   "bytes": 1,
+   "text": "?"
+  },
+  {
+   "t": 2.3451,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.3555,
+   "bytes": 1,
+   "text": "A"
+  },
+  {
+   "t": 2.366,
+   "bytes": 1,
+   "text": ":"
+  },
+  {
+   "t": 2.3774,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.3879,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.3982,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.4087,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.4201,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.4302,
+   "bytes": 4,
+   "text": "What"
+  },
+  {
+   "t": 2.4409,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.4517,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.462,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.4715,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 2.4816,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 2.4924,
+   "bytes": 1,
+   "text": "?"
+  },
+  {
+   "t": 2.5036,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.5141,
+   "bytes": 1,
+   "text": "A"
+  },
+  {
+   "t": 2.5249,
+   "bytes": 1,
+   "text": ":"
+  },
+  {
+   "t": 2.5363,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.5469,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.5579,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.5696,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.5802,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.5908,
+   "bytes": 3,
+   "text": "The"
+  },
+  {
+   "t": 2.6026,
+   "bytes": 5,
+   "text": " user"
+  },
+  {
+   "t": 2.6132,
+   "bytes": 6,
+   "text": " asked"
+  },
+  {
+   "t": 2.6237,
+   "bytes": 4,
+   "text": " for"
+  },
+  {
+   "t": 2.6344,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.6459,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.6564,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 2.6669,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 2.6776,
+   "bytes": 3,
+   "text": " in"
+  },
+  {
+   "t": 2.6875,
+   "bytes": 2,
+   "text": " a"
+  },
+  {
+   "t": 2.6972,
+   "bytes": 7,
+   "text": " single"
+  },
+  {
+   "t": 2.7072,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 2.7172,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.7275,
+   "bytes": 4,
+   "text": " The"
+  },
+  {
+   "t": 2.7375,
+   "bytes": 8,
+   "text": " correct"
+  },
+  {
+   "t": 2.7474,
+   "bytes": 7,
+   "text": " answer"
+  },
+  {
+   "t": 2.7578,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.7685,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.7784,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.7885,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.7987,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.809,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.8196,
+   "bytes": 4,
+   "text": "What"
+  },
+  {
+   "t": 2.8297,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.8396,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.8502,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.861,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 2.8711,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 2.8808,
+   "bytes": 1,
+   "text": "?"
+  },
+  {
+   "t": 2.8908,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.901,
+   "bytes": 1,
+   "text": "A"
+  },
+  {
+   "t": 2.9118,
+   "bytes": 1,
+   "text": ":"
+  },
+  {
+   "t": 2.9219,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.932,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.942,
+   "bytes": 10,
+   "text": "<|im_end|>"
+  },
+  {
+   "t": 2.9521,
+   "bytes": 1,
+   "text": "\n"
+  },
+  {
+   "t": 2.9628,
+   "bytes": 13,
+   "text": "<|endoftext|>"
+  },
+  {
+   "t": 2.9729,
+   "bytes": 4,
+   "text": "What"
+  },
+  {
+   "t": 2.9835,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.9947,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 3.005,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 3.0148,
+   "bytes": 3,
+   "text": " of"
+  },
+  {
+   "t": 3.0247,
+   "bytes": 7,
+   "text": " France"
+  },
+  {
+   "t": 3.048,
    "bytes": 1,
    "text": "\n"
   }
@@ -364,14 +979,14 @@
  "peak_file_mb": 0.0,
  "llama_no_mmap": false,
  "exit_code": 0,
- "wall_s": 2.606,
- "stderr_tail": "0\nllama_context: freq_scale    = 1\nllama_context: n_rs_seq      = 0\nllama_context: n_ctx_seq (256) < n_ctx_train (40960) -- the full capacity of the model will not be utilized\nggml_metal_init: allocating\nggml_metal_init: found device: Apple M4 Pro\nggml_metal_init: picking default device: Apple M4 Pro\nggml_metal_init: use fusion         = true\nggml_metal_init: use concurrency    = true\nggml_metal_init: use graph optimize = true\nset_abort_callback: call\nllama_context:        CPU  output buffer size =     0.58 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    28.00 MiB\nllama_kv_cache: size =   28.00 MiB (   256 cells,  28 layers,  1/1 seqs), K (f16):   14.00 MiB, V (f16):   14.00 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 3\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 2488\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 38, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: Flash Attention was auto, set to enabled\nsched_reserve: resolving fused Gated Delta Net support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nsched_reserve: fused Gated Delta Net (autoregressive) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   16, n_seqs =  1, n_outputs =   16\nsched_reserve: fused Gated Delta Net (chunked) enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   38, n_seqs =  1, n_outputs =   38\nsched_reserve:        CPU compute buffer size =    22.32 MiB\nsched_reserve: graph nodes  = 987\nsched_reserve: graph splits = 282 (with bs=38), 1 (with bs=1)\nsched_reserve: reserve took 1.89 ms, sched copies = 1\nmain: decoded 69 tokens in 1.06 s, speed: 64.81 t/s\n\nllama_perf_sampler_print:    samplers time =       5.61 ms /    70 runs\nllama_perf_context_print:        load time =    1143.26 ms\nllama_perf_context_print: prompt eval time =     140.97 ms /    38 tokens (    3.71 ms per token,   269.57 tokens per second)\nllama_perf_context_print:        eval time =     912.35 ms /    69 runs   (   13.22 ms per token,    75.63 tokens per second)\nllama_perf_context_print:       total time =    2066.89 ms /   107 tokens\nllama_perf_context_print:    graphs reused =         68\n\n~llama_context:       MTL0 compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n~llama_context:        CPU compute buffer size is  22.3214 MiB, matches expectation of  22.3214 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\nggml_metal_free: deallocating\n",
- "gen_chunks": 69,
- "gen_bytes": 297,
- "t_first_gen_chunk_s": 1.316,
- "t_last_gen_chunk_s": 2.603,
- "gen_span_s": 1.287,
- "tok_per_s_stream": 149.2,
- "tok_per_s_wall": 73.68,
+ "wall_s": 3.049,
+ "stderr_tail": "      = 21\nllama_context: causal_attn           = 1\nllama_context: flash_attn            = auto\nllama_context: kv_unified            = false\nllama_context: freq_base             = 1000000.0\nllama_context: freq_scale            = 1\nllama_context: n_rs_seq              = 0\nllama_context: n_outputs_max         = 21\nllama_context: n_outputs_max_per_seq = 1\nllama_context: n_ctx_seq (256) < n_ctx_train (40960) -- the full capacity of the model will not be utilized\nset_abort_callback: call\nllama_context:        CPU  output buffer size =     0.58 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    28.00 MiB\nllama_kv_cache: size =   28.00 MiB (   256 cells,  28 layers,  1/1 seqs), K (f16):   14.00 MiB, V (f16):   14.00 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 2488\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 21, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\nsched_reserve:        CPU compute buffer size =    12.67 MiB\nsched_reserve: graph nodes  = 986\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 3.24 ms, sched copies = 1\nmain: decoded 192 tokens in 2.05 s, speed: 93.74 t/s\n\nllama_perf_sampler_print:    samplers time =       8.68 ms /   192 runs\nllama_perf_context_print:        load time =     985.60 ms\nllama_perf_context_print: prompt eval time =      69.74 ms /    21 tokens (    3.32 ms per token,   301.12 tokens per second)\nllama_perf_context_print:        eval time =    1961.37 ms /   191 runs   (   10.27 ms per token,    97.38 tokens per second)\nllama_perf_context_print:       total time =    2963.92 ms /   212 tokens\nllama_perf_context_print:    graphs reused =        190\n\n~llama_context:        CPU compute buffer size is  12.6745 MiB, matches expectation of  12.6745 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
+ "gen_chunks": 192,
+ "gen_bytes": 883,
+ "t_first_gen_chunk_s": 1.057,
+ "t_last_gen_chunk_s": 3.048,
+ "gen_span_s": 1.991,
+ "tok_per_s_stream": 96.42,
+ "tok_per_s_wall": 62.97,
  "mem_samples": 0
 }
