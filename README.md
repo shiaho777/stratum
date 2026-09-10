@@ -295,7 +295,8 @@ The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streame
 
 #### Video — Qwen3-0.6B Q4_K_M (462 MB)
 
-<p align="center"><video src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4" controls muted loop style="max-width:100%"></video></p>
+<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
+<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4">▶ full-quality MP4 (for social posting)</a></p>
 
 | | stratum | llama.cpp |
 |---|---|---|
@@ -321,7 +322,8 @@ python3 render_h2h.py results/q4km_stratum_speed_run2.json \
 
 #### Video — Qwen3-0.6B F16 (1.4 GB)
 
-<p align="center"><video src="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.mp4" controls muted loop style="max-width:100%"></video></p>
+<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B F16: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
+<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.mp4">▶ full-quality MP4 (for social posting)</a></p>
 
 | | stratum | llama.cpp |
 |---|---|---|
