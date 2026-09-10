@@ -244,7 +244,7 @@ Two research spikes reuse the same streaming primitives outside the `stratum` bi
 
 ### Invariants
 
-Three hard boundaries the engine never crosses — they are the reason numbers stay honest:
+Three hard boundaries the engine never crosses:
 
 1. **Never harm quality** — no requantization of existing weights (Q4_K→Q4_0 is forbidden), no skipped layers, no approximate compute. The only allowed "approximation" is int8 SDOT, verified greedy bit-exact. The nibble layout is a byte permutation, not requantization.
 2. **Never grow wired memory** — no whole-model mlock, no GPU buffers caching weights, no >1 GB NoCopy registrations. Weights stream; only KV/SSM state is resident.
@@ -281,9 +281,9 @@ Same config twice must give KL = 0 (`USE_MEMX=0` builds are byte-reproducible ru
 
 What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolchains, int8 SDOT, MemX backing flips), and what re-validates it: see the determinism contract in `AGENTS.md`, and `stratum/docs/VALIDATION.md` for the full coverage matrix.
 
-### Head-to-head videos — stratum vs llama.cpp (shareable)
+### Head-to-head videos — stratum vs llama.cpp
 
-The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streamed side by side with a floating HUD — real-time tok/s, anonymous memory, page cache, token progress — in the style of a game FPS overlay. Rendered from measured runs; the raw JSON records and the harness live in `media/h2h-video/`. Videos are sized for direct social sharing.
+The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streamed side by side with a floating HUD — real-time tok/s, anonymous memory, page cache, token progress — in the style of a game FPS overlay. Rendered from measured runs; the raw JSON records and the harness live in `media/h2h-video/`.
 
 **Measurement ground rules (both videos):**
 
@@ -291,12 +291,12 @@ The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streame
 - Memory accounting via `vmmap --summary` polled every 0.2 s: **anonymous = Physical footprint** (the binding, non-reclaimable cost — same methodology as `stratum/benchmarks/headtohead.sh`), **page cache = mapped-file resident** (reclaimable, never binding).
 - **Two-pass measurement**: a speed pass with no sampler attached (vmmap suspends the target and would skew sub-5-second runs) and a separate memory pass with sampling; each case runs twice and the hot (second) run is reported.
 - Host: the M4 Pro / 24 GB machine above, no thermal throttling. Models reconverted from local HF weights (nothing downloaded); fair comparison became possible only after the Qwen3 handler fixes of #75/#76 — the two engines now produce identical greedy output for the first 12 tokens on the same file and diverge only via f16/f32 accumulation order.
-- stratum runs Q4_K with `STRATUM_SDOT=0` (int8 SDOT is not yet safe on Qwen3 — see Honest limitations).
+- stratum runs Q4_K with `STRATUM_SDOT=0` (int8 SDOT is not yet safe on Qwen3 — see Limitations).
 
 #### Video — Qwen3-0.6B Q4_K_M (462 MB)
 
 <p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4">▶ full-quality MP4 (for social posting)</a></p>
+<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
 
 | | stratum | llama.cpp |
 |---|---|---|
@@ -323,7 +323,7 @@ python3 render_h2h.py results/q4km_stratum_speed_run2.json \
 #### Video — Qwen3-0.6B F16 (1.4 GB)
 
 <p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B F16: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.mp4">▶ full-quality MP4 (for social posting)</a></p>
+<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
 
 | | stratum | llama.cpp |
 |---|---|---|
@@ -420,7 +420,7 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 - **Q2_K unpack is compute-bound** (~7 GB/s at 14 cores); the nibble layout breaks this (2.2×) at the cost of +50% file size — needs ≥32 GB RAM to stay hot.
 - **Long-generation tree efficiency is 2.46 tok/main** — draft quality, not tree parameters, is the wall.
 
-### Honest limitations
+### Limitations
 
 - **Single-model, single-process by design**: architecture state lives in file-scope globals; one process runs one model, and `STRATUM_SERVER` mode is a serial loop, not a concurrent server.
 - **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
@@ -468,7 +468,7 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 ├── README_CN.md       ← 简体中文
 ├── AGENTS.md          ← development guide, boundaries, determinism contract
 ├── docs/assets/       ← SVG figures embedded in this README
-├── media/h2h-video/   ← shareable head-to-head videos + raw measurement JSON + harness
+├── media/h2h-video/   ← head-to-head videos + raw measurement JSON + harness
 └── stratum/
     ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh, H3/DiT spikes
     ├── docs/          ← measured evidence + VALIDATION.md coverage matrix + ENVVARS.md switch map
