@@ -16,7 +16,7 @@ A pure-C transformer inference engine for Apple Silicon with a wired-memory foot
 | vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
 | Engine size | ~752 KB binary · ≈46k lines C/Metal/tooling (≈26k engine core) |
 | GPU required | none (integrated, optional Metal accel) |
-| Architecture support | Llama family + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) + MoE (`llama-moe`, experimental) + video-DiT/H3 spikes (standalone, not part of the `stratum` binary) |
+| Architecture support | Llama family + Qwen3/Qwen2-dense + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) + MoE (`llama-moe`, experimental) + video-DiT/H3 spikes (standalone, not part of the `stratum` binary) |
 
 <p align="center"><img src="docs/assets/project-stats.svg" alt="Project statistics: lines of code, binary size, formats, gates, CI jobs" width="720"></p>
 
@@ -281,6 +281,66 @@ Same config twice must give KL = 0 (`USE_MEMX=0` builds are byte-reproducible ru
 
 What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolchains, int8 SDOT, MemX backing flips), and what re-validates it: see the determinism contract in `AGENTS.md`, and `stratum/docs/VALIDATION.md` for the full coverage matrix.
 
+### Head-to-head videos — stratum vs llama.cpp (shareable)
+
+The same GGUF file fed to both engines, greedy CPU-only decoding, tokens streamed side by side with a floating HUD — real-time tok/s, anonymous memory, page cache, token progress — in the style of a game FPS overlay. Rendered from measured runs; the raw JSON records and the harness live in `media/h2h-video/`. Videos are sized for direct social sharing.
+
+**Measurement ground rules (both videos):**
+
+- Both engines consume the **byte-identical GGUF file** and the same prompt token sequence (Qwen3 chat template, "What is the capital of France? Answer in one short sentence."), temperature 0, 192 generated tokens (`--ignore-eos` on the llama.cpp side so neither engine stops early), CPU-only (`STRATUM_NO_GPU=1` / `-ngl 0`).
+- Memory accounting via `vmmap --summary` polled every 0.2 s: **anonymous = Physical footprint** (the binding, non-reclaimable cost — same methodology as `stratum/benchmarks/headtohead.sh`), **page cache = mapped-file resident** (reclaimable, never binding).
+- **Two-pass measurement**: a speed pass with no sampler attached (vmmap suspends the target and would skew sub-5-second runs) and a separate memory pass with sampling; each case runs twice and the hot (second) run is reported.
+- Host: the M4 Pro / 24 GB machine above, no thermal throttling. Models reconverted from local HF weights (nothing downloaded); fair comparison became possible only after the Qwen3 handler fixes of #75/#76 — the two engines now produce identical greedy output for the first 12 tokens on the same file and diverge only via f16/f32 accumulation order.
+- stratum runs Q4_K with `STRATUM_SDOT=0` (int8 SDOT is not yet safe on Qwen3 — see Honest limitations).
+
+#### Video — Qwen3-0.6B Q4_K_M (462 MB)
+
+<p align="center"><video src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4" controls muted loop style="max-width:100%"></video></p>
+
+| | stratum | llama.cpp |
+|---|---|---|
+| decode throughput (hot) | 56.4 tok/s | 228.9 tok/s |
+| **anonymous RAM (peak)** | **58 MB** | **475 MB** |
+| page cache (reclaimable, peak) | 462 MB | 411–540 MB |
+
+Reproduce and log excerpt:
+
+```sh
+cd media/h2h-video && ./run_all_cases.sh      # measures every case (2 runs each)
+python3 render_h2h.py results/q4km_stratum_speed_run2.json \
+  results/q4km_llamacpp_speed_run2.json \
+  videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4 \
+  --title "Qwen3-0.6B Q4_K_M — stratum vs llama.cpp (CPU, greedy, same GGUF)"
+
+# results/q4km_*_run2.json (hot run):
+#   [stratum]  wall=3.60s  tok/s(stream)=56.43   peak_anon=58 MB    peak_file=462 MB
+#   [llamacpp] wall=1.60s  tok/s(stream)=228.93  peak_anon=475 MB   peak_file=411 MB
+#   llama.cpp --no-mmap: 316 tok/s, 477 MB anon; stratum HOT_FAST: 55 tok/s, 58 MB
+#   output check: first 12 tokens identical across engines
+```
+
+#### Video — Qwen3-0.6B F16 (1.4 GB)
+
+<p align="center"><video src="media/h2h-video/videos/qwen3-0.6b-f16-stratum-vs-llamacpp.mp4" controls muted loop style="max-width:100%"></video></p>
+
+| | stratum | llama.cpp |
+|---|---|---|
+| decode throughput (hot) | 44.2 tok/s | 200.8 tok/s |
+| **anonymous RAM (peak)** | **57 MB** | **127 MB** |
+| page cache (reclaimable, peak) | 1434 MB | 1536 MB |
+
+```text
+# results/f16_*_run2.json (hot run):
+#   [stratum]  wall=4.81s  tok/s(stream)=44.16   peak_anon=57 MB    peak_file=1434 MB
+#   [llamacpp] wall=2.08s  tok/s(stream)=200.79  peak_anon=127 MB   peak_file=1536 MB
+# llama.cpp keeps F16 weights as clean read-only mappings (staying out of the
+# footprint) but rewrites Q4_K_M weight pages dirty at load — hence 127 MB vs 475 MB.
+```
+
+#### Video — Qwen3.6-27B (pending measurement window)
+
+The 27B head-to-head renders from the same harness with the right panel showing llama.cpp's hard "CANNOT RUN" card (default Metal mode residents the whole 11.98 GB in unified memory — measured 20+ GB on this 24 GB machine, swap storm; CPU mode still needs ~12 GB of weight pages resident). stratum streams the same file with ~77 MB anonymous memory. Measurement waits for an idle machine window; the v217 bit-exact gate already passes on the current engine.
+
 ---
 
 ## Part IV — Measurements
@@ -363,6 +423,8 @@ Theoretical 27B behavior (estimates derived from this model — solid bars below
 - **Single-model, single-process by design**: architecture state lives in file-scope globals; one process runs one model, and `STRATUM_SERVER` mode is a serial loop, not a concurrent server.
 - **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
 - **Speculative-decode long-run gains are draft-quality-bound** (2.46 tok/main sustained vs 8.0 short-run).
+- **int8 SDOT is not yet safe on Qwen3-dense models**: Qwen3's residual-stream norm (thousands) far exceeds the llama-family distribution the approximation was validated on, and its PPL collapses — run Qwen3 with `STRATUM_SDOT=0` until this is re-derived (llama-family and the 27B hybrid are unaffected).
+- **Small-model decode is slower than llama.cpp** (56 vs 229 tok/s on a hot 0.6B Q4_K_M, see the head-to-head videos): the streaming architecture sweeps the whole model per token and carries scheduler overhead (mincore, prefetch, stage buffers) that dominates at compute sizes this small. The design point is memory footprint and large-model viability, where the per-token sweep is what any engine must pay anyway.
 - **MemX trades bit-reproducibility for footprint** (~1e-4 mean KL run-to-run variance; token sequences stable).
 - **MoE and H3 are spikes, not products** — `llama-moe` has oracle coverage but no CI gate and no full-scale validation; the H3 pipeline has no memory-floor claim (activations + Metal staging are GB-scale at 768p) and its kernels default to the conservative path pending gate decisions.
 - **Apple Silicon only** — the NEON hot path has no x86_64 port.
@@ -404,6 +466,7 @@ The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments
 ├── README_CN.md       ← 简体中文
 ├── AGENTS.md          ← development guide, boundaries, determinism contract
 ├── docs/assets/       ← SVG figures embedded in this README
+├── media/h2h-video/   ← shareable head-to-head videos + raw measurement JSON + harness
 └── stratum/
     ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh, H3/DiT spikes
     ├── docs/          ← measured evidence + VALIDATION.md coverage matrix + ENVVARS.md switch map
