@@ -657,6 +657,16 @@ static int8_t* q35_g_xq_pack = NULL;
 static float*  q35_g_xsc_pack = NULL;
 static int     q35_g_xq_pack_cap = 0;
 static int     q35_g_xq_pack_ready = 0;
+/* Per-16 activation pools for Q6_K: its SDOT kernels (pack AND non-pack
+ * multix) index xscale by the 16-wide group — the shared per-32 pool reads
+ * the wrong scale / out of bounds on spiky activations. Built alongside the
+ * per-32 pools in q35_prequant_x_q8_multix. */
+static int8_t* q35_g_xq16_pool[q35_B_MAX] = {0};
+static float*  q35_g_xsc16_pool[q35_B_MAX] = {0};
+static int8_t* q35_g_xq16_pack = NULL;
+static float*  q35_g_xsc16_pack = NULL;
+static int     q35_g_xq16_pack_ready = 0;
+static int     q35_g_xq16_cap = 0;
 static long    q35_g_xpack_n = 0;
 static long    q35_g_rows2_n = 0;
 static int32_t* q35_g_xsum_pool[q35_B_MAX] = {0};
@@ -676,6 +686,7 @@ static void q35_prequant_x_q8_multix(const float* const* xs, int B, int K) {
         q35_g_xq_cap = K;
     }
     q35_g_xq_pack_ready = 0;
+    q35_g_xq16_pack_ready = 0;
     int want_pack = (B >= 1 && B <= q35_B_MAX);
     if (want_pack) {
         size_t need_x = (size_t)nb * (size_t)B * 32;
@@ -687,7 +698,25 @@ static void q35_prequant_x_q8_multix(const float* const* xs, int B, int K) {
             q35_g_xsum_pack = (int32_t*)malloc(need_s * sizeof(int32_t));
             q35_g_xq_pack_cap = (int)need_x;
             q35_g_xsum_pack_cap = (int)need_s;
+            /* per-16 pack bufs grow on the same trigger — same xq byte
+             * count, 2x the scales (one per 16-wide group) */
+            free(q35_g_xq16_pack); free(q35_g_xsc16_pack);
+            q35_g_xq16_pack  = (int8_t*)malloc(need_x);
+            q35_g_xsc16_pack = (float*)malloc(2 * need_s * sizeof(float));
         }
+    }
+    /* per-16 per-stream pools for Q6_K (grown to K when needed) */
+    if (B <= q35_B_MAX) {
+        if (q35_g_xq16_cap < K) {
+            for (int s = 0; s < q35_B_MAX; s++) {
+                free(q35_g_xq16_pool[s]); free(q35_g_xsc16_pool[s]);
+                q35_g_xq16_pool[s]  = (int8_t*)malloc((size_t)K);
+                q35_g_xsc16_pool[s] = (float*)malloc((size_t)2 * nb * sizeof(float));
+            }
+            q35_g_xq16_cap = K;
+        }
+        for (int s = 0; s < B; s++)
+            q6k_quantize_x_q8_g16(xs[s], K, q35_g_xq16_pool[s], q35_g_xsc16_pool[s]);
     }
     int do_fused = want_pack && q35_g_xq_pack && q35_g_xsc_pack && q35_g_xsum_pack;
     if (do_fused) {
@@ -743,6 +772,20 @@ static void q35_prequant_x_q8_multix(const float* const* xs, int B, int K) {
         q35_g_xq_pack_ready = 1;
         q35_g_xpack_n++;
         q35_g_xsum_n++;
+        /* scatter the per-16 pools into the pack layout for Q6_K consumers:
+         * xq16 keeps [g32][B][32] (two 16-halves = g16 pairs), sc16 is
+         * [g16][B] indexed by the 16-wide group number */
+        if (q35_g_xq16_pack && q35_g_xsc16_pack) {
+            int ng2 = K / 16;
+            for (int s = 0; s < B; s++) {
+                for (int g = 0; g < nb; g++)
+                    memcpy(q35_g_xq16_pack + ((size_t)g * B + s) * 32,
+                           q35_g_xq16_pool[s] + (size_t)g * 32, 32);
+                for (int g = 0; g < ng2; g++)
+                    q35_g_xsc16_pack[(size_t)g * B + s] = q35_g_xsc16_pool[s][g];
+            }
+            q35_g_xq16_pack_ready = 1;
+        }
     } else {
         if (B >= 2) {
             dispatch_apply(B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
@@ -922,7 +965,8 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
                                        const float* const* xsc,
                                        float* const* ys,
                                        int B, int N, int K) {
-    int use_pack = (B >= 1 && q35_g_xq_pack_ready && q35_g_xq_pack && q35_g_xsc_pack
+    int use_pack = (B >= 1 && q35_g_xq16_pack_ready
+                    && q35_g_xq16_pack && q35_g_xsc16_pack
                     && q35_g_xq_B == B && q35_g_xq_K == K);
     if (0 && use_pack && N >= 4 && B == 7) {
         int nq = N / 4;
@@ -945,7 +989,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
                         q35_q6k_row_ptr(w, K, r + 1),
                         q35_q6k_row_ptr(w, K, r + 2),
                         q35_q6k_row_ptr(w, K, r + 3),
-                        K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1, o2, o3);
+                        K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1, o2, o3);
                     for (int s = 0; s < 7; s++) {
                         ys[s][r] = o0[s];
                         ys[s][r + 1] = o1[s];
@@ -960,7 +1004,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
             float o0[7], o1[7];
             q6k_dot_rows2_sdot_pack_b7(
                 q35_q6k_row_ptr(w, K, r), q35_q6k_row_ptr(w, K, r + 1),
-                K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
             for (int s = 0; s < 7; s++) {
                 ys[s][r] = o0[s];
                 ys[s][r + 1] = o1[s];
@@ -971,7 +1015,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
         if (r < N) {
             float out[7];
             q6k_dot_row_sdot_pack_b7(q35_q6k_row_ptr(w, K, r), K,
-                                     q35_g_xq_pack, q35_g_xsc_pack, out);
+                                     q35_g_xq16_pack, q35_g_xsc16_pack, out);
             for (int s = 0; s < 7; s++) ys[s][r] = out[s];
         }
         return;
@@ -995,7 +1039,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
                     q6k_dot_rows2_sdot_pack_b7(
                         q35_q6k_row_ptr(w, K, r),
                         q35_q6k_row_ptr(w, K, r + 1),
-                        K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                        K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
                     for (int s = 0; s < 7; s++) {
                         ys[s][r] = o0[s];
                         ys[s][r + 1] = o1[s];
@@ -1007,7 +1051,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
             int r = N - 1;
             float out[7];
             q6k_dot_row_sdot_pack_b7(q35_q6k_row_ptr(w, K, r), K,
-                                     q35_g_xq_pack, q35_g_xsc_pack, out);
+                                     q35_g_xq16_pack, q35_g_xsc16_pack, out);
             for (int s = 0; s < 7; s++) ys[s][r] = out[s];
         }
         return;
@@ -1022,7 +1066,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
         float out[q35_B_MAX];
         if (use_pack)
             q6k_dot_row_sdot_multix_pack(q35_q6k_row_ptr(w, K, r), K,
-                                         q35_g_xq_pack, q35_g_xsc_pack, B, out);
+                                         q35_g_xq16_pack, q35_g_xsc16_pack, B, out);
         else
             q6k_dot_row_sdot_multix(q35_q6k_row_ptr(w, K, r), K, xq, xsc, B, out);
         for (int s = 0; s < B; s++) ys[s][r] = out[s];
@@ -1108,14 +1152,13 @@ static void q35_linear_q6k(const GgufTensor* w, const float* x, float* y, int N,
         float* ys1[1] = {y};
         if (!q35_prequant_match(xs1, 1, K))
             q35_prequant_x_q8_multix(xs1, 1, K);
-        /* Q6_K SDOT kernels index activation scales per-16, but the shared
-         * pool is per-32 — only the PACK layout (b32 = g/2 mapping inside
-         * q6k_dot_*_pack) is compatible. If the pack path isn't usable,
-         * take NEON instead of feeding per-32 scales to a per-16 kernel. */
-        if (q35_g_xq_pack_ready && q35_g_xq_B == 1 && q35_g_xq_K == K) {
+        /* Q6_K SDOT kernels index activation scales per-16 — consume the
+         * per-16 pool built by q35_prequant_x_q8_multix. If it isn't ready,
+         * take NEON rather than feed mismatched scales to the kernel. */
+        if (q35_g_xq16_pack_ready && q35_g_xq_B == 1 && q35_g_xq_K == K) {
             q35_linear_q6k_multix_preq(w,
-                (const int8_t* const*)q35_g_xq_pool,
-                (const float* const*)q35_g_xsc_pool, ys1, 1, N, K);
+                (const int8_t* const*)q35_g_xq16_pool,
+                (const float* const*)q35_g_xsc16_pool, ys1, 1, N, K);
             return;
         }
     }
@@ -1130,12 +1173,11 @@ static void q35_linear_q6k_multix(const GgufTensor* w,
     if (g_st.use_sdot) {
         if (!q35_prequant_match(xs, B, K))
             q35_prequant_x_q8_multix(xs, B, K);
-        /* see q35_linear_q6k: only the pack layout is compatible with the
-         * per-16 scale indexing of the Q6_K SDOT kernels */
-        if (q35_g_xq_pack_ready && q35_g_xq_B == B && q35_g_xq_K == K) {
+        /* see q35_linear_q6k: Q6_K SDOT kernels consume per-16 scales */
+        if (q35_g_xq16_pack_ready && q35_g_xq_B == B && q35_g_xq_K == K) {
             q35_linear_q6k_multix_preq(w,
-                (const int8_t* const*)q35_g_xq_pool,
-                (const float* const*)q35_g_xsc_pool, ys, B, N, K);
+                (const int8_t* const*)q35_g_xq16_pool,
+                (const float* const*)q35_g_xsc16_pool, ys, B, N, K);
             return;
         }
     }
@@ -7910,8 +7952,8 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
     if (use_sdot) {
         if (!q35_prequant_match(xs, B, K))
             q35_prequant_x_q8_multix(xs, B, K);
-        xq_use = (const int8_t* const*)q35_g_xq_pool;
-        xsc_use = (const float* const*)q35_g_xsc_pool;
+        xq_use = (const int8_t* const*)(gt == 14 ? q35_g_xq16_pool : q35_g_xq_pool);
+        xsc_use = (const float* const*)(gt == 14 ? q35_g_xsc16_pool : q35_g_xsc_pool);
     }
 #else
     int use_sdot = 0;
@@ -7920,9 +7962,11 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
 #endif
     int use_pack = 0;
 #if defined(__ARM_FEATURE_DOTPROD)
-    use_pack = (use_sdot && B >= 1 && q35_g_xq_pack_ready && q35_g_xq_pack && q35_g_xsc_pack
-                && q35_g_xq_B == B && q35_g_xq_K == K
-                && ((gt == 12 && q35_g_xsum_pack) || gt == 14));
+    use_pack = (use_sdot && B >= 1 && q35_g_xq_B == B && q35_g_xq_K == K
+                && ((gt == 12 && q35_g_xq_pack_ready && q35_g_xq_pack
+                     && q35_g_xsc_pack && q35_g_xsum_pack)
+                 || (gt == 14 && q35_g_xq16_pack_ready && q35_g_xq16_pack
+                     && q35_g_xsc16_pack)));
 #endif
     if (0 && use_pack && N >= 4 && B == 7 && (gt == 12 || gt == 14)) {
         int nq = N / 4;
@@ -7952,7 +7996,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
                             (const block_q6_K*)(buf + (size_t)(r + 1) * rb),
                             (const block_q6_K*)(buf + (size_t)(r + 2) * rb),
                             (const block_q6_K*)(buf + (size_t)(r + 3) * rb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1, o2, o3);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1, o2, o3);
                     } else {
                         q4k_dot_rows4_sdot_pack_b7(
                             (const block_q4_K*)(buf + (size_t)r * rb),
@@ -7978,7 +8022,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
                 q6k_dot_rows2_sdot_pack_b7(
                     (const block_q6_K*)(buf + (size_t)r * rowb),
                     (const block_q6_K*)(buf + (size_t)(r + 1) * rowb),
-                    K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                    K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
             } else {
                 q4k_dot_rows2_sdot_pack_b7(
                     (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -7997,7 +8041,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
             if (gt == 14) {
                 q6k_dot_row_sdot_pack_b7(
                     (const block_q6_K*)(buf + (size_t)r * rowb),
-                    K, q35_g_xq_pack, q35_g_xsc_pack, out);
+                    K, q35_g_xq16_pack, q35_g_xsc16_pack, out);
             } else {
                 q4k_dot_row_sdot_pack_b7(
                     (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -8027,7 +8071,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
                         q6k_dot_rows2_sdot_pack_b7(
                             (const block_q6_K*)(buf + (size_t)r * rb),
                             (const block_q6_K*)(buf + (size_t)(r + 1) * rb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
                     } else {
                         q4k_dot_rows2_sdot_pack_b7(
                             (const block_q4_K*)(buf + (size_t)r * rb),
@@ -8047,7 +8091,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
             if (gt == 14) {
                 q6k_dot_row_sdot_pack_b7(
                     (const block_q6_K*)(buf + (size_t)r * rowb),
-                    K, q35_g_xq_pack, q35_g_xsc_pack, out);
+                    K, q35_g_xq16_pack, q35_g_xsc16_pack, out);
             } else {
                 q4k_dot_row_sdot_pack_b7(
                     (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -8065,7 +8109,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
                 if (use_pack)
                     q6k_dot_row_sdot_multix_pack(
                         (const block_q6_K*)(buf + (size_t)r * rowb),
-                        K, q35_g_xq_pack, q35_g_xsc_pack, B, out);
+                        K, q35_g_xq16_pack, q35_g_xsc16_pack, B, out);
                 else
                     q6k_dot_row_sdot_multix(
                         (const block_q6_K*)(buf + (size_t)r * rowb),
@@ -8718,8 +8762,8 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
     if (use_sdot) {
         if (!q35_prequant_match(xs, B, K))
             q35_prequant_x_q8_multix(xs, B, K);
-        xq_use = (const int8_t* const*)q35_g_xq_pool;
-        xsc_use = (const float* const*)q35_g_xsc_pool;
+        xq_use = (const int8_t* const*)(gt == 14 ? q35_g_xq16_pool : q35_g_xq_pool);
+        xsc_use = (const float* const*)(gt == 14 ? q35_g_xsc16_pool : q35_g_xsc_pool);
     }
 #else
     int use_sdot = 0;
@@ -8787,9 +8831,11 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
         {
             int use_pack_t = 0;
 #if defined(__ARM_FEATURE_DOTPROD)
-            use_pack_t = (use_sdot && B >= 1 && q35_g_xq_pack_ready && q35_g_xq_pack && q35_g_xsc_pack
-                && q35_g_xq_B == B && q35_g_xq_K == K
-                && ((gt == 12 && q35_g_xsum_pack) || gt == 14));
+            use_pack_t = (use_sdot && B >= 1 && q35_g_xq_B == B && q35_g_xq_K == K
+                && ((gt == 12 && q35_g_xq_pack_ready && q35_g_xq_pack
+                     && q35_g_xsc_pack && q35_g_xsum_pack)
+                 || (gt == 14 && q35_g_xq16_pack_ready && q35_g_xq16_pack
+                     && q35_g_xsc16_pack)));
 #endif
             if (0 && use_pack_t && nr >= 4 && B == 7 && (gt == 12 || gt == 14)) {
                 int nq = nr / 4;
@@ -8815,7 +8861,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                                     (const block_q6_K*)(bptr + (size_t)(r + 1) * rb),
                                     (const block_q6_K*)(bptr + (size_t)(r + 2) * rb),
                                     (const block_q6_K*)(bptr + (size_t)(r + 3) * rb),
-                                    K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1, o2, o3);
+                                    K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1, o2, o3);
                             } else {
                                 q4k_dot_rows4_sdot_pack_b7(
                                     (const block_q4_K*)(bptr + (size_t)r * rb),
@@ -8841,7 +8887,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                         q6k_dot_rows2_sdot_pack_b7(
                             (const block_q6_K*)(buf + (size_t)r * rowb),
                             (const block_q6_K*)(buf + (size_t)(r + 1) * rowb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
                     } else {
                         q4k_dot_rows2_sdot_pack_b7(
                             (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -8860,7 +8906,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                     if (gt == 14) {
                         q6k_dot_row_sdot_pack_b7(
                             (const block_q6_K*)(buf + (size_t)r * rowb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, out);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, out);
                     } else {
                         q4k_dot_row_sdot_pack_b7(
                             (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -8890,7 +8936,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                                 q6k_dot_rows2_sdot_pack_b7(
                                     (const block_q6_K*)(bptr + (size_t)r * rb),
                                     (const block_q6_K*)(bptr + (size_t)(r + 1) * rb),
-                                    K, q35_g_xq_pack, q35_g_xsc_pack, o0, o1);
+                                    K, q35_g_xq16_pack, q35_g_xsc16_pack, o0, o1);
                             } else {
                                 q4k_dot_rows2_sdot_pack_b7(
                                     (const block_q4_K*)(bptr + (size_t)r * rb),
@@ -8910,7 +8956,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                     if (gt == 14) {
                         q6k_dot_row_sdot_pack_b7(
                             (const block_q6_K*)(buf + (size_t)r * rowb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, out);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, out);
                     } else {
                         q4k_dot_row_sdot_pack_b7(
                             (const block_q4_K*)(buf + (size_t)r * rowb),
@@ -8923,11 +8969,11 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
             if (gt == 14) {
 #if defined(__ARM_FEATURE_DOTPROD)
                 if (use_sdot) {
-                    if (B >= 1 && q35_g_xq_pack_ready && q35_g_xq_pack && q35_g_xsc_pack
+                    if (B >= 1 && q35_g_xq16_pack_ready && q35_g_xq16_pack && q35_g_xsc16_pack
                         && q35_g_xq_B == B && q35_g_xq_K == K)
                         q6k_dot_row_sdot_multix_pack(
                             (const block_q6_K*)(buf + (size_t)r * rowb),
-                            K, q35_g_xq_pack, q35_g_xsc_pack, B, out);
+                            K, q35_g_xq16_pack, q35_g_xsc16_pack, B, out);
                     else
                         q6k_dot_row_sdot_multix(
                             (const block_q6_K*)(buf + (size_t)r * rowb),
@@ -14219,7 +14265,8 @@ int run_qwen35_arch(int argc, char** argv) {
                 g_st.nchunks, ncpu);
     }
 
-    g_st.use_sdot = (getenv("STRATUM_NO_SDOT") == NULL);  /* V25: SDOT default ON */
+    /* use_sdot is set once by stratum_linear_init (STRATUM_NO_SDOT /
+     * STRATUM_SDOT both honored) — do not override it here. */
     if (g_st.use_sdot)
         fprintf(stderr, "  Q4_K SDOT: ENABLED (int8 activations, ~2.5x, ~0.3%% approx)\n");
 

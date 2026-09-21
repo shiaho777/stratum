@@ -486,29 +486,49 @@ static inline void st_linear_multix(const GgufTensor* w,
             static size_t   st_pack_cap = 0;
             int ng = K / 32;
             int Bc_max = (B < 16) ? B : 16;
+            int is_q4 = (w->type == GGML_TYPE_Q4_K);
             size_t need_x = (size_t)ng * (size_t)Bc_max * 32;
             if (need_x > st_pack_cap) {
                 free(st_xpack); free(st_scpack); free(st_sumpack);
                 st_xpack   = (int8_t*) malloc(need_x);
-                st_scpack  = (float*)  malloc((size_t)ng * Bc_max * sizeof(float));
+                /* Q6_K consumes per-16 activation scales (2*ng entries per
+                 * stream); Q4_K uses per-32 (ng). Allocate for the max. */
+                st_scpack  = (float*)  malloc((size_t)2 * ng * Bc_max * sizeof(float));
                 st_sumpack = (int32_t*)malloc((size_t)ng * Bc_max * sizeof(int32_t));
                 st_pack_cap = (st_xpack && st_scpack && st_sumpack) ? need_x : 0;
             }
             if (st_pack_cap) {
                 for (int s0 = 0; s0 < B; s0 += 16) {
                     int Bc = (B - s0 < 16) ? (B - s0) : 16;
-                    for (int s = 0; s < Bc; s++)
-                        for (int g = 0; g < ng; g++) {
-                            int8_t* dst = st_xpack + ((size_t)g * Bc + s) * 32;
-                            float scv;
-                            q4k_quantize_x_q8_1b(xs[s0 + s] + (size_t)g * 32, dst, &scv);
-                            st_scpack[(size_t)g * Bc + s] = scv;
-                            st_sumpack[(size_t)g * Bc + s] = q4k_sum_i8_32(dst);
+                    if (is_q4) {
+                        for (int s = 0; s < Bc; s++)
+                            for (int g = 0; g < ng; g++) {
+                                int8_t* dst = st_xpack + ((size_t)g * Bc + s) * 32;
+                                float scv;
+                                q4k_quantize_x_q8_1b(xs[s0 + s] + (size_t)g * 32, dst, &scv);
+                                st_scpack[(size_t)g * Bc + s] = scv;
+                                st_sumpack[(size_t)g * Bc + s] = q4k_sum_i8_32(dst);
+                            }
+                    } else {
+                        /* Q6_K: per-16 activation scales — same contract as
+                         * the single-stream fused path (q6k_quantize_x_q8_g16).
+                         * xpack keeps the [g32][B][32] layout; each 16-half is
+                         * quantized with its own scale (scpack[g16*Bc+s]). */
+                        int ng2 = K / 16;
+                        int8_t* xq_t = (int8_t*)alloca((size_t)K);
+                        float*  xs_t = (float*) alloca((size_t)ng2 * sizeof(float));
+                        for (int s = 0; s < Bc; s++) {
+                            q6k_quantize_x_q8_g16(xs[s0 + s], K, xq_t, xs_t);
+                            for (int g = 0; g < ng; g++)
+                                memcpy(st_xpack + ((size_t)g * Bc + s) * 32,
+                                       xq_t + (size_t)g * 32, 32);
+                            for (int g = 0; g < ng2; g++)
+                                st_scpack[(size_t)g * Bc + s] = xs_t[g];
                         }
+                    }
                     int np = N / 2, tail = N & 1;
                     int _T = g_st.nchunks; if (_T > np) _T = np; if (_T < 1) _T = 1;
                     int _chunk = (np + _T - 1) / _T;
-                    int is_q4 = (w->type == GGML_TYPE_Q4_K);
                     dispatch_apply(_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
                         ^(size_t _t) {
                             int _s = (int)_t * _chunk, _e = _s + _chunk;

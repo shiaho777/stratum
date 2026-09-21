@@ -120,6 +120,29 @@ static void test_q4k(void) {
         q4k_quantize_x_q8(x, K, xq, xs);
         float fsd = q4k_dot_row_sdot(blocks, K, xq, xs);
         ASSERT_REL("q4_K sdot  approx", fsd, (float)ref, 5e-2f);
+
+        /* pack-path kernel: identical per-32 activation quant, different
+         * accumulation order — must track _f to FP-noise level */
+        {
+            int ng = K / 32, B = 4;
+            int32_t* xsum = malloc(ng * sizeof(int32_t));
+            for (int g = 0; g < ng; g++) xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
+            float fy = q4k_dot_row_sdot_f(blocks, K, xq, xs, xsum);
+            int8_t*  xp  = malloc((size_t)ng * B * 32);
+            float*   scp = malloc((size_t)ng * B * 4);
+            int32_t* smp = malloc((size_t)ng * B * 4);
+            for (int s = 0; s < B; s++)
+                for (int g = 0; g < ng; g++) {
+                    memcpy(xp + ((size_t)g * B + s) * 32, xq + (size_t)g * 32, 32);
+                    scp[(size_t)g * B + s] = xs[g];
+                    smp[(size_t)g * B + s] = xsum[g];
+                }
+            float out[16];
+            q4k_dot_row_sdot_multix_pack(blocks, K, xp, scp, smp, B, out);
+            for (int s = 0; s < B; s++)
+                ASSERT_REL("q4_K sdot pack    ", out[s], fy, 1e-4f);
+            free(xsum); free(xp); free(scp); free(smp);
+        }
         free(xq); free(xs);
     }
 #endif
@@ -190,6 +213,31 @@ static void test_q6k(void) {
     float fn = q6k_dot_row_neon(blocks, K, x);
     ASSERT_REL("q6_K scalar fused", fs, (float)ref, 1e-3f);
     ASSERT_REL("q6_K neon   fused", fn, (float)ref, 1e-3f);
+#if defined(__ARM_FEATURE_DOTPROD)
+    {
+        /* pack-path kernel: activation quant is PER-16 for Q6_K
+         * (q6k_quantize_x_q8_g16) — per-32 scales would read the wrong
+         * group's scale on spiky activations (the historical NaN class) */
+        int ng = K / 32, ng2 = K / 16, B = 4;
+        int8_t* xq = malloc(K);
+        float*  xs16 = malloc(ng2 * sizeof(float));
+        q6k_quantize_x_q8_g16(x, K, xq, xs16);
+        int8_t* xp  = malloc((size_t)ng * B * 32);
+        float*  scp = malloc((size_t)ng2 * B * 4);
+        for (int s = 0; s < B; s++) {
+            for (int g = 0; g < ng; g++)
+                memcpy(xp + ((size_t)g * B + s) * 32, xq + (size_t)g * 32, 32);
+            for (int g = 0; g < ng2; g++)
+                scp[(size_t)g * B + s] = xs16[g];
+        }
+        float fy = q6k_dot_row_sdot_fused(blocks, K, xq, xs16);
+        float out[16];
+        q6k_dot_row_sdot_multix_pack(blocks, K, xp, scp, B, out);
+        for (int s = 0; s < B; s++)
+            ASSERT_REL("q6_K sdot pack    ", out[s], fy, 1e-4f);
+        free(xq); free(xs16); free(xp); free(scp);
+    }
+#endif
 
     free(blocks); free(x);
 }

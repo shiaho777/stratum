@@ -429,7 +429,7 @@ static inline void q6k_dot_row_sdot_pack_b7(
                     int b32 = gabs / 2;
                     int hx = (gabs & 1) * 16;
                     const int8_t* base = xpack + (size_t)b32 * 7 * 32;
-                    const float* scb = scpack + (size_t)b32 * 7;
+                    const float* scb = scpack + (size_t)gabs * 7;
                     int8x16_t qvv = qv[t];
 #define Q6_B7(s, acc) do { \
                         int8x16_t xv = vld1q_s8(base + (size_t)(s) * 32 + hx); \
@@ -518,7 +518,7 @@ static inline void q6k_dot_rows2_sdot_pack_b7(
                     int b32 = gabs / 2;
                     int hx = (gabs & 1) * 16;
                     const int8_t* base = xpack + (size_t)b32 * 7 * 32;
-                    const float* scb = scpack + (size_t)b32 * 7;
+                    const float* scb = scpack + (size_t)gabs * 7;
                     int8x16_t qAv = qa[t];
                     int8x16_t qBv = qb[t];
 #define Q6_XSS(s, accA, accB) do { \
@@ -603,7 +603,7 @@ static inline void q6k_dot_row_sdot_multix_pack(
                     int b32 = gabs / 2;
                     int hx = (gabs & 1) * 16;
                     const int8_t* base = xpack + (size_t)b32 * (size_t)B * 32;
-                    const float* scb = scpack + (size_t)b32 * (size_t)B;
+                    const float* scb = scpack + (size_t)gabs * (size_t)B;
                     int8x16_t qvv = qv[t];
                     for (int si = 0; si < B; si++) {
                         int8x16_t xv = vld1q_s8(base + (size_t)si * 32 + hx);
@@ -693,7 +693,7 @@ static inline void q6k_dot_rows2_sdot_multix_pack(
                     int b32 = gabs / 2;
                     int hx = (gabs & 1) * 16;
                     const int8_t* base = xpack + (size_t)b32 * (size_t)B * 32;
-                    const float* scb = scpack + (size_t)b32 * (size_t)B;
+                    const float* scb = scpack + (size_t)gabs * (size_t)B;
                     int8x16_t qa = qA[t];
                     int8x16_t qb = qB[t];
                     for (int si = 0; si < B; si++) {

@@ -552,6 +552,10 @@ static int la_forward_one_token(int token_id, int position) {
         la_rmsnorm(la_g_x, gain, H, la_g_cfg.rms_eps, la_g_xn);
     }
 
+    if (getenv("STRATUM_MS_DUMPXN")) {
+        FILE* df = fopen(getenv("STRATUM_MS_DUMPXN"), "ab");
+        if (df) { fwrite(la_g_x, 4, H, df); fwrite(la_g_xn, 4, H, df); fclose(df); }
+    }
     const GgufTensor* lm = la_g_output_w ? la_g_output_w : la_g_token_embd;
     if (st_linear_dispatch(lm, la_g_xn, la_g_logits, V, H) != 0) return -1;
 
@@ -809,6 +813,22 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
         la_linear_multix(b->attn_q,cxn,cqb,B,Nq*Hd,H);
         la_linear_multix(b->attn_k,cxn,ckb,B,Nk*Hd,H);
         la_linear_multix(b->attn_v,cxn,cvb,B,Nk*Hd,H);
+        /* per-head q/k RMSNorm (Qwen3-style) — must match la_forward_block;
+         * absent on plain Llama files (NULL tensor skips) */
+        if (b->attn_q_norm) {
+            const float* gain = st_f32_tensor_ptr(b->attn_q_norm);
+            for (int s=0;s<B;s++)
+                for (int h=0;h<Nq;h++)
+                    la_rmsnorm(qb[s]+h*Hd, gain, Hd, la_g_cfg.rms_eps,
+                               qb[s]+h*Hd);
+        }
+        if (b->attn_k_norm) {
+            const float* gain = st_f32_tensor_ptr(b->attn_k_norm);
+            for (int s=0;s<B;s++)
+                for (int h=0;h<Nk;h++)
+                    la_rmsnorm(kb[s]+h*Hd, gain, Hd, la_g_cfg.rms_eps,
+                               kb[s]+h*Hd);
+        }
         for(int s=0;s<B;s++){
             for(int h=0;h<Nq;h++) la_rope(qb[s]+h*Hd,Hd,la_g_cfg.rope_dim,pos[s],la_g_cfg.rope_theta);
             for(int h=0;h<Nk;h++) la_rope(kb[s]+h*Hd,Hd,la_g_cfg.rope_dim,pos[s],la_g_cfg.rope_theta);
@@ -825,7 +845,26 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
                 int kv_h=h*Nk/Nq; const float* qh=qb[s]+h*Hd;
                 float lg[la_MAX_KV];
                 for(int t=0;t<klen;t++){const float* kt=Kbase+(size_t)t*Nk*Hd+kv_h*Hd;
-                    float dot=0;for(int d=0;d<Hd;d++)dot+=qh[d]*kt[d];lg[t]=dot*scale;}
+                    float dot=0;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+                    /* same f32x4 reduction as the single-stream attn_head —
+                     * MS stream logits stay bit-identical to single-stream */
+                    float32x4_t acc = vdupq_n_f32(0.0f);
+                    int d = 0;
+                    for (; d + 16 <= Hd; d += 16) {
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d),      vld1q_f32(kt + d));
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d + 4),  vld1q_f32(kt + d + 4));
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d + 8),  vld1q_f32(kt + d + 8));
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d + 12), vld1q_f32(kt + d + 12));
+                    }
+                    for (; d + 4 <= Hd; d += 4)
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
+                    dot = vaddvq_f32(acc);
+                    for (; d < Hd; d++) dot += qh[d] * kt[d];
+#else
+                    for(int d=0;d<Hd;d++)dot+=qh[d]*kt[d];
+#endif
+                    lg[t]=dot*scale;}
                 la_softmax_inplace(lg,klen);
                 float* hd=ao[s]+h*Hd; memset(hd,0,sizeof(float)*Hd);
                 for(int t=0;t<klen;t++){const float* vt=Vbase+(size_t)t*Nk*Hd+kv_h*Hd;
@@ -842,9 +881,17 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
         for(int s=0;s<B;s++)cfa_in[s]=fa[s];
         la_linear_multix(b->ffn_down,cfa_in,cap,B,H,Ff);
         for(int s=0;s<B;s++)for(int i=0;i<H;i++)x[s][i]=xr[s][i]+ap[s][i];
+        if (li == la_hidden_dump_layer && la_hidden_dump_fp) {
+            fwrite(x[0], sizeof(float), H, la_hidden_dump_fp);
+            fflush(la_hidden_dump_fp);
+        }
     }
     const float* gain=st_f32_tensor_ptr(la_g_output_norm);
     for(int s=0;s<B;s++)la_rmsnorm(x[s],gain,H,la_g_cfg.rms_eps,xn[s]);
+    if (getenv("STRATUM_MS_DUMPXN")) {
+        FILE* df=fopen(getenv("STRATUM_MS_DUMPXN"),"ab");
+        if (df) { fwrite(x[0],4,H,df); fwrite(xn[0],4,H,df); fclose(df); }
+    }
     const GgufTensor* lm=la_g_output_w?la_g_output_w:la_g_token_embd;
     float* clog[la_B_MAX]; for(int s=0;s<B;s++)clog[s]=la_gb_logits[s];
     la_linear_multix(lm,cxn,clog,B,V,H);
@@ -979,10 +1026,8 @@ int run_llama_arch(int argc, char** argv) {
         fprintf(stderr, "  parallel matmul: %d chunks (%d P-cores, %d physical)\n",
                 g_st.nchunks, pcpu, ncpu);
     }
-    {
-        const char* e_sdot = getenv("STRATUM_SDOT");
-        g_st.use_sdot = (e_sdot != NULL) ? (atoi(e_sdot) != 0) : 1;
-    }
+    /* use_sdot is set once by stratum_linear_init (STRATUM_NO_SDOT /
+     * STRATUM_SDOT both honored) — do not override it here. */
     if (g_st.use_sdot)
         fprintf(stderr, "  Q4_K/Q6_K SDOT: ENABLED (default; int8 activations, greedy bit-exact, +0.2%% ppl)\n");
     else
@@ -1083,6 +1128,10 @@ int run_llama_arch(int argc, char** argv) {
         if (!la_g_gpu_batch_full) for (int s=0;s<ms_B;s++) nxt[s]=stratum_argmax(la_gb_logits[s],la_g_cfg.vocab_size);
         clock_gettime(CLOCK_MONOTONIC,&b);
         double pf=(b.tv_sec-a.tv_sec)+(b.tv_nsec-a.tv_nsec)/1e9;
+        if (getenv("STRATUM_MS_DUMP0")) {
+            FILE* df = fopen(getenv("STRATUM_MS_DUMP0"), "wb");
+            if (df) { fwrite(la_gb_logits[0], 4, la_g_cfg.vocab_size, df); fclose(df); }
+        }
         fprintf(stderr,"  multiseq prefill %.3fs; stream0 first tok=%d\n", pf, nxt[0]);
         clock_gettime(CLOCK_MONOTONIC,&a);
         for (int g=0;g<n_gen;g++){
@@ -1154,7 +1203,12 @@ int run_llama_arch(int argc, char** argv) {
     int _timing = (getenv("STRATUM_TIMING") != NULL);
     struct timespec _tp0, _tp1, _tg0, _tg1;
     if (_timing) clock_gettime(CLOCK_MONOTONIC, &_tp0);
-    int pf_B = 8;   /* batched prefill default (bit-exact, ~3x on long prompts) */
+    int pf_B = 8;   /* batched prefill default (~3x on long prompts). Greedy-equal
+                     * to per-token prefill, not bit-exact: B>=2 takes the SDOT
+                     * pack path whose accumulation order differs from the
+                     * single-stream kernels (~0.2 max logit drift on Qwen3-0.6B,
+                     * hidden-state drift compounds ~5x/layer — verified same
+                     * token sequence). pf_B=1 or STRATUM_SDOT=0 gives bit-exact. */
     if (la_hidden_dump_fp) pf_B = 1;  /* probe mode: capture every position */
     { const char* e = getenv("STRATUM_BATCH_PREFILL"); if (e) pf_B = atoi(e); }
 #ifdef STRATUM_USE_METAL
@@ -1190,6 +1244,10 @@ int run_llama_arch(int argc, char** argv) {
     } else
 #endif
     next_tok = stratum_argmax(la_g_logits, la_g_cfg.vocab_size);
+    if (getenv("STRATUM_MS_DUMP0")) {
+        FILE* df = fopen(getenv("STRATUM_MS_DUMP0"), "wb");
+        if (df) { fwrite(la_g_logits, 4, la_g_cfg.vocab_size, df); fclose(df); }
+    }
     fprintf(stderr, "  after prefill, stratum_argmax = %d  (logit=%g)\n",
             next_tok, la_g_logits[next_tok]);
     if (_timing) clock_gettime(CLOCK_MONOTONIC, &_tg0);
