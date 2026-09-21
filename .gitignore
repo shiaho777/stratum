@@ -51,7 +51,9 @@ transformers-main/src/transformers.egg-info/
 
 # Native dev binaries (rebuildable from source)
 stratum/native/bench_*
+!stratum/native/bench_*.c
 stratum/native/*_probe
+!stratum/native/*_probe.c
 stratum/native/gguf_nib_convert
 stratum/native/gguf_w16_convert
 stratum/native/q2k_nibble_convert

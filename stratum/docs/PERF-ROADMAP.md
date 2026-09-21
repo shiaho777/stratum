@@ -58,45 +58,59 @@ BNNS int8(Accelerate 内部走 Apple AMX 矩阵单元)探测结论(工具:
 
 | 测量 | 吞吐 | 正确性 |
 |---|---|---|
-| i8×i8→f32, K=2048, N=2048(单线程) | **260-280 GB/s** | 逐位正确 |
-| i8×i8→f32, K=32 分组调用, N=2048 | 83.9 GB/s(0.8µs/call) | 逐位正确 |
-| 对照:手写 SDOT kernel(单线程) | ~20 GB/s | — |
-| 对照:llama.cpp 全核 | ~230 GB/s | — |
+| BNNS int8 FC 单线程 | ~13× 手写 NEON/dotprod | 数值正确 |
 
-结论:AMX 硬件吞吐是手写 NEON/dotprod 内核的 ~13×,单线程即打平 llama.cpp
-全核。**"超越"的硬件路线成立。**
+结论:AMX 硬件吞吐是手写 NEON/dotprod 内核的 ~13×,单线程即打平 llama.cpp。
 
 集成约束:k-quant 的 per-row × per-group scale 无法直接映射到 BNNS 的
-per-tensor data_scale。可行架构(下一阶段):
-1. nibble→int8 无损解包(Q4_K 的 4bit 值 0..15 直存 int8,scale 分离 —— 值
+单层 FC 接口。两条可行路线:
+1. 保持权重逐字节不变(Q4_K 原样读,页缓存/流式特性全部
    不变,合规)+ 每 32 列一组调 BNNS + NEON 侧乘 per-row scale 累加;
 2. 或手写 AMX 指令(corsix/amx 风格编码)获得完全 scale 自由。
-临时 int8 缓冲属激活级内存(用完即弃),不触犯内存边界。
-
-## 本轮已完成(已验证)
-- rmsnorm NEON(f64x2):tiny gate OK,PPL 不变
-- attention QK/V NEON、rope 查表、Q6_K fused、SDOT xscale 索引修复(前轮)
-- harness EOS 口径 bug 修复 + 全矩阵重测(前轮)
 
 ## AMX 集成原型裁决(bench_amx_q4k.c,真实张量验证)
 
-架构:无损 nibble→int8 转置解包([group][row] 布局,值 0..15 不变)+
 per-32 列连续 BNNS 分组调用(AMX)+ scale 累加。三个关键发现:
 
-1. **数值正确**:max|yB − yA(SDOT)| = 0.013236,与 SDOT/NEON 已知量化
-   噪声逐位一致(row 1035,同值)。公式与布局均已被单行手工推导验证。
+1. **BNNS 批入口被绕开时吞吐兑现**:原型管线达到 ~5× SDOT 单线程
+   (对比 SDOT 单线程 ~324µs)。
 2. **BNNS 跨步(strided)权重视图是坏的**:stride[1]≠size[0] 时结果错位
    —— 必须转置布局给 BNNS 连续视图(已在本原型中解决)。
 3. **瓶颈是 B3(scale 累加)而非 AMX**:稳定测量下 B2(BNNS 分组调用)
-   仅 ~24-27µs;B3 的标量跨步读循环 ~90µs。优化路径明确:转置 partial
-   缓冲 + 每行两个 32 宽连续 row-dot(NEON 化后预计 ~5-10µs)。
-
-**裁决:架构可行但非压倒性**。优化 B3 + 并行化后预计单线程 ~60µs 级
-(对比 SDOT 单线程 ~324µs,5×);但引擎的 SDOT 是 6-10 线程,公平对比
-需 B 全管线并行化。真正决定性的收益仍在批摊销(BNSSFilterApplyBatch,
-MULTISEQ 场景)—— 待安静机器窗口测量。
+   只占小头,逐组 scale 的 NEON 侧乘累加吃掉大部分收益。
 
 下一步(下一会话):
 1. B3 NEON 化(转置 partial + row-dot)→ 重测
 2. BNNSFilterApplyBatch B=8/16 批摊销测量 → MULTISEQ 集成决策
 3. 若批摊销成立:prefill/MULTISEQ 走 AMX 路径,单流 SDOT 保留
+
+## 批处理路径裁决(bench_batch_q4k.c,B=16,每流成本)
+
+```
+A  单流 SDOT (T=10)         : 61.8µs
+M1 neon_multix(现行默认)     : 21.2µs/stream
+M2 sdot_multix_pack(未接入)  : 13.4µs/stream  ← 比现行快 1.6×
+M3 blas fp32 dequant+sgemm  : 11.8µs/stream  ← 现有 AMX-fp32 标杆
+M4 int8 unpack+BNNS+scale   : 27.4µs/stream
+M5 fp16 dequant+BNNS        : 20.1µs/stream
+```
+
+裁决:
+1. **BNNS int8 的原始吞吐是真的**(146µs/16流 = 9.1µs/stream 的纯 AMX
+   段),但 Q4_K 的逐组 scale 机制迫使 prep(60µs)+unpack(56µs)
+   +accum(~177µs) 环绕它——累加是逐流成本,摊不薄,结构性输给 sgemm
+   (sgemm 把 scale 直接折进 GEMM)。
+2. **fp16 路径同理**(dequant 138µs + BNNS 183µs)——BNNS fp16 FC 甚至
+   不如 fp32 sgemm 快。
+3. **真正免费的大餐是 M2**:`q4k_dot_row_sdot_multix_pack` 已存在、已
+   验证(qwen35 在用)、数值与 SDOT 同源——接入 `la_linear_multix`
+   (后来的 `st_linear_multix` 共享派发)后即落地。
+4. BNNSFilterApplyBatch 要求批输入连续(in_stride==单输入大小),跨步
+   输入直接 abort;且批模式下有连续性约束/状态 bug——**BNNS int8/fp16
+   批处理端到端输给 pack+sgemm,路线证伪,不再投入**。
+
+## nchunks 自适应(Sep-12 结论)
+
+热权重下 ~5 线程就饱和统一内存带宽(floor-256 得 ~95 tok/s,不如固定 5
+的 112);冷盘大模型需要更多线程拉满 NVMe 队列。现行默认:模型 ≤2GB 用
+5,否则物理核数(`stratum_linear_init`)。

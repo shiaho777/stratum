@@ -87,4 +87,60 @@ static inline float q8_0_dot_row_neon(const block_q8_0* blocks, int K,
 
 #endif
 
+#if defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+
+/* SDOT variants: weights are already i8 — the int8 activation dots are
+ * exact; only the block scale product is float. */
+static inline float q8_0_dot_row_sdot(const block_q8_0* blocks, int K,
+                                      const int8_t* xq, const float* xscale) {
+    int nb = K / 32;
+    double dot = 0.0;
+    for (int i = 0; i < nb; i++) {
+        const block_q8_0* b = blocks + i;
+        float d = q4k_fp16_to_fp32(b->d);
+        const int8_t* xv = xq + (size_t)i * 32;
+        int32x4_t acc = vdotq_s32(vdotq_s32(vdupq_n_s32(0),
+            vld1q_s8(b->qs), vld1q_s8(xv)),
+            vld1q_s8(b->qs + 16), vld1q_s8(xv + 16));
+        dot += (double)(d * xscale[i] * (float)vaddvq_s32(acc));
+    }
+    return (float)dot;
+}
+
+/* f32x4 accumulate variant: four block terms per vfmaq. */
+static inline float q8_0_dot_row_sdot_f(const block_q8_0* blocks, int K,
+                                        const int8_t* xq, const float* xscale) {
+    int nb = K / 32;
+    float32x4_t facc = vdupq_n_f32(0.0f);
+    int i = 0;
+    for (; i + 4 <= nb; i += 4) {
+        int32_t tv[4]; float cv[4];
+        for (int t = 0; t < 4; t++) {
+            const block_q8_0* b = blocks + i + t;
+            const int8_t* xv = xq + (size_t)(i + t) * 32;
+            int32x4_t acc = vdotq_s32(vdotq_s32(vdupq_n_s32(0),
+                vld1q_s8(b->qs), vld1q_s8(xv)),
+                vld1q_s8(b->qs + 16), vld1q_s8(xv + 16));
+            tv[t] = vaddvq_s32(acc);
+            cv[t] = q4k_fp16_to_fp32(b->d) * xscale[i + t];
+        }
+        int32x4_t  terms = { tv[0], tv[1], tv[2], tv[3] };
+        float32x4_t coeff = { cv[0], cv[1], cv[2], cv[3] };
+        facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
+    }
+    for (; i < nb; i++) {
+        const block_q8_0* b = blocks + i;
+        const int8_t* xv = xq + (size_t)i * 32;
+        int32x4_t acc = vdotq_s32(vdotq_s32(vdupq_n_s32(0),
+            vld1q_s8(b->qs), vld1q_s8(xv)),
+            vld1q_s8(b->qs + 16), vld1q_s8(xv + 16));
+        facc = vfmaq_f32(facc,
+            vcvtq_f32_s32(acc),
+            vdupq_n_f32(q4k_fp16_to_fp32(b->d) * xscale[i]));
+    }
+    return vaddvq_f32(facc);
+}
+#endif
+
 #endif

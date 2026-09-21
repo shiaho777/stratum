@@ -794,6 +794,17 @@ static void q35_linear_q4k_multix_preq(const GgufTensor* w,
     int use_pack = (B >= 1 && q35_g_xq_pack_ready && q35_g_xq_pack && q35_g_xsc_pack
                     && q35_g_xsum_pack && q35_g_xq_B == B && q35_g_xq_K == K);
     const int32_t* const* xsum = (const int32_t* const*)q35_g_xsum_pool;
+    if (B == 1) {
+        ST_PAR_ROWS(N, {
+            if (r + 1 < N)
+                __builtin_prefetch(q35_q4k_row_ptr(w, K, r + 1), 0, 3);
+            if (r + 2 < N)
+                __builtin_prefetch(q35_q4k_row_ptr(w, K, r + 2), 0, 1);
+            ys[0][r] = q4k_dot_row_sdot_f(q35_q4k_row_ptr(w, K, r), K,
+                                          xq[0], xsc[0], xsum[0]);
+        });
+        return;
+    }
     if (0 && use_pack && N >= 4 && B == 7) {
         int nq = N / 4;
         int _T = g_st.nchunks;
@@ -1073,6 +1084,16 @@ static void q35_linear_q5k(const GgufTensor* w, const float* x, float* y, int N,
         if (stratum_metal_q5k_sgemv(w->offset, x, y, N, K) == 0) return;
     }
 #endif
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        const float* xs1[1] = {x};
+        if (!q35_prequant_match(xs1, 1, K))
+            q35_prequant_x_q8_multix(xs1, 1, K);
+        ST_PAR_ROWS(N, y[r] = q5k_dot_row_sdot_f(q35_q5k_row_ptr(w, K, r), K,
+            q35_g_xq_pool[0], q35_g_xsc_pool[0], q35_g_xsum_pool[0]));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q5k_dot_row_neon(q35_q5k_row_ptr(w, K, r), K, x));
 }
 static void q35_linear_q6k(const GgufTensor* w, const float* x, float* y, int N, int K) {
@@ -1087,10 +1108,16 @@ static void q35_linear_q6k(const GgufTensor* w, const float* x, float* y, int N,
         float* ys1[1] = {y};
         if (!q35_prequant_match(xs1, 1, K))
             q35_prequant_x_q8_multix(xs1, 1, K);
-        q35_linear_q6k_multix_preq(w,
-            (const int8_t* const*)q35_g_xq_pool,
-            (const float* const*)q35_g_xsc_pool, ys1, 1, N, K);
-        return;
+        /* Q6_K SDOT kernels index activation scales per-16, but the shared
+         * pool is per-32 — only the PACK layout (b32 = g/2 mapping inside
+         * q6k_dot_*_pack) is compatible. If the pack path isn't usable,
+         * take NEON instead of feeding per-32 scales to a per-16 kernel. */
+        if (q35_g_xq_pack_ready && q35_g_xq_B == 1 && q35_g_xq_K == K) {
+            q35_linear_q6k_multix_preq(w,
+                (const int8_t* const*)q35_g_xq_pool,
+                (const float* const*)q35_g_xsc_pool, ys1, 1, N, K);
+            return;
+        }
     }
 #endif
     ST_PAR_ROWS(N, y[r] = q6k_dot_row_neon(q35_q6k_row_ptr(w, K, r), K, x));
@@ -1103,10 +1130,14 @@ static void q35_linear_q6k_multix(const GgufTensor* w,
     if (g_st.use_sdot) {
         if (!q35_prequant_match(xs, B, K))
             q35_prequant_x_q8_multix(xs, B, K);
-        q35_linear_q6k_multix_preq(w,
-            (const int8_t* const*)q35_g_xq_pool,
-            (const float* const*)q35_g_xsc_pool, ys, B, N, K);
-        return;
+        /* see q35_linear_q6k: only the pack layout is compatible with the
+         * per-16 scale indexing of the Q6_K SDOT kernels */
+        if (q35_g_xq_pack_ready && q35_g_xq_B == B && q35_g_xq_K == K) {
+            q35_linear_q6k_multix_preq(w,
+                (const int8_t* const*)q35_g_xq_pool,
+                (const float* const*)q35_g_xsc_pool, ys, B, N, K);
+            return;
+        }
     }
 #endif
     const float* const* xsl = xs;
@@ -1213,9 +1244,29 @@ static void q35_linear_q2k_multix(const GgufTensor* w,
 #endif
 }
 static void q35_linear_q3k(const GgufTensor* w, const float* x, float* y, int N, int K) {
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        const float* xs1[1] = {x};
+        if (!q35_prequant_match(xs1, 1, K))
+            q35_prequant_x_q8_multix(xs1, 1, K);
+        ST_PAR_ROWS(N, y[r] = q3k_dot_row_sdot_f(q35_q3k_row_ptr(w, K, r), K,
+            q35_g_xq_pool[0], q35_g_xsc_pool[0]));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q3k_dot_row_neon(q35_q3k_row_ptr(w, K, r), K, x));
 }
 static void q35_linear_q8_0(const GgufTensor* w, const float* x, float* y, int N, int K) {
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        const float* xs1[1] = {x};
+        if (!q35_prequant_match(xs1, 1, K))
+            q35_prequant_x_q8_multix(xs1, 1, K);
+        ST_PAR_ROWS(N, y[r] = q8_0_dot_row_sdot_f(q35_q8_0_row_ptr(w, K, r), K,
+            q35_g_xq_pool[0], q35_g_xsc_pool[0]));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q8_0_dot_row_neon(q35_q8_0_row_ptr(w, K, r), K, x));
 }
 static void q35_linear_f16(const GgufTensor* w, const float* x, float* y, int N, int K) {
@@ -2115,15 +2166,14 @@ static void q35_rmsnorm(const float* x, const float* gain, int N, float eps, flo
 static void q35_swiglu(const float* g, const float* u, int N, float* y) {
     int i = 0;
 #if defined(__ARM_NEON) || defined(__aarch64__)
-    for (; i + 4 <= N; i += 4) {
-        float g0 = g[i], g1 = g[i + 1], g2 = g[i + 2], g3 = g[i + 3];
-        float s0 = g0 / (1.0f + expf(-g0));
-        float s1 = g1 / (1.0f + expf(-g1));
-        float s2 = g2 / (1.0f + expf(-g2));
-        float s3 = g3 / (1.0f + expf(-g3));
-        float32x4_t sv = {s0, s1, s2, s3};
-        float32x4_t uv = vld1q_f32(u + i);
-        vst1q_f32(y + i, vmulq_f32(sv, uv));
+    const float32x4_t one4 = vdupq_n_f32(1.0f);
+    if (!st_expf_scalar_mode()) {
+        for (; i + 4 <= N; i += 4) {
+            float32x4_t gv = vld1q_f32(g + i);
+            float32x4_t e  = st_expf4(vnegq_f32(gv));
+            float32x4_t s  = vdivq_f32(gv, vaddq_f32(one4, e));
+            vst1q_f32(y + i, vmulq_f32(s, vld1q_f32(u + i)));
+        }
     }
 #endif
     for (; i < N; i++) {
@@ -2240,16 +2290,8 @@ static void q35_ssm_silu_norm_head(const float* xhead, const float* zhead,
         float32x4_t gv = vld1q_f32(lin_norm + c);
         float32x4_t zv = vld1q_f32(zhead + c);
         float32x4_t nv = vmulq_f32(vmulq_f32(xv, invv), gv);
-        float z0 = vgetq_lane_f32(zv, 0);
-        float z1 = vgetq_lane_f32(zv, 1);
-        float z2 = vgetq_lane_f32(zv, 2);
-        float z3 = vgetq_lane_f32(zv, 3);
-        float s0 = z0 / (1.0f + expf(-z0));
-        float s1 = z1 / (1.0f + expf(-z1));
-        float s2 = z2 / (1.0f + expf(-z2));
-        float s3 = z3 / (1.0f + expf(-z3));
-        float32x4_t sv = {s0, s1, s2, s3};
-        vst1q_f32(yhead + c, vmulq_f32(nv, sv));
+        float32x4_t sg = vdivq_f32(zv, vaddq_f32(vdupq_n_f32(1.0f), st_expf4(vnegq_f32(zv))));
+        vst1q_f32(yhead + c, vmulq_f32(nv, sg));
     }
 #endif
     for (; c < HV; c++) {
@@ -2301,11 +2343,17 @@ static void q35_ssm_beta_g_one(const float* b_buf, const float* a_buf,
                                int NV, float* beta_v, float* g_v) {
     int h = 0;
     for (; h + 4 <= NV; h += 4) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+        float32x4_t bv = vld1q_f32(b_buf + h);
+        float32x4_t sg = vdivq_f32(vdupq_n_f32(1.0f), vaddq_f32(vdupq_n_f32(1.0f), st_expf4(vnegq_f32(bv))));
+        vst1q_f32(beta_v + h, sg);
+#else
         float b0 = b_buf[h], b1 = b_buf[h + 1], b2 = b_buf[h + 2], b3 = b_buf[h + 3];
         beta_v[h]     = 1.0f / (1.0f + expf(-b0));
         beta_v[h + 1] = 1.0f / (1.0f + expf(-b1));
         beta_v[h + 2] = 1.0f / (1.0f + expf(-b2));
         beta_v[h + 3] = 1.0f / (1.0f + expf(-b3));
+#endif
         float ax0 = a_buf[h] + dt_bias[h];
         float ax1 = a_buf[h + 1] + dt_bias[h + 1];
         float ax2 = a_buf[h + 2] + dt_bias[h + 2];
@@ -2748,8 +2796,7 @@ static void q35_softmax_inplace(float* x, int N) {
     float32x4_t vsum = vdupq_n_f32(0.0f);
     for (; i + 4 <= N; i += 4) {
         float32x4_t v = vsubq_f32(vld1q_f32(x + i), vmax);
-        float32x4_t e = {expf(vgetq_lane_f32(v,0)), expf(vgetq_lane_f32(v,1)),
-                         expf(vgetq_lane_f32(v,2)), expf(vgetq_lane_f32(v,3))};
+        float32x4_t e = st_expf4(v);
         vst1q_f32(x + i, e);
         vsum = vaddq_f32(vsum, e);
     }
@@ -10792,6 +10839,10 @@ static void q35_embed_lookup(int token_id, float* out) {
         for (int i = 0; i < n_blocks; i++) {
             q6k_dequant_block_scalar(row + i, out + i * 256);
         }
+    } else if (q35_g_token_embd->type == GGML_TYPE_Q8_0) {
+        const block_q8_0* row = st_q8_0_row_ptr(q35_g_token_embd, H, token_id);
+        for (int i = 0; i < H / 32; i++)
+            q8_0_dequant_block_scalar(row + i, out + i * 32);
     } else if (q35_g_token_embd->type == GGML_TYPE_F16) {
         const uint16_t* raw = (const uint16_t*)(g_st.mmap_base + q35_g_token_embd->offset)
                             + (size_t)token_id * H;

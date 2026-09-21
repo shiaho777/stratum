@@ -251,6 +251,71 @@ static inline float q6k_dot_row_sdot_fused(const block_q6_K* row_blocks, int K,
     }
     return (float)dot;
 }
+
+/* f32-vector accumulate variant of the fused kernel: the four per-group
+ * scale terms pack into one vfmaq — same numerics class as the scalar
+ * double chain (measured equal argmax on real tensors). */
+static inline float q6k_dot_row_sdot_f(const block_q6_K* row_blocks, int K,
+                                       const int8_t* xq, const float* xscale)
+{
+    int n_blocks = K / 256;
+    float32x4_t facc = vdupq_n_f32(0.0f);
+    uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    int8x16_t  bias  = vdupq_n_s8(-32);
+    int goff = 0;
+    for (int i = 0; i < n_blocks; i++) {
+        if (i + 1 < n_blocks) __builtin_prefetch(row_blocks + i + 1, 0, 3);
+        const block_q6_K* b = row_blocks + i;
+        const float d = q4k_fp16_to_fp32(b->d);
+        const int8_t* sc = b->scales;
+        const uint8_t* ql = b->ql;
+        const uint8_t* qh = b->qh;
+        for (int half = 0; half < 2; half++) {
+            const uint8_t* ql_half = ql + half * 64;
+            const uint8_t* qh_half = qh + half * 32;
+            int gbase = half * 8;
+            for (int is = 0; is < 2; is++) {
+                int loff = is * 16;
+                uint8x16_t ql_a_v = vld1q_u8(ql_half + loff);
+                uint8x16_t ql_b_v = vld1q_u8(ql_half + loff + 32);
+                uint8x16_t qh_v   = vld1q_u8(qh_half + loff);
+                int8x16_t qv[4] = {
+                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_a_v, mask4),
+                        vshlq_n_u8(vandq_u8(qh_v, vdupq_n_u8(0x03)), 4))), bias),
+                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
+                        vandq_u8(ql_b_v, mask4),
+                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 2), vdupq_n_u8(0x03)), 4))), bias),
+                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_a_v, 4),
+                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 4), vdupq_n_u8(0x03)), 4))), bias),
+                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
+                        vshrq_n_u8(ql_b_v, 4),
+                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 6), vdupq_n_u8(0x03)), 4))), bias),
+                };
+                /* groups: g, g+2, g+4, g+6 — the ggml q6_K layout */
+                const int gg[4] = { gbase + is, gbase + is + 2,
+                                    gbase + is + 4, gbase + is + 6 };
+                int32_t tv[4];
+                for (int t = 0; t < 4; t++) {
+                    int g = gg[t];
+                    const int8_t* xv = xq + (size_t)(goff + g) * 16;
+                    int32x4_t acc = vdotq_s32(vdupq_n_s32(0), qv[t], vld1q_s8(xv));
+                    tv[t] = vaddvq_s32(acc);
+                }
+                float32x4_t coeff = {
+                    d * (float)sc[gg[0]] * xscale[goff + gg[0]],
+                    d * (float)sc[gg[1]] * xscale[goff + gg[1]],
+                    d * (float)sc[gg[2]] * xscale[goff + gg[2]],
+                    d * (float)sc[gg[3]] * xscale[goff + gg[3]] };
+                int32x4_t terms = { tv[0], tv[1], tv[2], tv[3] };
+                facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
+            }
+        }
+        goff += 16;
+    }
+    return vaddvq_f32(facc);
+}
 #endif
 
 #endif

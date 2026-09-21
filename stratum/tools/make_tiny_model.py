@@ -25,6 +25,7 @@ import struct
 
 GGML_F32 = 0
 GGML_F16 = 1
+GGML_Q8_0 = 8
 GGML_Q4_K = 12
 GGML_Q6_K = 14
 GGML_Q2_K = 10
@@ -187,6 +188,27 @@ def q6k_encode_mat(vals, k, n):
     return bytes(out)
 
 
+def q8_0_encode_mat(vals, k, n):
+    """Encode a [k, n] row-major f32 matrix as Q8_0 blocks.
+
+    Layout matches stratum_q8_0.h: per 32-element block, d(fp16)=amax/127
+    followed by 32 int8 quants (round(v/d)). Only needs k % 32 == 0 —
+    the Q4_K geometry satisfies that already.
+    """
+    assert k % 32 == 0, 'Q8_0 requires k % 32 == 0'
+    out = bytearray()
+    for r in range(n):
+        row = vals[r * k:(r + 1) * k]
+        for b in range(k // 32):
+            blk = row[b * 32:(b + 1) * 32]
+            amax = max(abs(v) for v in blk)
+            d = amax / 127.0 if amax > 0 else 1.0
+            out += struct.pack('<e', d)
+            out += bytes(max(-128, min(127, int(round(v / d))))
+                         & 0xFF for v in blk)
+    return bytes(out)
+
+
 def q2k_encode_mat(vals, k, n):
     """Encode a [k, n] row-major f32 matrix as Q2_K blocks.
 
@@ -238,12 +260,13 @@ def q2k_encode_mat(vals, k, n):
 
 
 def build_entries(arch, weights, rng):
-    G = Q4K if weights in ('q4k', 'q6k', 'q2k') else BASE
+    G = Q4K if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE
     NL, H, NQ, NK, HD, FF, V = (G[k] for k in
                                 ('N_LAYERS', 'H', 'NQ', 'NK', 'HD', 'FF', 'V'))
     wt = (GGML_Q4_K if weights == 'q4k' else
           GGML_Q6_K if weights == 'q6k' else
-          GGML_Q2_K if weights == 'q2k' else GGML_F16)
+          GGML_Q2_K if weights == 'q2k' else
+          GGML_Q8_0 if weights == 'q8_0' else GGML_F16)
 
     def mat(k, n):
         scale = 1.0 / (k ** 0.5)
@@ -254,6 +277,8 @@ def build_entries(arch, weights, rng):
             return wt, q6k_encode_mat(vals, k, n)
         if weights == 'q2k':
             return wt, q2k_encode_mat(vals, k, n)
+        if weights == 'q8_0':
+            return wt, q8_0_encode_mat(vals, k, n)
         return GGML_F16, b''.join(struct.pack('<e', v) for v in vals)
 
     def norm_vec(n):
@@ -295,6 +320,10 @@ def build_entries(arch, weights, rng):
                     blob = b''.join(q4k_encode_mat(v, ki, no)
                                     for v in vals_e)
                     ty = GGML_Q4_K
+                elif weights == 'q8_0':
+                    blob = b''.join(q8_0_encode_mat(v, ki, no)
+                                    for v in vals_e)
+                    ty = GGML_Q8_0
                 else:
                     blob = b''.join(struct.pack('<e', x)
                                     for v in vals_e for x in v)
@@ -459,30 +488,30 @@ def kv_pairs(arch, weights):
         p = 'llama-moe'
         kvs = [
             kv_pair('general.architecture', p),
-            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights in ('q4k', 'q6k', 'q2k')
+            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0')
                     else BASE['N_LAYERS']),
             kv_pair(f'{p}.embedding_length',
-                    Q4K['H'] if weights in ('q4k', 'q6k', 'q2k') else BASE['H']),
+                    Q4K['H'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['H']),
             kv_pair(f'{p}.feed_forward_length',
-                    Q4K['FF'] if weights in ('q4k', 'q6k', 'q2k') else BASE['FF']),
+                    Q4K['FF'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['FF']),
             kv_pair(f'{p}.expert_count', MOE_N_EXP),
             kv_pair(f'{p}.expert_used_count', MOE_USED),
             kv_pair(f'{p}.attention.head_count',
-                    Q4K['NQ'] if weights in ('q4k', 'q6k', 'q2k') else BASE['NQ']),
+                    Q4K['NQ'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['NQ']),
             kv_pair(f'{p}.attention.head_count_kv',
-                    Q4K['NK'] if weights in ('q4k', 'q6k', 'q2k') else BASE['NK']),
+                    Q4K['NK'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['NK']),
             kv_pair(f'{p}.attention.key_length',
-                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k') else BASE['HD']),
+                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['HD']),
             kv_pair(f'{p}.attention.layer_norm_rms_epsilon', 1e-5),
             kv_pair(f'{p}.rope.freq_base', 10000.0),
             kv_pair(f'{p}.rope.dimension_count',
-                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k') else BASE['HD']),
+                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['HD']),
             kv_pair('general.alignment', 32),
         ]
         return b''.join(kvs), len(kvs)
 
     p = 'llama' if arch == 'llama' else 'qwen35'
-    G = Q4K if weights in ('q4k', 'q6k', 'q2k') else BASE
+    G = Q4K if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE
     kvs = [
         kv_pair('general.architecture', p),
         kv_pair(f'{p}.block_count', G['N_LAYERS']),
@@ -515,7 +544,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--arch', default='llama',
                     choices=['llama', 'qwen35', 'qwen35-hybrid', 'dit', 'moe'])
-    ap.add_argument('--weights', default='f16', choices=['f16', 'q4k', 'q6k', 'q2k'])
+    ap.add_argument('--weights', default='f16', choices=['f16', 'q4k', 'q6k', 'q2k', 'q8_0'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
     args = ap.parse_args()

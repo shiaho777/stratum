@@ -14,6 +14,7 @@
 #ifndef STRATUM_LINEAR_H
 #define STRATUM_LINEAR_H
 
+#include <stdatomic.h>
 #include "stratum_gguf.h"
 #include "stratum_q4k.h"
 #include "stratum_q4k_neon.h"
@@ -94,13 +95,20 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
     if (env_nc) {
         g_st.nchunks = atoi(env_nc);
     } else {
-        g_st.nchunks = pcpu;
+        /* Measured on M4 Pro: models that fit the page cache hot saturate
+         * unified-memory bandwidth at ~5 chunks — beyond that fork-join
+         * overhead and contention lose (~112 vs ~79 tok/s on a 0.5 GB
+         * model). Large models streamed cold still want max parallelism
+         * for NVMe queue depth. STRATUM_NCHUNKS always wins. */
+        g_st.nchunks = (mmap_size <= (size_t)2 * 1024 * 1024 * 1024) ? 5 : pcpu;
     }
     if (g_st.nchunks < 1) g_st.nchunks = 1;
 
-    /* SDOT default ON (V25+) */
-    g_st.use_sdot = (getenv("STRATUM_NO_SDOT") == NULL) ? 1 :
-                    (getenv("STRATUM_SDOT") ? atoi(getenv("STRATUM_SDOT")) : 0);
+    /* SDOT default ON (V25+). STRATUM_NO_SDOT (any set value) or
+     * STRATUM_SDOT=0 disables; explicit STRATUM_SDOT=1 wins over both. */
+    { const char* noe = getenv("STRATUM_NO_SDOT");
+      const char* se  = getenv("STRATUM_SDOT");
+      g_st.use_sdot = se ? (atoi(se) != 0) : (noe == NULL); }
     g_st.amx_w16_off = (getenv("STRATUM_AMX_W16_OFF") != NULL);
 
     /* GPU */
@@ -164,15 +172,27 @@ static inline const float* st_f32_tensor_ptr(const GgufTensor* t) {
     do { \
         int _N = (N); \
         int _T = g_st.nchunks; \
+        int _tmax = (_N + 255) / 256;   /* >=256 rows/chunk: measured peak \
+                                         * at ~4-5 chunks on small hot \
+                                         * models; >6 loses to fork-join \
+                                         * overhead + bandwidth contention */ \
+        if (_T > _tmax) _T = _tmax; \
         if (_T > _N) _T = _N; \
         if (_T < 1) _T = 1; \
-        int _chunk = (_N + _T - 1) / _T; \
+        /* dynamic 64-row work tickets: a preempted worker no longer \
+         * stalls the join — output is identical (per-row independence) */ \
+        _Atomic int _next_store = 0; \
+        _Atomic int* _next = &_next_store; \
         dispatch_apply(_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), \
             ^(size_t _t) { \
-                int _s = (int)_t * _chunk; \
-                int _e = _s + _chunk; \
-                if (_e > _N) _e = _N; \
-                for (int r = _s; r < _e; r++) { body; } \
+                (void)_t; \
+                for (;;) { \
+                    int _s = atomic_fetch_add_explicit(_next, 64, memory_order_relaxed); \
+                    if (_s >= _N) break; \
+                    int _e = _s + 64; \
+                    if (_e > _N) _e = _N; \
+                    for (int r = _s; r < _e; r++) { body; } \
+                } \
             }); \
     } while (0)
 
@@ -191,8 +211,10 @@ static inline void st_linear_q4k(const GgufTensor* w, const float* x, float* y, 
         int nb = K / 32;
         int8_t* xq = (int8_t*)alloca((size_t)K);
         float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+        int32_t* xsum = (int32_t*)alloca((size_t)nb * sizeof(int32_t));
         q4k_quantize_x_q8(x, K, xq, xs);
-        ST_PAR_ROWS(N, y[r] = q4k_dot_row_sdot(st_q4k_row_ptr(w, K, r), K, xq, xs));
+        for (int g = 0; g < nb; g++) xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
+        ST_PAR_ROWS(N, y[r] = q4k_dot_row_sdot_f(st_q4k_row_ptr(w, K, r), K, xq, xs, xsum));
         return;
     }
 #endif
@@ -211,7 +233,7 @@ static inline void st_linear_q6k(const GgufTensor* w, const float* x, float* y, 
         int8_t* xq = (int8_t*)alloca((size_t)K);
         float*  xs = (float*)alloca((size_t)ng * sizeof(float));
         q6k_quantize_x_q8_g16(x, K, xq, xs);
-        ST_PAR_ROWS(N, y[r] = q6k_dot_row_sdot(st_q6k_row_ptr(w, K, r), K, xq, xs));
+        ST_PAR_ROWS(N, y[r] = q6k_dot_row_sdot_f(st_q6k_row_ptr(w, K, r), K, xq, xs));
         return;
     }
 #endif
@@ -224,10 +246,32 @@ static inline void st_linear_q5k(const GgufTensor* w, const float* x, float* y, 
         if (stratum_metal_q5k_sgemv(w->offset, x, y, N, K) == 0) return;
     }
 #endif
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        int nb = K / 32;
+        int8_t* xq = (int8_t*)alloca((size_t)K);
+        float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+        int32_t* xsum = (int32_t*)alloca((size_t)nb * sizeof(int32_t));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        for (int g = 0; g < nb; g++) xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
+        ST_PAR_ROWS(N, y[r] = q5k_dot_row_sdot_f(st_q5k_row_ptr(w, K, r), K, xq, xs, xsum));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q5k_dot_row_neon(st_q5k_row_ptr(w, K, r), K, x));
 }
 
 static inline void st_linear_q3k(const GgufTensor* w, const float* x, float* y, int N, int K) {
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        int nb = K / 32;
+        int8_t* xq = (int8_t*)alloca((size_t)K);
+        float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        ST_PAR_ROWS(N, y[r] = q3k_dot_row_sdot_f(st_q3k_row_ptr(w, K, r), K, xq, xs));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q3k_dot_row_neon(st_q3k_row_ptr(w, K, r), K, x));
 }
 
@@ -263,6 +307,16 @@ static inline void st_linear_q2k_multix(const GgufTensor* w,
 }
 
 static inline void st_linear_q8_0(const GgufTensor* w, const float* x, float* y, int N, int K) {
+#if defined(__ARM_FEATURE_DOTPROD)
+    if (g_st.use_sdot) {
+        int nb = K / 32;
+        int8_t* xq = (int8_t*)alloca((size_t)K);
+        float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        ST_PAR_ROWS(N, y[r] = q8_0_dot_row_sdot_f(st_q8_0_row_ptr(w, K, r), K, xq, xs));
+        return;
+    }
+#endif
     ST_PAR_ROWS(N, y[r] = q8_0_dot_row_neon(st_q8_0_row_ptr(w, K, r), K, x));
 }
 
@@ -343,17 +397,21 @@ static inline void st_linear_q4k_multix(const GgufTensor* w,
         int nb = K / 32;
         int8_t** xqs = (int8_t**)alloca((size_t)B * sizeof(int8_t*));
         float**  xss = (float**)alloca((size_t)B * sizeof(float*));
+        int32_t** xsums = (int32_t**)alloca((size_t)B * sizeof(int32_t*));
         for (int b = 0; b < B; b++) {
             xqs[b] = (int8_t*)malloc((size_t)K);
             xss[b] = (float*)malloc((size_t)nb * sizeof(float));
+            xsums[b] = (int32_t*)malloc((size_t)nb * sizeof(int32_t));
             q4k_quantize_x_q8(xs[b], K, xqs[b], xss[b]);
+            for (int g = 0; g < nb; g++)
+                xsums[b][g] = q4k_sum_i8_32(xqs[b] + (size_t)g * 32);
         }
         ST_PAR_ROWS(N, {
             const block_q4_K* row = st_q4k_row_ptr(w, K, r);
             for (int b = 0; b < B; b++)
-                ys[b][r] = q4k_dot_row_sdot(row, K, xqs[b], xss[b]);
+                ys[b][r] = q4k_dot_row_sdot_f(row, K, xqs[b], xss[b], xsums[b]);
         });
-        for (int b = 0; b < B; b++) { free(xqs[b]); free(xss[b]); }
+        for (int b = 0; b < B; b++) { free(xqs[b]); free(xss[b]); free(xsums[b]); }
         return;
     }
 #endif
@@ -379,7 +437,7 @@ static inline void st_linear_q6k_multix(const GgufTensor* w,
         ST_PAR_ROWS(N, {
             const block_q6_K* row = st_q6k_row_ptr(w, K, r);
             for (int b = 0; b < B; b++)
-                ys[b][r] = q6k_dot_row_sdot(row, K, xqs[b], xss[b]);
+                ys[b][r] = q6k_dot_row_sdot_f(row, K, xqs[b], xss[b]);
         });
         for (int b = 0; b < B; b++) { free(xqs[b]); free(xss[b]); }
         return;
@@ -394,27 +452,103 @@ static inline void st_linear_q6k_multix(const GgufTensor* w,
 /*  the rest to their per-type multix (or per-seq fallback).            */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/*  Generic batched multi-input linear — shared by all architectures    */
+/*  Q4_K/Q6_K take the SDOT register-sharing pack path (activations     */
+/*  quantized once per stream into [group][stream][32], each row's      */
+/*  nibbles unpacked once for all B streams); other types fall back     */
+/*  to per-stream st_linear_dispatch (numerics identical to single).    */
+/* ------------------------------------------------------------------ */
+
+#define ST_MS_BMAX 32
+
 static inline void st_linear_multix(const GgufTensor* w,
                                     const float* const* xs,
                                     float* const* ys,
                                     int B, int N, int K) {
-    if ((GgmlType)w->type == GGML_TYPE_Q4K_W16) {
-        if (!g_st.amx_w16_off && B >= 1 && (N % 32) == 0 && (K % 256) == 0
+    if (w->type == GGML_TYPE_Q4K_W16) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+        if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
             && st_amx_available()) {
             st_q4k_w16_amx_multix(w, xs, ys, B, N, K);
-        } else {
-            st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
+            return;
         }
+#endif
+        st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
         return;
     }
-    switch ((GgmlType)w->type) {
-        case GGML_TYPE_Q4_K: st_linear_q4k_multix(w, xs, ys, B, N, K); return;
-        case GGML_TYPE_Q6_K: st_linear_q6k_multix(w, xs, ys, B, N, K); return;
-        case GGML_TYPE_Q2_K: st_linear_q2k_multix(w, xs, ys, B, N, K); return;
-        default:
-            for (int b = 0; b < B; b++)
-                st_linear_dispatch(w, xs[b], ys[b], N, K);
+    if ((w->type == GGML_TYPE_Q4_K || w->type == GGML_TYPE_Q6_K)) {
+#if defined(__ARM_FEATURE_DOTPROD)
+        if (g_st.use_sdot && B >= 2 && (K % 256) == 0) {
+            static int8_t*  st_xpack = NULL;
+            static float*   st_scpack = NULL;
+            static int32_t* st_sumpack = NULL;
+            static size_t   st_pack_cap = 0;
+            int ng = K / 32;
+            int Bc_max = (B < 16) ? B : 16;
+            size_t need_x = (size_t)ng * (size_t)Bc_max * 32;
+            if (need_x > st_pack_cap) {
+                free(st_xpack); free(st_scpack); free(st_sumpack);
+                st_xpack   = (int8_t*) malloc(need_x);
+                st_scpack  = (float*)  malloc((size_t)ng * Bc_max * sizeof(float));
+                st_sumpack = (int32_t*)malloc((size_t)ng * Bc_max * sizeof(int32_t));
+                st_pack_cap = (st_xpack && st_scpack && st_sumpack) ? need_x : 0;
+            }
+            if (st_pack_cap) {
+                for (int s0 = 0; s0 < B; s0 += 16) {
+                    int Bc = (B - s0 < 16) ? (B - s0) : 16;
+                    for (int s = 0; s < Bc; s++)
+                        for (int g = 0; g < ng; g++) {
+                            int8_t* dst = st_xpack + ((size_t)g * Bc + s) * 32;
+                            float scv;
+                            q4k_quantize_x_q8_1b(xs[s0 + s] + (size_t)g * 32, dst, &scv);
+                            st_scpack[(size_t)g * Bc + s] = scv;
+                            st_sumpack[(size_t)g * Bc + s] = q4k_sum_i8_32(dst);
+                        }
+                    int np = N / 2, tail = N & 1;
+                    int _T = g_st.nchunks; if (_T > np) _T = np; if (_T < 1) _T = 1;
+                    int _chunk = (np + _T - 1) / _T;
+                    int is_q4 = (w->type == GGML_TYPE_Q4_K);
+                    dispatch_apply(_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                        ^(size_t _t) {
+                            int _s = (int)_t * _chunk, _e = _s + _chunk;
+                            if (_e > np) _e = np;
+                            for (int p = _s; p < _e; p++) {
+                                int r = p * 2;
+                                float o0[ST_MS_BMAX], o1[ST_MS_BMAX];
+                                if (is_q4)
+                                    q4k_dot_rows2_sdot_multix_pack(
+                                        st_q4k_row_ptr(w, K, r), st_q4k_row_ptr(w, K, r + 1), K,
+                                        st_xpack, st_scpack, st_sumpack, Bc, o0, o1);
+                                else
+                                    q6k_dot_rows2_sdot_multix_pack(
+                                        st_q6k_row_ptr(w, K, r), st_q6k_row_ptr(w, K, r + 1), K,
+                                        st_xpack, st_scpack, Bc, o0, o1);
+                                for (int s = 0; s < Bc; s++) {
+                                    ys[s0 + s][r] = o0[s];
+                                    ys[s0 + s][r + 1] = o1[s];
+                                }
+                            }
+                        });
+                    if (tail) {
+                        int r = N - 1;
+                        float out[ST_MS_BMAX];
+                        if (is_q4)
+                            q4k_dot_row_sdot_multix_pack(st_q4k_row_ptr(w, K, r), K,
+                                                         st_xpack, st_scpack, st_sumpack, Bc, out);
+                        else
+                            q6k_dot_row_sdot_multix_pack(st_q6k_row_ptr(w, K, r), K,
+                                                         st_xpack, st_scpack, Bc, out);
+                        for (int s = 0; s < Bc; s++) ys[s0 + s][r] = out[s];
+                    }
+                }
+                return;
+            }
+        }
+#endif
     }
+    for (int b = 0; b < B; b++)
+        st_linear_dispatch(w, xs[b], ys[b], N, K);
 }
 
 /* ------------------------------------------------------------------ */
@@ -428,7 +562,9 @@ static inline void st_q4k_fused_sdot(const float* x, int K,
     int nb = K / 32;
     int8_t* xq = (int8_t*)alloca((size_t)K);
     float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+    int32_t* xsum = (int32_t*)alloca((size_t)nb * sizeof(int32_t));
     q4k_quantize_x_q8(x, K, xq, xs);
+    for (int g = 0; g < nb; g++) xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
     int R = 0;
     int* pref = (int*)alloca((size_t)nw * sizeof(int));
     for (int i = 0; i < nw; i++) { pref[i] = R; R += Ns[i]; }
@@ -436,7 +572,7 @@ static inline void st_q4k_fused_sdot(const float* x, int K,
         int wi = nw - 1;
         while (wi > 0 && r < pref[wi]) wi--;
         int lr = r - pref[wi];
-        ys[wi][lr] = q4k_dot_row_sdot(st_q4k_row_ptr(ws[wi], K, lr), K, xq, xs);
+        ys[wi][lr] = q4k_dot_row_sdot_f(st_q4k_row_ptr(ws[wi], K, lr), K, xq, xs, xsum);
     });
 }
 #endif

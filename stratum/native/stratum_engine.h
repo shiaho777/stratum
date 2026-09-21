@@ -298,10 +298,137 @@ static inline void stratum_report_memory(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Shared vectorized primitives (st_expf4 family)                     */
+/* ------------------------------------------------------------------ */
+
+#if defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+/* vector expf, ~1 ulp: exp(x) = 2^n * p(r), r = x - n*ln2 reduced to
+ * [-ln2/2, ln2/2]; cephes degree-5 minimax poly. Differs from libm expf
+ * by <= ~1 ulp — same risk class as the _f accumulation kernels; argmax
+ * sequences are pinned by the v*_gate suite. STRATUM_EXPF_SCALAR!=0
+ * forces the scalar lane-eval form (A/B isolation knob). */
+static inline float32x4_t st_expf4(float32x4_t x) {
+    static int s_scalar = -1;
+    if (s_scalar < 0) { const char* e = getenv("STRATUM_EXPF_SCALAR"); s_scalar = (e && e[0] != '0'); }
+    if (s_scalar) {
+        return (float32x4_t){expf(vgetq_lane_f32(x,0)), expf(vgetq_lane_f32(x,1)),
+                             expf(vgetq_lane_f32(x,2)), expf(vgetq_lane_f32(x,3))};
+    }
+    const float32x4_t log2e  = vdupq_n_f32(1.4426950408889634f);
+    const float32x4_t ln2_hi = vdupq_n_f32(0.693359375f);
+    const float32x4_t ln2_lo = vdupq_n_f32(-2.12194440e-4f);
+    x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(-87.3f)), vdupq_n_f32(88.7f));
+    float32x4_t nf = vrndnq_f32(vmulq_f32(x, log2e));
+    int32x4_t   ni = vcvtq_s32_f32(nf);
+    float32x4_t r  = vsubq_f32(x, vmulq_f32(nf, ln2_hi));
+    r = vsubq_f32(r, vmulq_f32(nf, ln2_lo));
+    float32x4_t z = vmulq_f32(r, r);
+    float32x4_t p = vdupq_n_f32(1.9875691500e-4f);
+    p = vfmaq_f32(vdupq_n_f32(1.3981999507e-3f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(8.3334519073e-3f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(4.1665795894e-2f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(1.6666665459e-1f), p, r);
+    p = vfmaq_f32(vdupq_n_f32(5.0000001201e-1f), p, r);
+    p = vfmaq_f32(vaddq_f32(r, vdupq_n_f32(1.0f)), p, z);
+    int32x4_t pw = vshlq_n_s32(vaddq_s32(ni, vdupq_n_s32(127)), 23);
+    return vmulq_f32(p, vreinterpretq_f32_s32(pw));
+}
+
+static inline int st_expf_scalar_mode(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("STRATUM_EXPF_SCALAR"); s = (e && e[0] != '0'); }
+    return s;
+}
+#else
+static inline int st_expf_scalar_mode(void) { return 1; }
+#endif
+
+/* shared SwiGLU: y = g * sigmoid(g) * u */
+static inline void stratum_swiglu(const float* g, const float* u, int N, float* y) {
+    int i = 0;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    if (!st_expf_scalar_mode()) {
+        const float32x4_t one = vdupq_n_f32(1.0f);
+        for (; i + 4 <= N; i += 4) {
+            float32x4_t gv = vld1q_f32(g + i);
+            float32x4_t e  = st_expf4(vnegq_f32(gv));
+            float32x4_t s  = vdivq_f32(gv, vaddq_f32(one, e));
+            vst1q_f32(y + i, vmulq_f32(s, vld1q_f32(u + i)));
+        }
+    }
+#endif
+    for (; i < N; i++) {
+        float gv = g[i];
+        float s  = gv / (1.0f + expf(-gv));
+        y[i] = s * u[i];
+    }
+}
+
+/* shared in-place softmax: exp via st_expf4, double-domain sum in the
+ * same sequential order as the scalar version */
+static inline void stratum_softmax_inplace(float* x, int N) {
+    if (N <= 0) return;
+    float maxv = x[0];
+    int i = 1;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    for (; i + 4 <= N; i += 4)
+        maxv = fmaxf(maxv, vmaxvq_f32(vld1q_f32(x + i)));
+#endif
+    for (; i < N; i++) if (x[i] > maxv) maxv = x[i];
+    i = 0;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    const float32x4_t vm = vdupq_n_f32(maxv);
+    for (; i + 4 <= N; i += 4)
+        vst1q_f32(x + i, st_expf4(vsubq_f32(vld1q_f32(x + i), vm)));
+    for (; i < N; i++) x[i] = expf(x[i] - maxv);
+#else
+    for (; i < N; i++) x[i] = expf(x[i] - maxv);
+#endif
+    double sum = 0.0;
+    for (i = 0; i < N; i++) sum += (double)x[i];   /* sequential — preserves order */
+    float inv = (float)(1.0 / sum);
+    i = 0;
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    const float32x4_t vi = vdupq_n_f32(inv);
+    for (; i + 4 <= N; i += 4)
+        vst1q_f32(x + i, vmulq_f32(vld1q_f32(x + i), vi));
+#endif
+    for (; i < N; i++) x[i] *= inv;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Argmax + softmax — universal sampling primitives                   */
 /* ------------------------------------------------------------------ */
 
 static inline int stratum_argmax(const float* logits, int n) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    if (n >= 8) {
+        /* lane-parallel (max, first-index): vcgtq strict-greater keeps the
+         * earliest index within each lane; the cross-lane reduce picks the
+         * lowest index on ties — identical semantics to the scalar scan */
+        float32x4_t vmax = vdupq_n_f32(-3.4028234663852886e+38f);
+        int32x4_t   vidx = vdupq_n_s32(0x7fffffff);
+        int32x4_t   vcur = {0, 1, 2, 3};
+        const int32x4_t vstep = vdupq_n_s32(4);
+        int i = 0;
+        for (; i + 4 <= n; i += 4) {
+            float32x4_t v = vld1q_f32(logits + i);
+            uint32x4_t m = vcgtq_f32(v, vmax);
+            vidx = vbslq_s32(m, vcur, vidx);
+            vmax = vbslq_f32(m, v, vmax);
+            vcur = vaddq_s32(vcur, vstep);
+        }
+        float lvs[4]; int lis[4];
+        vst1q_f32(lvs, vmax); vst1q_s32(lis, vidx);
+        float bv = lvs[0]; int bi = lis[0];
+        for (int l = 1; l < 4; l++)
+            if (lvs[l] > bv || (lvs[l] == bv && lis[l] < bi)) { bv = lvs[l]; bi = lis[l]; }
+        for (; i < n; i++)
+            if (logits[i] > bv) { bv = logits[i]; bi = i; }
+        if (bi != 0x7fffffff) return bi;   /* all -inf falls to scalar */
+    }
+#endif
     int best = 0;
     float maxv = logits[0];
     for (int i = 1; i < n; i++) {

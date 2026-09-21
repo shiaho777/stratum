@@ -148,4 +148,62 @@ static inline float q5k_dot_row_neon(
 
 #endif
 
+#if defined(__ARM_FEATURE_DOTPROD)
+#include <arm_neon.h>
+
+/* SDOT variant: weight nibbles OR'd with the qh high bit stay in [0,31]
+ * (i8-safe), activation is the shared q8 per-32 quantization; the minterm
+ * folds the caller-precomputed per-32 activation sums (bit-equal int32).
+ * f32x4 accumulate — same numerics class as q4k_dot_row_sdot_f. */
+static inline float q5k_dot_row_sdot_f(const block_q5_K* row, int K,
+                                       const int8_t* xq, const float* xscale,
+                                       const int32_t* xsum) {
+    int nb = K / 256;
+    float32x4_t facc = vdupq_n_f32(0.0f);
+    const uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    const uint8x16_t m1v = vdupq_n_u8(1u), m2v = vdupq_n_u8(2u);
+    for (int i = 0; i < nb; i++) {
+        if (i + 2 < nb) __builtin_prefetch(row + i + 2, 0, 3);
+        const block_q5_K* b = row + i;
+        float d = q4k_fp16_to_fp32(b->d), dmin = q4k_fp16_to_fp32(b->dmin);
+        const uint8_t* q = b->qs;
+        const uint8_t* qh = b->qh;
+        int is = 0;
+        int blk32 = i * 8;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc1, m1, sc2, m2;
+            q4k_get_scale_min(is + 0, b->scales, &sc1, &m1);
+            q4k_get_scale_min(is + 1, b->scales, &sc2, &m2);
+            int8x16_t neg = vdupq_n_s8(-(int8_t)is);
+            uint8x16_t h0 = vshlq_u8(vld1q_u8(qh),      neg);
+            uint8x16_t h1 = vshlq_u8(vld1q_u8(qh + 16), neg);
+            uint8x16_t w0 = vld1q_u8(q), w1 = vld1q_u8(q + 16);
+            int8x16_t lo0 = vreinterpretq_s8_u8(vorrq_u8(vandq_u8(w0, mask4),
+                vshlq_n_u8(vandq_u8(h0, m1v), 4)));
+            int8x16_t lo1 = vreinterpretq_s8_u8(vorrq_u8(vandq_u8(w1, mask4),
+                vshlq_n_u8(vandq_u8(h1, m1v), 4)));
+            int8x16_t hi0 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(w0, 4),
+                vshlq_n_u8(vshrq_n_u8(vandq_u8(h0, m2v), 1), 4)));
+            int8x16_t hi1 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(w1, 4),
+                vshlq_n_u8(vshrq_n_u8(vandq_u8(h1, m2v), 1), 4)));
+            const int8_t* xl = xq + (size_t)blk32 * 32;
+            const int8_t* xh = xq + (size_t)(blk32 + 1) * 32;
+            int8x16_t xl0 = vld1q_s8(xl), xl1 = vld1q_s8(xl + 16);
+            int8x16_t xh0 = vld1q_s8(xh), xh1 = vld1q_s8(xh + 16);
+            int32x4_t aq_lo = vdotq_s32(vdotq_s32(vdupq_n_s32(0), lo0, xl0), lo1, xl1);
+            int32x4_t aq_hi = vdotq_s32(vdotq_s32(vdupq_n_s32(0), hi0, xh0), hi1, xh1);
+            float32x4_t coeff = { d * (float)sc1 * xscale[blk32],
+                                  -dmin * (float)m1 * xscale[blk32],
+                                  d * (float)sc2 * xscale[blk32 + 1],
+                                  -dmin * (float)m2 * xscale[blk32 + 1] };
+            int32x4_t terms = { vaddvq_s32(aq_lo), xsum[blk32],
+                                vaddvq_s32(aq_hi), xsum[blk32 + 1] };
+            facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
+            q += 32; is += 2; blk32 += 2;
+        }
+    }
+    return vaddvq_f32(facc);
+}
+#endif
+
 #endif

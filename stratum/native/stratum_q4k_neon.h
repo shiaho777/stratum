@@ -316,6 +316,93 @@ static inline float q4k_dot_row_sdot(const block_q4_K* row, int K,
     }
     return (float)dot;
 }
+
+/* xsum variant: caller precomputes per-32 activation sums once (identical
+ * int32 values to the per-row ones-dots above, so results are bit-equal),
+ * removing 4 vdotq + 2 vaddvq per 64 elems from the per-row serial chain. */
+static inline float q4k_dot_row_sdot_s(const block_q4_K* row, int K,
+                                       const int8_t* xq, const float* xscale,
+                                       const int32_t* xsum) {
+    int nb = K / 256;
+    double dot = 0.0;
+    uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    for (int i = 0; i < nb; i++) {
+        const block_q4_K* b = row + i;
+        float d = q4k_fp16_to_fp32(b->d), dmin = q4k_fp16_to_fp32(b->dmin);
+        const uint8_t* q = b->qs;
+        int is = 0;
+        int blk32 = i * 8;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc1, m1, sc2, m2;
+            q4k_get_scale_min(is + 0, b->scales, &sc1, &m1);
+            q4k_get_scale_min(is + 1, b->scales, &sc2, &m2);
+            uint8x16_t w0 = vld1q_u8(q);
+            uint8x16_t w1 = vld1q_u8(q + 16);
+            int8x16_t lo0 = vreinterpretq_s8_u8(vandq_u8(w0, mask4));
+            int8x16_t lo1 = vreinterpretq_s8_u8(vandq_u8(w1, mask4));
+            int8x16_t hi0 = vreinterpretq_s8_u8(vshrq_n_u8(w0, 4));
+            int8x16_t hi1 = vreinterpretq_s8_u8(vshrq_n_u8(w1, 4));
+            const int8_t* xl = xq + (size_t)blk32 * 32;
+            const int8_t* xh = xq + (size_t)(blk32 + 1) * 32;
+            int8x16_t xl0 = vld1q_s8(xl), xl1 = vld1q_s8(xl + 16);
+            int8x16_t xh0 = vld1q_s8(xh), xh1 = vld1q_s8(xh + 16);
+            int32x4_t aq_lo = vdotq_s32(vdotq_s32(vdupq_n_s32(0), lo0, xl0), lo1, xl1);
+            int32x4_t aq_hi = vdotq_s32(vdotq_s32(vdupq_n_s32(0), hi0, xh0), hi1, xh1);
+            float scl_lo = xscale[blk32], scl_hi = xscale[blk32 + 1];
+            dot += (double)(d * sc1 * ((float)vaddvq_s32(aq_lo) * scl_lo)
+                          - dmin * m1 * ((float)xsum[blk32] * scl_lo));
+            dot += (double)(d * sc2 * ((float)vaddvq_s32(aq_hi) * scl_hi)
+                          - dmin * m2 * ((float)xsum[blk32 + 1] * scl_hi));
+            q += 32; is += 2; blk32 += 2;
+        }
+    }
+    return (float)dot;
+}
+
+/* f32-vector accumulate variant: packs the four per-group terms into one
+ * vfmaq — measured ~1.3x the scalar-double chain on M4 Pro at equal
+ * argmax on real tensors (max|diff| ~6e-7, same league as int8-vs-fp32). */
+static inline float q4k_dot_row_sdot_f(const block_q4_K* row, int K,
+                                       const int8_t* xq, const float* xscale,
+                                       const int32_t* xsum) {
+    int nb = K / 256;
+    float32x4_t facc = vdupq_n_f32(0.0f);
+    uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    for (int i = 0; i < nb; i++) {
+        if (i + 2 < nb) __builtin_prefetch(row + i + 2, 0, 3);
+        const block_q4_K* b = row + i;
+        float d = q4k_fp16_to_fp32(b->d), dmin = q4k_fp16_to_fp32(b->dmin);
+        const uint8_t* q = b->qs;
+        int is = 0;
+        int blk32 = i * 8;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc1, m1, sc2, m2;
+            q4k_get_scale_min(is + 0, b->scales, &sc1, &m1);
+            q4k_get_scale_min(is + 1, b->scales, &sc2, &m2);
+            uint8x16_t w0 = vld1q_u8(q);
+            uint8x16_t w1 = vld1q_u8(q + 16);
+            int8x16_t lo0 = vreinterpretq_s8_u8(vandq_u8(w0, mask4));
+            int8x16_t lo1 = vreinterpretq_s8_u8(vandq_u8(w1, mask4));
+            int8x16_t hi0 = vreinterpretq_s8_u8(vshrq_n_u8(w0, 4));
+            int8x16_t hi1 = vreinterpretq_s8_u8(vshrq_n_u8(w1, 4));
+            const int8_t* xl = xq + (size_t)blk32 * 32;
+            const int8_t* xh = xq + (size_t)(blk32 + 1) * 32;
+            int8x16_t xl0 = vld1q_s8(xl), xl1 = vld1q_s8(xl + 16);
+            int8x16_t xh0 = vld1q_s8(xh), xh1 = vld1q_s8(xh + 16);
+            int32x4_t aq_lo = vdotq_s32(vdotq_s32(vdupq_n_s32(0), lo0, xl0), lo1, xl1);
+            int32x4_t aq_hi = vdotq_s32(vdotq_s32(vdupq_n_s32(0), hi0, xh0), hi1, xh1);
+            float32x4_t coeff = { d * (float)sc1 * xscale[blk32],
+                                  -dmin * (float)m1 * xscale[blk32],
+                                  d * (float)sc2 * xscale[blk32 + 1],
+                                  -dmin * (float)m2 * xscale[blk32 + 1] };
+            int32x4_t terms = { vaddvq_s32(aq_lo), xsum[blk32],
+                                vaddvq_s32(aq_hi), xsum[blk32 + 1] };
+            facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
+            q += 32; is += 2; blk32 += 2;
+        }
+    }
+    return vaddvq_f32(facc);
+}
 #endif
 
 #if defined(__ARM_FEATURE_DOTPROD)

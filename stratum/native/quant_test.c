@@ -73,6 +73,19 @@ static void test_q8_0(void) {
     float fn = q8_0_dot_row_neon(blocks, K, x);
     ASSERT_REL("q8_0 scalar fused", fs, (float)ref, 1e-5f);
     ASSERT_REL("q8_0 neon   fused", fn, (float)ref, 1e-5f);
+#if defined(__ARM_FEATURE_DOTPROD)
+
+    {
+        int8_t* xq = malloc(K);
+        float*  xs = malloc((K/32) * sizeof(float));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        float fsd  = q8_0_dot_row_sdot(blocks, K, xq, xs);
+        float fsdf = q8_0_dot_row_sdot_f(blocks, K, xq, xs);
+        ASSERT_REL("q8_0 sdot  approx", fsd,  (float)ref, 5e-2f);
+        ASSERT_REL("q8_0 sdotf approx", fsdf, (float)ref, 5e-2f);
+        free(xq); free(xs);
+    }
+#endif
 
     free(blocks); free(x);
 }
@@ -137,6 +150,20 @@ static void test_q5k(void) {
     float fn = q5k_dot_row_neon(blocks, K, x);
     ASSERT_REL("q5_K scalar fused", fs, (float)ref, 1e-3f);
     ASSERT_REL("q5_K neon   fused", fn, (float)ref, 1e-3f);
+#if defined(__ARM_FEATURE_DOTPROD)
+
+    {
+        int8_t*  xq = malloc(K);
+        float*   xs = malloc((K/32) * sizeof(float));
+        int32_t* xsum = malloc((K/32) * sizeof(int32_t));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        for (int g = 0; g < K/32; g++)
+            xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
+        float fsd = q5k_dot_row_sdot_f(blocks, K, xq, xs, xsum);
+        ASSERT_REL("q5_K sdotf approx", fsd, (float)ref, 5e-2f);
+        free(xq); free(xs); free(xsum);
+    }
+#endif
 
     free(blocks); free(x);
 }
@@ -188,6 +215,17 @@ static void test_q3k(void) {
 #if defined(__ARM_NEON) || defined(__aarch64__)
     float fn = q3k_dot_row_neon(blocks, K, x);
     ASSERT_REL("q3_K neon   fused", fn, (float)ref, 1e-3f);
+#endif
+#if defined(__ARM_FEATURE_DOTPROD)
+
+    {
+        int8_t* xq = malloc(K);
+        float*  xs = malloc((K/32) * sizeof(float));
+        q4k_quantize_x_q8(x, K, xq, xs);
+        float fsd = q3k_dot_row_sdot_f(blocks, K, xq, xs);
+        ASSERT_REL("q3_K sdotf approx", fsd, (float)ref, 5e-2f);
+        free(xq); free(xs);
+    }
 #endif
 
     free(blocks); free(x);

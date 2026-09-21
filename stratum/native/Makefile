@@ -102,6 +102,15 @@ bench_w16_amx: bench_w16_amx.c stratum_q4k_w16_amx.h stratum_linear.h \
                stratum_gguf.h stratum_q4k.h stratum_q4k_neon.h
 	$(CC) $(CFLAGS) -o $@ bench_w16_amx.c $(LDFLAGS)
 
+# Single-stream Q4_K SDOT kernel-restructure probe (v2/v3 variants; the v3
+# f32-vector accumulator is what became q4k_dot_row_sdot_f).
+bench_single_q4k: bench_single_q4k.c stratum_q4k.h stratum_q4k_neon.h
+	$(CC) -O3 -ffast-math -mcpu=apple-m1 -o $@ bench_single_q4k.c
+
+# Batched-decode kernel shootout (A/M1/M2/M3; see docs/PERF-ROADMAP.md).
+bench_batch_q4k: bench_batch_q4k.c stratum_q4k.h stratum_q4k_neon.h
+	$(CC) -O3 -ffast-math -mcpu=apple-m1 -o $@ bench_batch_q4k.c -framework Accelerate
+
 stratum_metal.o: stratum_metal.m stratum_metal.h
 	$(CC) -ObjC -O3 -fobjc-arc -c stratum_metal.m -o stratum_metal.o
 

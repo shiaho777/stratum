@@ -74,11 +74,7 @@ static void la_rmsnorm(const float* x, const float* gain, int N, float eps, floa
 }
 
 static void la_swiglu(const float* g, const float* u, int N, float* y) {
-    for (int i = 0; i < N; i++) {
-        float gv = g[i];
-        float s  = gv / (1.0f + expf(-gv));
-        y[i] = s * u[i];
-    }
+    stratum_swiglu(g, u, N, y);
 }
 
 /* RoPE pair layout: ggml has two conventions and the GGUF keeps the
@@ -153,12 +149,7 @@ static void la_rope(float* x, int head_dim, int rope_dim, int position, float th
 }
 
 static void la_softmax_inplace(float* x, int N) {
-    float maxv = x[0];
-    for (int i = 1; i < N; i++) if (x[i] > maxv) maxv = x[i];
-    double sum = 0.0;
-    for (int i = 0; i < N; i++) { x[i] = expf(x[i] - maxv); sum += x[i]; }
-    float inv = (float)(1.0 / sum);
-    for (int i = 0; i < N; i++) x[i] *= inv;
+    stratum_softmax_inplace(x, N);
 }
 
 static float* la_g_x       = NULL;
@@ -262,35 +253,9 @@ static void la_linear_multix(const GgufTensor* w, const float* const* xs,
         la_linear_multix_blas(w, xs, ys, B, N, K);
         return;
     }
-    if (w->type == GGML_TYPE_Q4K_W16) {
-        if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
-            && st_amx_available())
-            st_q4k_w16_amx_multix(w, xs, ys, B, N, K);
-        else
-            st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
-        return;
-    }
-    if (w->type == GGML_TYPE_Q4_K) {
-        ST_PAR_ROWS(N, {
-            const float* xrow[la_B_MAX];
-            for (int s = 0; s < B; s++) xrow[s] = xs[s];
-            float out[la_B_MAX];
-            q4k_dot_row_neon_multix(st_q4k_row_ptr(w, K, r), K, xrow, B, out);
-            for (int s = 0; s < B; s++) ys[s][r] = out[s];
-        });
-        return;
-    }
-    if (w->type == GGML_TYPE_Q6_K) {
-        ST_PAR_ROWS(N, {
-            const float* xrow[la_B_MAX];
-            for (int s = 0; s < B; s++) xrow[s] = xs[s];
-            float out[la_B_MAX];
-            q6k_dot_row_neon_multix(st_q6k_row_ptr(w, K, r), K, xrow, B, out);
-            for (int s = 0; s < B; s++) ys[s][r] = out[s];
-        });
-        return;
-    }
-    for (int s = 0; s < B; s++) st_linear_dispatch(w, xs[s], ys[s], N, K);
+    /* everything else (Q4_K/Q6_K pack, W16/AMX, per-format fallback) lives
+     * in the shared dispatcher — identical semantics, one implementation */
+    st_linear_multix(w, xs, ys, B, N, K);
 }
 
 /* Hidden-state export (STRATUM_HIDDEN_DUMP=<layer>:<path>): captures the
@@ -353,7 +318,11 @@ static void la_forward_block(int li, int position) {
     }
 
     float scale = 1.0f / sqrtf((float)Hd);
-    for (int h = 0; h < Nq; h++) {
+    /* heads are independent: parallelize when the serial loop is long
+     * enough to matter (kv_len grows with context). Same math, same
+     * output — only the head iteration order across threads changes. */
+    int attn_par = (kv_len_now >= 512 && Nq >= 4);
+    void (^attn_head)(int) = ^(int h) {
         int kv_h = h * Nk / Nq;
         const float* qh = la_g_q_buf + h * Hd;
         size_t per_layer = (size_t)la_MAX_KV * Nk * Hd;
@@ -407,7 +376,13 @@ static void la_forward_block(int li, int position) {
             for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
 #endif
         }
-    }
+    };
+    if (attn_par)
+        dispatch_apply((size_t)Nq,
+                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                       ^(size_t hh) { attn_head((int)hh); });
+    else
+        for (int h = 0; h < Nq; h++) attn_head(h);
 
     static float attn_proj[8192];
     if (H > 8192) { fprintf(stderr, "H exceeds buffer\n"); exit(2); }
@@ -461,6 +436,10 @@ static void la_embed_lookup(int token_id, float* out) {
         for (int i = 0; i < n_blocks; i++) {
             q6k_dequant_block_scalar(row + i, out + i * 256);
         }
+    } else if (la_g_token_embd->type == GGML_TYPE_Q8_0) {
+        const block_q8_0* row = st_q8_0_row_ptr(la_g_token_embd, H, token_id);
+        for (int i = 0; i < H / 32; i++)
+            q8_0_dequant_block_scalar(row + i, out + i * 32);
     } else if (la_g_token_embd->type == GGML_TYPE_F16) {
         const uint16_t* raw = (const uint16_t*)(g_st.mmap_base + la_g_token_embd->offset)
                             + (size_t)token_id * H;
