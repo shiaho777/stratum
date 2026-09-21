@@ -114,3 +114,59 @@ M5 fp16 dequant+BNNS        : 20.1µs/stream
 热权重下 ~5 线程就饱和统一内存带宽(floor-256 得 ~95 tok/s,不如固定 5
 的 112);冷盘大模型需要更多线程拉满 NVMe 队列。现行默认:模型 ≤2GB 用
 5,否则物理核数(`stratum_linear_init`)。
+
+## 第四轮(SDOT 覆盖扩展 + Q4_K 重排证伪)
+
+- **Q8_0/Q5_K/Q3_K int8 SDOT 核**(新增):全部复用 q4k_quantize_x_q8
+  per-32 激活量化;Q5_K 走 q4k 骨架 + qh 高位面 OR 进 u5(≤31 仍 s8),
+  Q3_K 无 min 项直接 signed q3∈[-4,3] vdotq。quant_test 相对误差
+  2e-5~2e-3 与 q4k sdot 同级;tiny llama --weights q8_0 端到端
+  SDOT=0/1 argmax 逐位一致(顺带补了引擎的 Q8_0 embed 分支)。
+  make_tiny_model.py 新增 --weights q8_0 编码器。
+- **Q4_K 字节重排(type-43 设想)证伪**:微基准模拟两种布局——
+  (a) 148B 块仅预解码 sc/m:v6 与 _f 完全同速(1.33×)——get_scale_min
+  标量解码本来就不是热点;(b) 276B 块 nibble 预分裂:v5 名义 1.51×
+  但字节 +92%,冷流式 SSD 多读一倍 → 净亏 ~40%,热场景也仅比 _f
+  快 ~14%(kernel 级)。144B 约束内 Q4_K 无油水,不建 sidecar 设施。
+
+## 第五轮(SDOT 覆盖 + MoE MULTISEQ)
+
+- **st_linear_multix 提升为共享入口**(stratum_linear.h):llama 的
+  CPU pack 路径(rows2 行对 + ≤16 流分块 + neon 回退)原样上提,
+  la_linear_multix 保留 Metal/BLAS 前置分支后委托;MS16 回归
+  ~264-281 tok/s 零失配。
+- **MoE 架构 MULTISEQ 落地**(stratum_arch_moe.inc.c):
+  moe_forward_multiseq 每流独立 KV([L][B][maxkv][Nk*Hd]),dense
+  部分全走 st_linear_multix;**expert 分组批处理**——每层每 expert
+  只读一次,成员流共享 pack 核;累加严格按各流 top-k 权序
+  (out_all[s][rank])→ 与单流浮点序一致。E>256 动态分组表。
+  验证:tiny-moe f16/q4k 两种权重,MS4/MS8/MS32 stream0 argmax
+  与单流逐位一致,MS_VERIFY 全流零失配;B=1 边界正常。
+- **MoE ngram spec 解码**(STRATUM_NGRAM_SPEC):moe_forward_multiseq
+  泛化为 moe_forward_b(shared_kv 开关)——batch 模式 B 个 token 延伸
+  同一序列(slot s 写 kv_len+s、看 kv_len+s+1,spec 验证语义);
+  multiseq 模式不变。驱动循环移植自 llama ngram-spec(后缀查找
+  起草 + argmax 链验证,greedy bit-exact by construction)。验证:
+  tiny-moe f16/q4k spec 序列与单流逐位一致;重复 prompt 上草稿
+  命中率 2.0 tok/call;KV 满自动回退单 token。
+
+## 第六轮(qwen35 单流缺口补齐)
+
+排查发现 27B 主架构的单流路径没吃到这轮核红利——它走 `multix_preq`
+B=1(pack 打包开销 + 旧逐流核)。已修:
+
+| 改动 | 内容 | 验证 |
+|---|---|---|
+| qwen35 B==1 快道 | q4k→`_sdot_f`(1.32× 向量累加核直连,保留预取);q6k 走 pack 布局(见下) | tiny_q35_q4k argmax+logits 逐位一致 |
+| qwen35 q5k/q3k/q8_0 | 单流从纯 neon 接上新 SDOT `_f` 核 | tiny_q35_q80 端到端 SDOT=0/1 一致 |
+| qwen35 embed | 补 Q8_0 分支(真实模型会踩到) | 同上 |
+| 单流 rows2 交错核 | **证伪**:18.7 vs `_f` 19.9 GB/s——vdotq 计算受限非 load 受限 | 微基准 |
+
+**Q6_K 尺度布局守卫**(本轮排掉的 NaN 根因):prequant 池产 per-32
+激活尺度,而 `q6k_dot_row_sdot*` 按 per-16 索引——B==1 直连
+`_sdot_fused` 会越界读 scale 产生 NaN。最终处置:q6k 的两个调用方
+(`q35_linear_q6k`/`q35_linear_q6k_multix`)只在 `q35_g_xq_pack_ready &&
+xq_B==B && xq_K==K` 时进 preq——pack 核内部 b32=g/2 映射与 per-32 池
+兼容;pack 不可用时回退 NEON,绝不把 per-32 池喂给 per-16 核。
+
+quant_test 16/16、spec_sample 4/4 全绿。
