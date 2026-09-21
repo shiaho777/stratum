@@ -64,6 +64,7 @@ Current rules:
 - SSM group dispatch (merge multiple matmuls into one command buffer)
 - Metal per-tensor NoCopy direct-read + batched NC submission (see 2a)
 - Q2K nibble layout (type-42): byte re-arrangement that halves unpack instructions (measured 2.2×) — allowed because values are unchanged
+- Q4K_W16 layout (type-43, `gguf_w16_convert`): same Q4_K values re-laid-out as k-major i16 tiles for the AMX multiseq path — allowed for the same reason as type-42 (no requantization of weights). Activations are quantized to signed 10-bit integers on the fly (~56-60dB SNR, ~6-12× finer than the int8 SDOT path). **Not bit-exact vs SDOT/f64**: near-tie argmax can flip on random-weight tiny models (SDOT itself flips there too); the bench gate is full-matrix `argmax_mismatch=0` vs the f64 fallback. Env: `STRATUM_AMX_W16_OFF=1` forces the portable fallback, `STRATUM_AMX_PROF=1` prints per-call AMX timing.
 
 ### Forbidden
 

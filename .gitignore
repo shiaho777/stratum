@@ -53,6 +53,7 @@ transformers-main/src/transformers.egg-info/
 stratum/native/bench_*
 stratum/native/*_probe
 stratum/native/gguf_nib_convert
+stratum/native/gguf_w16_convert
 stratum/native/q2k_nibble_convert
 stratum/native/*.bak.*
 

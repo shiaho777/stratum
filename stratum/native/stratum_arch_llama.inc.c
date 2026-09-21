@@ -262,6 +262,14 @@ static void la_linear_multix(const GgufTensor* w, const float* const* xs,
         la_linear_multix_blas(w, xs, ys, B, N, K);
         return;
     }
+    if (w->type == GGML_TYPE_Q4K_W16) {
+        if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
+            && st_amx_available())
+            st_q4k_w16_amx_multix(w, xs, ys, B, N, K);
+        else
+            st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
+        return;
+    }
     if (w->type == GGML_TYPE_Q4_K) {
         ST_PAR_ROWS(N, {
             const float* xrow[la_B_MAX];

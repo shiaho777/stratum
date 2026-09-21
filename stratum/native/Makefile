@@ -88,8 +88,19 @@ stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) $(MEMX_OBJ) \
          stratum_q6k.h stratum_q6k_neon.h \
          stratum_q8_0.h \
          stratum_bf16.h \
-         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h
+         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h \
+         stratum_q4k_w16_amx.h
 	$(CC) $(CFLAGS) -o $@ stratum.c $(METAL_OBJ) $(LDFLAGS)
+
+# Q4_K -> Q4K_W16 (type 43) converter: lays weights out as k-major i16 tiles
+# for the AMX multiseq path (values identical to Q4_K, layout only).
+gguf_w16_convert: tools_gguf_w16_convert.c
+	$(CC) -O2 -o $@ tools_gguf_w16_convert.c
+
+# AMX w16 kernel microbenchmark / correctness gate (synthetic type-43 blob).
+bench_w16_amx: bench_w16_amx.c stratum_q4k_w16_amx.h stratum_linear.h \
+               stratum_gguf.h stratum_q4k.h stratum_q4k_neon.h
+	$(CC) $(CFLAGS) -o $@ bench_w16_amx.c $(LDFLAGS)
 
 stratum_metal.o: stratum_metal.m stratum_metal.h
 	$(CC) -ObjC -O3 -fobjc-arc -c stratum_metal.m -o stratum_metal.o

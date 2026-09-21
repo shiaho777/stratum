@@ -33,7 +33,17 @@ GGML_Q2_K = 10
 # exercise GQA attention, RoPE, FFN, and the F16 dequant matmul path.
 BASE = dict(N_LAYERS=4, H=64, NQ=4, NK=2, HD=16, FF=176, V=256)
 # Q4_K needs every matmul input dim (K) to be a multiple of 256.
-Q4K = dict(N_LAYERS=2, H=256, NQ=8, NK=2, HD=32, FF=512, V=1024)
+# Env overrides let kernel work exercise realistic dims (e.g. the W16/AMX
+# path wants H=1024 / FF=3584): STRATUM_TINY_{LAYERS,H,NQ,NK,HD,FF,V}.
+def _q4k_dims():
+    d = dict(N_LAYERS=2, H=256, NQ=8, NK=2, HD=32, FF=512, V=1024)
+    import os
+    for k in list(d):
+        v = os.environ.get('STRATUM_TINY_' + k)
+        if v:
+            d[k] = int(v)
+    return d
+Q4K = _q4k_dims()
 
 # Hybrid (Gated DeltaNet) SSM geometry — scaled-down from the real 27B
 # (HV=128, NK=16, NV=48, conv_dim=10240) by the same factor as H.

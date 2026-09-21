@@ -55,6 +55,9 @@ typedef struct {
     /* SDOT (ARM dotprod) — default ON for Q4_K/Q6_K */
     int use_sdot;
 
+    /* AMX W16 multiseq path (type-43 tensors); STRATUM_AMX_W16_OFF=1 disables */
+    int amx_w16_off;
+
     /* GPU */
     int use_metal;
     int gpu2;           /* STRATUM_GPU_FULL=1 */
@@ -98,6 +101,7 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
     /* SDOT default ON (V25+) */
     g_st.use_sdot = (getenv("STRATUM_NO_SDOT") == NULL) ? 1 :
                     (getenv("STRATUM_SDOT") ? atoi(getenv("STRATUM_SDOT")) : 0);
+    g_st.amx_w16_off = (getenv("STRATUM_AMX_W16_OFF") != NULL);
 
     /* GPU */
     g_st.use_metal = (getenv("STRATUM_GPU") != NULL) ? 1 : 0;
@@ -279,6 +283,14 @@ static inline void st_linear_f32(const GgufTensor* w, const float* x, float* y, 
 }
 
 /* Main dispatch — select kernel by tensor type. No model-specific logic. */
+/* type-43 W16 engine lives in stratum_q4k_w16_amx.h (included at the bottom
+ * of this file); forward-declare so the single-seq dispatch can reach it. */
+static int  st_amx_available(void);
+static void st_q4k_w16_matvec_fallback(const GgufTensor*, const float* const*,
+                                       float* const*, int, int, int);
+static inline void st_q4k_w16_amx_multix(const GgufTensor*, const float* const*,
+                                         float* const*, int, int, int);
+
 static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float* y,
                                      int N, int K) {
     int _tm = (getenv("STRATUM_TYPETIME") != NULL);
@@ -295,6 +307,16 @@ static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float*
         case GGML_TYPE_Q8_0: st_linear_q8_0(w, x, y, N, K); break;
         case GGML_TYPE_F16:  st_linear_f16 (w, x, y, N, K); break;
         case GGML_TYPE_F32:  st_linear_f32 (w, x, y, N, K); break;
+        case GGML_TYPE_Q4K_W16: {
+            const float* x1[1]; float* y1[1];
+            x1[0] = x; y1[0] = y;
+            if (!g_st.amx_w16_off && (N % 32) == 0 && (K % 256) == 0
+                && st_amx_available())
+                st_q4k_w16_amx_multix(w, x1, y1, 1, N, K);
+            else
+                st_q4k_w16_matvec_fallback(w, x1, y1, 1, N, K);
+            break;
+        }
         default:
             fprintf(stderr, "st_linear_dispatch: unsupported type %s\n",
                     gguf_type_name((GgmlType)w->type));
@@ -365,6 +387,34 @@ static inline void st_linear_q6k_multix(const GgufTensor* w,
 #endif
     for (int b = 0; b < B; b++)
         ST_PAR_ROWS(N, ys[b][r] = q6k_dot_row_neon(st_q6k_row_ptr(w, K, r), K, xs[b]));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Unified batched dispatch — type-43 W16 goes to the AMX engine,      */
+/*  the rest to their per-type multix (or per-seq fallback).            */
+/* ------------------------------------------------------------------ */
+
+static inline void st_linear_multix(const GgufTensor* w,
+                                    const float* const* xs,
+                                    float* const* ys,
+                                    int B, int N, int K) {
+    if ((GgmlType)w->type == GGML_TYPE_Q4K_W16) {
+        if (!g_st.amx_w16_off && B >= 1 && (N % 32) == 0 && (K % 256) == 0
+            && st_amx_available()) {
+            st_q4k_w16_amx_multix(w, xs, ys, B, N, K);
+        } else {
+            st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
+        }
+        return;
+    }
+    switch ((GgmlType)w->type) {
+        case GGML_TYPE_Q4_K: st_linear_q4k_multix(w, xs, ys, B, N, K); return;
+        case GGML_TYPE_Q6_K: st_linear_q6k_multix(w, xs, ys, B, N, K); return;
+        case GGML_TYPE_Q2_K: st_linear_q2k_multix(w, xs, ys, B, N, K); return;
+        default:
+            for (int b = 0; b < B; b++)
+                st_linear_dispatch(w, xs[b], ys[b], N, K);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -471,5 +521,10 @@ static inline void st_rope_half_heads(float* x, int nheads, int head_dim, int ro
         st_rope_half(x + h * head_dim, head_dim, rope_dim, pos, theta);
     }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Q4K_W16 (type 43) AMX multiseq engine                              */
+/* ------------------------------------------------------------------ */
+#include "stratum_q4k_w16_amx.h"
 
 #endif /* STRATUM_LINEAR_H */

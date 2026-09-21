@@ -1957,6 +1957,16 @@ static int q35_linear_dispatch(const GgufTensor* w, const float* x, float* y,
                 && q35_linear_tiled(w, x, y, N, K) == 0) { _rc = 0; break; }
             q35_linear_q6k (w, x, y, N, K); _rc = 0; break;
         case GGML_TYPE_Q8_0: q35_linear_q8_0(w, x, y, N, K); _rc = 0; break;
+        case GGML_TYPE_Q4K_W16: {
+            const float* x1[1]; float* y1[1];
+            x1[0] = x; y1[0] = y;
+            if (!g_st.amx_w16_off && (N % 32) == 0 && (K % 256) == 0
+                && st_amx_available())
+                st_q4k_w16_amx_multix(w, x1, y1, 1, N, K);
+            else
+                st_q4k_w16_matvec_fallback(w, x1, y1, 1, N, K);
+            _rc = 0; break;
+        }
         case GGML_TYPE_F16:  q35_linear_f16 (w, x, y, N, K); _rc = 0; break;
         case GGML_TYPE_F32: {
             const float* raw = (const float*)q35_tensor_data(w);
@@ -2045,6 +2055,15 @@ static int q35_linear_dispatch_multix(const GgufTensor* w,
                 return 0;
             }
         }
+    }
+    if ((GgmlType)w->type == GGML_TYPE_Q4K_W16) {
+        if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
+            && st_amx_available())
+            st_q4k_w16_amx_multix(w, xs, ys, B, N, K);
+        else
+            st_q4k_w16_matvec_fallback(w, xs, ys, B, N, K);
+        q35_cpu_mm_acc(_qcm0, w);
+        return 0;
     }
     if ((GgmlType)w->type == GGML_TYPE_Q4_K) {
         q35_linear_q4k_multix(w, xs, ys, B, N, K);

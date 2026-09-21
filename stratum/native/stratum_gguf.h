@@ -39,6 +39,9 @@ typedef enum {
      * Must be a real enum member: bounds checks throughout this header
      * test `t >= GGML_TYPE_COUNT`, and 42 lies beyond every other value. */
     GGML_TYPE_Q2K_NIB  = 42,
+    /* type 43: Q4K_W16 — w16 k-major i16 blob for the AMX multiseq path
+     * (gguf_w16_convert output; values identical to Q4_K, layout only) */
+    GGML_TYPE_Q4K_W16  = 43,
     GGML_TYPE_COUNT,
 } GgmlType;
 
@@ -67,6 +70,8 @@ static const GgmlTypeInfo gguf_type_info[] = {
     [GGML_TYPE_IQ4_NL] = { 32,  18,  "IQ4_NL"},
     [GGML_TYPE_IQ4_XS] = { 256, 136, "IQ4_XS"},
     [GGML_TYPE_BF16]   = { 1,   2,   "BF16"  },
+    /* nominal entry so bounds checks pass; real blob = 2B/elem + tail */
+    [GGML_TYPE_Q4K_W16] = { 1,  2,   "Q4K_W16" },
 };
 
 static inline int64_t gguf_tensor_bytes(GgmlType t, int64_t nelem) {
