@@ -71,6 +71,9 @@ static id<MTLComputePipelineState> g_q6k_norm = nil;    /* coal16 q6k + rmsnorm 
 static id<MTLComputePipelineState> g_q6k_swires = nil;  /* coal16 q6k swiglu+resid */
 static id<MTLComputePipelineState> g_q4k_swires = nil;  /* coal16 q4k swiglu+resid */
 static id<MTLComputePipelineState> g_attn_qkr = nil;    /* attn + fused qknorm/rope */
+static id<MTLComputePipelineState> g_attn_qkr_sp = nil; /* split-KV attn (long ctx) */
+static id<MTLComputePipelineState> g_attn_comb = nil;   /* split-KV merge (fallback) */
+static id<MTLComputePipelineState> g_fence_probe = nil; /* != nil iff MSL>=3.2 fences */
 static id<MTLComputePipelineState> g_sigmoid_gate = nil;
 static id<MTLComputePipelineState> g_split_qgate = nil;
 static id<MTLComputePipelineState> g_attn_gated = nil;
@@ -82,6 +85,7 @@ static id<MTLComputePipelineState> g_q4k_coalesced = nil;  /* V12 */
 static id<MTLComputePipelineState> g_kv_scatter = nil;
 static id<MTLComputePipelineState> g_kv_rope_scatter = nil;
 static id<MTLComputePipelineState> g_argmax_b = nil;
+static id<MTLComputePipelineState> g_argmax_tiles = nil; /* stage-1 tiled argmax */
 static id<MTLComputePipelineState> g_embd_gather = nil;
 static id<MTLBuffer> g_tok_ring = nil;          /* 256 x uint32 token ring */
 static id<MTLCommandBuffer> g_chain_last = nil; /* last committed chain cmd */
@@ -460,6 +464,7 @@ int stratum_metal_init(const char* metallib_path,
         LOAD_PSO(g_kv_scatter,  "kv_scatter_f32");
         LOAD_PSO(g_kv_rope_scatter, "kv_rope_scatter_f32");
         LOAD_PSO(g_argmax_b,    "argmax_f32_batched");
+        LOAD_PSO(g_argmax_tiles, "argmax_f32_tiles");
         LOAD_PSO(g_embd_gather, "embd_gather_f32");
         g_tok_ring = [g_device newBufferWithLength:1024
             options:MTLResourceStorageModeShared];
@@ -495,6 +500,10 @@ int stratum_metal_init(const char* metallib_path,
         LOAD_PSO_Q(g_q6k_swires,   "q6k_sgemv_row_coal16_swires");
         LOAD_PSO_Q(g_q4k_swires,   "q4k_sgemv_row_coal16_swires");
         LOAD_PSO_Q(g_attn_qkr,     "attn_decode_qkr_f32");
+        LOAD_PSO_Q(g_attn_qkr_sp,  "attn_decode_qkr_split_f32");
+        LOAD_PSO_Q(g_attn_comb,    "attn_combine_f32");
+        LOAD_PSO_Q(g_fence_probe,  "atomic_fence_probe");
+
         #undef LOAD_PSO_Q
 
         if (model_base && model_size) {
@@ -575,7 +584,6 @@ void stratum_metal_shutdown(void) {
 
 static int find_chunk(uint64_t file_off, size_t tensor_size,
                       id<MTLBuffer>* buf_out, uint64_t* off_out) {
-
     if (g_model_n_chunks == 1) {
         if (file_off + tensor_size > g_model_size) return -1;
         *buf_out = g_model_chunks[0];
@@ -880,7 +888,7 @@ int stratum_metal_chain_wait(void) {
 }
 
 static id<MTLBuffer> g_fx=nil, g_fxn=nil, g_fq=nil, g_fk=nil, g_fv=nil,
-                     g_fattn=nil, g_ftmp=nil, g_fg=nil, g_fu=nil, g_fa=nil, g_flog=nil;
+                     g_fattn=nil, g_ftmp=nil, g_fg=nil, g_fu=nil, g_fa=nil, g_flog=nil, g_fattnp=nil, g_frope=nil, g_fcnt=nil, g_fvals=nil, g_fidxs=nil;
 static size_t g_fcap_h=0, g_fcap_ff=0, g_fcap_v=0, g_fcap_qh=0, g_fcap_kh=0;
 static id<MTLBuffer> g_fkv_k=nil, g_fkv_v=nil;
 static size_t g_fkv_cap=0;
@@ -899,6 +907,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
     if (!g_device || !g_q4k_sgemv || !g_q6k_sgemv || !g_swiglu || !g_rmsnorm
         || !g_rope || !g_attn || !g_add || !g_copy) return -1;
     if (chain_slot >= 0 && (!g_embd_gather || !g_tok_ring)) return -1;
+
     @autoreleasepool {
         size_t hb=(size_t)H*4, ffb=(size_t)Ff*4, vb=(size_t)V*4,
                qhb=(size_t)Nq*Hd*4, khb=(size_t)Nk*Hd*4;
@@ -911,6 +920,13 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
         if (qhb > g_fcap_qh) {
             g_fq    = [g_device newBufferWithLength:qhb options:MTLResourceStorageModeShared];
             g_fattn = [g_device newBufferWithLength:qhb options:MTLResourceStorageModeShared];
+            uint32_t maxsp = (uint32_t)((max_kv + 511) / 512); if (maxsp < 16u) maxsp = 16u;
+            g_fattnp = [g_device newBufferWithLength:(NSUInteger)Nq*maxsp*(Hd+2u)*4 options:MTLResourceStorageModeShared];
+            if (!g_frope) g_frope = [g_device newBufferWithLength:256*4 options:MTLResourceStorageModeShared];
+            if (!g_fcnt) { g_fcnt = [g_device newBufferWithLength:64u*4u options:MTLResourceStorageModeShared];
+                memset([g_fcnt contents], 0, 64u*4u); }
+            if (!g_fvals) g_fvals = [g_device newBufferWithLength:64u*4u options:MTLResourceStorageModeShared];
+            if (!g_fidxs) g_fidxs = [g_device newBufferWithLength:64u*4u options:MTLResourceStorageModeShared];
             g_fcap_qh = qhb;
         }
         if (khb > g_fcap_kh) {
@@ -935,7 +951,12 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             g_fkv_v = [g_device newBufferWithLength:kvb options:MTLResourceStorageModeShared];
             g_fkv_cap = kvb;
         }
-        if (!g_fx||!g_fxn||!g_ftmp||!g_fq||!g_fattn||!g_fk||!g_fv||!g_fg||!g_fu||!g_fa||!g_flog||!g_fkv_k||!g_fkv_v) return -1;
+        if (!g_fx||!g_fxn||!g_ftmp||!g_fq||!g_fattn||!g_fk||!g_fv||!g_fg||!g_fu||!g_fa||!g_flog||!g_fkv_k||!g_fkv_v||!g_fcnt) return -1;
+        { float* csp = (float*)[g_frope contents];
+          uint pairs = (uint)rope_dim/2u;
+          for (uint k = 0; k < pairs && k < 128u; k++) {
+              float fr = powf(rope_theta, -2.0f*(float)k/(float)rope_dim);
+              csp[k] = cosf((float)position*fr); csp[128u+k] = sinf((float)position*fr); } }
         if (chain_slot < 0)
             memcpy([g_fx contents], x_in, hb);
 
@@ -1111,6 +1132,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&_nt length:4 atIndex:12];
                   uint32_t _vq6 = (uint32_t)(ly->v_ty == 14);
                   [enc setBytes:&_vq6 length:4 atIndex:13];
+                  [enc setBuffer:g_fk offset:0 atIndex:14];   /* raw current-k shadow */
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((_nt+15)/16),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
                 BAR;
@@ -1132,8 +1154,38 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 [enc setBytes:&rope_theta length:4 atIndex:13];
                 [enc setBytes:&_rneox length:4 atIndex:14];
                 [enc setBytes:&rms_eps length:4 atIndex:15];
+                [enc setBuffer:g_frope offset:0 atIndex:16];
+                uint32_t nsplit = (kvn > 128u) ? ((kvn + 31u)/32u) : 1u;
+                uint32_t spcap = (kvn + 511u)/512u; if (spcap < 16u) spcap = 16u;
+                if (nsplit > spcap) nsplit = spcap;
+                if (nsplit > 1u && g_attn_qkr_sp && g_fattnp && g_fcnt
+                        && (g_fence_probe || g_attn_comb) && Nq <= 64) {
+                [enc setComputePipelineState:g_attn_qkr_sp];
+                [enc setBuffer:g_fattnp offset:0 atIndex:3];
+                [enc setBytes:&nsplit length:4 atIndex:16];
+                [enc setBuffer:g_frope offset:0 atIndex:17];
+                [enc setBuffer:g_fcnt offset:0 atIndex:18];
+                [enc setBuffer:g_fattn offset:0 atIndex:19];
+                [enc setBuffer:g_fk offset:0 atIndex:20];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nq*nsplit),1,1)
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                if (!g_fence_probe) {
+                    /* MSL < 3.2: no device atomic fences, so the split kernel
+                     * only wrote partials. Merge them in a separate dispatch —
+                     * the barrier provides the device-scope ordering. */
+                    BAR;
+                    [enc setComputePipelineState:g_attn_comb];
+                    [enc setBuffer:g_fattnp offset:0 atIndex:0];
+                    [enc setBuffer:g_fattn offset:0 atIndex:1];
+                    [enc setBytes:&Hdu length:4 atIndex:2];
+                    [enc setBytes:&nsplit length:4 atIndex:3];
+                    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
+                        threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                } }
+                else {
+                [enc setBuffer:g_fk offset:0 atIndex:17];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
-                    threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } }
                 BAR;
                 { id<MTLBuffer> wb; uint64_t wo;
                   if (find_chunk(ly->o_off,ly->o_tb,&wb,&wo)!=0) return -1;
@@ -1143,7 +1195,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBuffer:g_fx offset:0 atIndex:2];
                   uint32_t _K=(uint32_t)(Nq*Hd), _N=(uint32_t)H;
                   [enc setBytes:&_K length:4 atIndex:3]; [enc setBytes:&_N length:4 atIndex:4];
-                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+15)/16),1,1)
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
                 BAR;
                 { id<MTLBuffer> wbg,wbu,gb; uint64_t wog,wou,go;
@@ -1161,7 +1213,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&rms_eps length:4 atIndex:7];
                   uint32_t _nf=(uint32_t)Ff;
                   [enc setBytes:&_nf length:4 atIndex:8];
-                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((2*Ff+15)/16),1,1)
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((2*Ff+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
                 BAR;
                 { id<MTLBuffer> wb; uint64_t wo;
@@ -1173,7 +1225,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBuffer:g_fx offset:0 atIndex:3];
                   uint32_t _K=(uint32_t)Ff, _N=(uint32_t)H;
                   [enc setBytes:&_K length:4 atIndex:4]; [enc setBytes:&_N length:4 atIndex:5];
-                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+15)/16),1,1)
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
                 [enc endEncoding];
                 continue;
@@ -1313,10 +1365,33 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             [enc setBytes:&Hu length:4 atIndex:4];
             [enc setBytes:&Vu length:4 atIndex:5];
             [enc setBytes:&rms_eps length:4 atIndex:6];
-            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((V+15)/16),1,1)
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((V+31)/32),1,1)
                 threadsPerThreadgroup:MTLSizeMake(256,1,1)];
             if ((!logits_out || chain_slot >= 0) && g_argmax_b) {
                 BAR;
+                if (g_argmax_tiles && g_top1_reduce_tiles && g_fvals && g_fidxs) {
+                    uint32_t nt = 64u;
+                    [enc setComputePipelineState:g_argmax_tiles];
+                    [enc setBuffer:g_flog offset:0 atIndex:0];
+                    [enc setBuffer:g_fvals offset:0 atIndex:1];
+                    [enc setBuffer:g_fidxs offset:0 atIndex:2];
+                    [enc setBytes:&Vu length:4 atIndex:3];
+                    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)nt,1,1)
+                        threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                    BAR;
+                    [enc setComputePipelineState:g_top1_reduce_tiles];
+                    [enc setBuffer:g_fvals offset:0 atIndex:0];
+                    [enc setBuffer:g_fidxs offset:0 atIndex:1];
+                    if (chain_slot >= 0) {
+                        uint32_t wsl=(uint32_t)((chain_slot+1)&255)*4;
+                        [enc setBuffer:g_tok_ring offset:wsl atIndex:2];
+                    } else {
+                        [enc setBuffer:g_flog offset:0 atIndex:2];
+                    }
+                    [enc setBytes:&nt length:4 atIndex:3];
+                    [enc dispatchThreadgroups:MTLSizeMake(1,1,1)
+                        threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                } else {
                 [enc setComputePipelineState:g_argmax_b];
                 [enc setBuffer:g_flog offset:0 atIndex:0];
                 if (chain_slot >= 0) {
@@ -1328,6 +1403,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 [enc setBytes:&Vu length:4 atIndex:2];
                 [enc dispatchThreadgroups:MTLSizeMake(1,1,1)
                     threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                }
             }
         } else if (!logits_out && g_q4k_argmax_b) {
             id<MTLBuffer> _wb; uint64_t _wo;
@@ -1348,6 +1424,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
         [enc endEncoding]; }
 
         struct timespec _d0,_d1; clock_gettime(CLOCK_MONOTONIC,&_d0);
+
         [cmd commit];
         if (chain_slot >= 0) {
             g_chain_last = cmd;
