@@ -31,6 +31,8 @@
 
 #include <Accelerate/Accelerate.h>
 #include <dispatch/dispatch.h>
+#include <pthread.h>
+#include <Block.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,12 +181,12 @@ static inline const float* st_f32_tensor_ptr(const GgufTensor* t) {
         if (_T > _tmax) _T = _tmax; \
         if (_T > _N) _T = _N; \
         if (_T < 1) _T = 1; \
-        /* dynamic 64-row work tickets: a preempted worker no longer \
-         * stalls the join — output is identical (per-row independence) */ \
+        /* dynamic 64-row work tickets on the persistent pool: ~3us barrier \
+         * vs ~30us for dispatch_apply; output identical (per-row indep.) */ \
         _Atomic int _next_store = 0; \
         _Atomic int* _next = &_next_store; \
-        dispatch_apply(_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), \
-            ^(size_t _t) { \
+        st_par_run(_T, \
+            ^(int _t) { \
                 (void)_t; \
                 for (;;) { \
                     int _s = atomic_fetch_add_explicit(_next, 64, memory_order_relaxed); \
@@ -195,6 +197,109 @@ static inline const float* st_f32_tensor_ptr(const GgufTensor* t) {
                 } \
             }); \
     } while (0)
+
+/* ------------------------------------------------------------------ */
+/*  Persistent worker pool — shared by all architectures               */
+/*                                                                     */
+/*  dispatch_apply pays ~30us barrier per call; small matmuls (MoE     */
+/*  expert slices, batched projections) make thousands of calls per    */
+/*  step. A parked/spinning pool with atomic tickets makes the barrier */
+/*  ~2-5us. Workers spin briefly then park on a condvar; the caller    */
+/*  always takes a ticket share itself.                                */
+/*                                                                     */
+/*  Reentrancy: a nested call (e.g. a matmul issued from inside a      */
+/*  pool job, or a second thread) runs serially — the pool is          */
+/*  single-issue by design (one engine = one caller).                  */
+/* ------------------------------------------------------------------ */
+#define ST_PAR_MAXW 7
+static pthread_t        st_par_th[ST_PAR_MAXW];
+static pthread_mutex_t  st_par_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t   st_par_cv  = PTHREAD_COND_INITIALIZER;
+static volatile unsigned st_par_seq = 0;
+static volatile unsigned st_par_ack[ST_PAR_MAXW];
+static _Atomic int      st_par_next = 0;
+static volatile int     st_par_B = 0;
+static volatile int     st_par_parked = 0;
+static void (^volatile st_par_blk)(int) = NULL;
+static int              st_par_nw = 0, st_par_dead = 0;
+static _Atomic int      st_par_busy = 0;
+static _Thread_local int st_par_tls = 0;
+
+static void* st_par_worker(void* a) {
+    int wid = (int)(intptr_t)a;
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0);
+    st_par_tls = 1;
+    unsigned seen = 0;
+    for (;;) {
+        int spin = 0;
+        while (__atomic_load_n(&st_par_seq, __ATOMIC_ACQUIRE) == seen) {
+            if (++spin > 400000) {
+                pthread_mutex_lock(&st_par_mu);
+                __atomic_add_fetch(&st_par_parked, 1, __ATOMIC_RELAXED);
+                while (st_par_seq == seen)
+                    pthread_cond_wait(&st_par_cv, &st_par_mu);
+                __atomic_sub_fetch(&st_par_parked, 1, __ATOMIC_RELAXED);
+                pthread_mutex_unlock(&st_par_mu);
+                break;
+            }
+        }
+        seen = st_par_seq;
+        int s;
+        while ((s = atomic_fetch_add_explicit(&st_par_next, 1,
+                                            memory_order_relaxed)) < st_par_B)
+            st_par_blk(s);
+        __atomic_store_n(&st_par_ack[wid], seen, __ATOMIC_RELEASE);
+    }
+    return NULL;
+}
+
+static inline void st_par_run(int B, void (^blk)(int)) {
+    if (st_par_dead || B < 2 || st_par_tls ||
+        !atomic_compare_exchange_strong_explicit(&st_par_busy, &(int){0}, 1,
+                                                 memory_order_acquire,
+                                                 memory_order_relaxed) ||
+        getenv("STRATUM_PAR_OFF")) {
+        for (int s = 0; s < B; s++) blk(s);
+        return;
+    }
+    if (!st_par_nw) {
+        for (int i = 0; i < ST_PAR_MAXW; i++) {
+            if (pthread_create(&st_par_th[i], NULL, st_par_worker,
+                               (void*)(intptr_t)i) != 0) { st_par_dead = 1; break; }
+            st_par_nw++;
+        }
+        if (!st_par_nw) {
+            atomic_store_explicit(&st_par_busy, 0, memory_order_release);
+            for (int s = 0; s < B; s++) blk(s);
+            return;
+        }
+    }
+    st_par_tls = 1;
+    st_par_blk = Block_copy(blk);
+    st_par_B = B;
+    atomic_store_explicit(&st_par_next, 0, memory_order_relaxed);
+    unsigned sq = __atomic_add_fetch(&st_par_seq, 1, __ATOMIC_RELEASE);
+    if (__atomic_load_n(&st_par_parked, __ATOMIC_ACQUIRE) > 0) {
+        pthread_mutex_lock(&st_par_mu);
+        pthread_cond_broadcast(&st_par_cv);
+        pthread_mutex_unlock(&st_par_mu);
+    }
+    int s;
+    while ((s = atomic_fetch_add_explicit(&st_par_next, 1,
+                                        memory_order_relaxed)) < B)
+        st_par_blk(s);
+    for (int i = 0; i < st_par_nw; i++)
+        while (__atomic_load_n(&st_par_ack[i], __ATOMIC_ACQUIRE) != sq) { }
+    Block_release(st_par_blk);
+    st_par_blk = NULL;
+    st_par_tls = 0;
+    atomic_store_explicit(&st_par_busy, 0, memory_order_release);
+}
+
+/* drop-in replacement for dispatch_apply(B, q, ^(size_t i){...}) */
+static inline void st_par_dispatch(int B, void (^blk)(size_t)) {
+    st_par_run(B, ^(int _i) { blk((size_t)_i); });
+}
 
 /* ------------------------------------------------------------------ */
 /*  Single-input linear dispatch (one x → one y)                       */
@@ -344,6 +449,8 @@ static void st_q4k_w16_matvec_fallback(const GgufTensor*, const float* const*,
                                        float* const*, int, int, int);
 static inline void st_q4k_w16_amx_multix(const GgufTensor*, const float* const*,
                                          float* const*, int, int, int);
+static inline int st_q4k_amx_multix(const GgufTensor*, const float* const*,
+                                    float* const*, int, int, int);
 
 static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float* y,
                                      int N, int K) {
@@ -361,7 +468,8 @@ static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float*
         case GGML_TYPE_Q8_0: st_linear_q8_0(w, x, y, N, K); break;
         case GGML_TYPE_F16:  st_linear_f16 (w, x, y, N, K); break;
         case GGML_TYPE_F32:  st_linear_f32 (w, x, y, N, K); break;
-        case GGML_TYPE_Q4K_W16: {
+        case GGML_TYPE_Q4K_W16:
+        case GGML_TYPE_Q6K_W16: {
             const float* x1[1]; float* y1[1];
             x1[0] = x; y1[0] = y;
             if (!g_st.amx_w16_off && (N % 32) == 0 && (K % 256) == 0
@@ -466,7 +574,7 @@ static inline void st_linear_multix(const GgufTensor* w,
                                     const float* const* xs,
                                     float* const* ys,
                                     int B, int N, int K) {
-    if (w->type == GGML_TYPE_Q4K_W16) {
+    if (w->type == GGML_TYPE_Q4K_W16 || w->type == GGML_TYPE_Q6K_W16) {
 #if defined(__ARM_NEON) || defined(__aarch64__)
         if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
             && st_amx_available()) {
@@ -478,26 +586,34 @@ static inline void st_linear_multix(const GgufTensor* w,
         return;
     }
     if ((w->type == GGML_TYPE_Q4_K || w->type == GGML_TYPE_Q6_K)) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+        /* runtime Q4_K->w16 tile unpack onto the AMX engine: bit-exact vs
+         * a converted file, but the per-tile unpack costs real memory
+         * bandwidth that the offline W16 path avoids — measured ~parity
+         * with SDOT on an idle machine and much worse under load. Opt-in
+         * experiment only: STRATUM_AMX_Q4K=1. Default stays SDOT. */
+        if (w->type == GGML_TYPE_Q4_K && !g_st.amx_w16_off
+            && getenv("STRATUM_AMX_Q4K")
+            && B >= 16 && (N % 32) == 0 && (K % 256) == 0
+            && st_amx_available()
+            && st_q4k_amx_multix(w, xs, ys, B, N, K))
+            return;
+#endif
 #if defined(__ARM_FEATURE_DOTPROD)
         if (g_st.use_sdot && B >= 2 && (K % 256) == 0) {
-            static int8_t*  st_xpack = NULL;
-            static float*   st_scpack = NULL;
-            static int32_t* st_sumpack = NULL;
-            static size_t   st_pack_cap = 0;
+            /* per-call stack packs: the producer loop fills them on this
+             * thread and the pool block reads them — concurrent callers
+             * (pool workers running expert tickets) get disjoint stacks. */
             int ng = K / 32;
             int Bc_max = (B < 16) ? B : 16;
             int is_q4 = (w->type == GGML_TYPE_Q4_K);
             size_t need_x = (size_t)ng * (size_t)Bc_max * 32;
-            if (need_x > st_pack_cap) {
-                free(st_xpack); free(st_scpack); free(st_sumpack);
-                st_xpack   = (int8_t*) malloc(need_x);
-                /* Q6_K consumes per-16 activation scales (2*ng entries per
-                 * stream); Q4_K uses per-32 (ng). Allocate for the max. */
-                st_scpack  = (float*)  malloc((size_t)2 * ng * Bc_max * sizeof(float));
-                st_sumpack = (int32_t*)malloc((size_t)ng * Bc_max * sizeof(int32_t));
-                st_pack_cap = (st_xpack && st_scpack && st_sumpack) ? need_x : 0;
-            }
-            if (st_pack_cap) {
+            int8_t*  st_xpack   = (int8_t*) alloca(need_x);
+            /* Q6_K consumes per-16 activation scales (2*ng entries per
+             * stream); Q4_K uses per-32 (ng). Allocate for the max. */
+            float*   st_scpack  = (float*)  alloca((size_t)2 * ng * Bc_max * sizeof(float));
+            int32_t* st_sumpack = (int32_t*)alloca((size_t)ng * Bc_max * sizeof(int32_t));
+            {
                 for (int s0 = 0; s0 < B; s0 += 16) {
                     int Bc = (B - s0 < 16) ? (B - s0) : 16;
                     if (is_q4) {
@@ -529,8 +645,7 @@ static inline void st_linear_multix(const GgufTensor* w,
                     int np = N / 2, tail = N & 1;
                     int _T = g_st.nchunks; if (_T > np) _T = np; if (_T < 1) _T = 1;
                     int _chunk = (np + _T - 1) / _T;
-                    dispatch_apply(_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-                        ^(size_t _t) {
+                    st_par_run(_T, ^(int _t) {
                             int _s = (int)_t * _chunk, _e = _s + _chunk;
                             if (_e > np) _e = np;
                             for (int p = _s; p < _e; p++) {
@@ -559,6 +674,60 @@ static inline void st_linear_multix(const GgufTensor* w,
                         else
                             q6k_dot_row_sdot_multix_pack(st_q6k_row_ptr(w, K, r), K,
                                                          st_xpack, st_scpack, Bc, out);
+                        for (int s = 0; s < Bc; s++) ys[s0 + s][r] = out[s];
+                    }
+                }
+                return;
+            }
+        }
+#endif
+    }
+    if (w->type == GGML_TYPE_Q8_0) {
+#if defined(__ARM_FEATURE_DOTPROD)
+        if (g_st.use_sdot && B >= 2 && (K % 32) == 0) {
+            int ng = K / 32;
+            int Bc_max = (B < 16) ? B : 16;
+            size_t need_x = (size_t)ng * (size_t)Bc_max * 32;
+            int8_t* st8_xpack  = (int8_t*)alloca(need_x);
+            float*  st8_scpack = (float*)  alloca((size_t)ng * Bc_max * sizeof(float));
+            {
+                for (int s0 = 0; s0 < B; s0 += 16) {
+                    int Bc = (B - s0 < 16) ? (B - s0) : 16;
+                    for (int s = 0; s < Bc; s++)
+                        for (int g = 0; g < ng; g++) {
+                            int8_t* dst = st8_xpack + ((size_t)g * Bc + s) * 32;
+                            float scv;
+                            q4k_quantize_x_q8_1b(xs[s0 + s] + (size_t)g * 32, dst, &scv);
+                            st8_scpack[(size_t)g * Bc + s] = scv;
+                        }
+                    int np4 = N / 4, tail = N & 3;
+                    int _T = g_st.nchunks; if (_T > np4) _T = np4; if (_T < 1) _T = 1;
+                    int _chunk = (np4 + _T - 1) / _T;
+                    st_par_run(_T,
+                        ^(int _t) {
+                            int _s = (int)_t * _chunk, _e = _s + _chunk;
+                            if (_e > np4) _e = np4;
+                            for (int p = _s; p < _e; p++) {
+                                int r = p * 4;
+                                float o[4][ST_MS_BMAX];
+                                q8_0_dot_rows4_sdot_multix_pack(
+                                    st_q8_0_row_ptr(w, K, r),     st_q8_0_row_ptr(w, K, r + 1),
+                                    st_q8_0_row_ptr(w, K, r + 2), st_q8_0_row_ptr(w, K, r + 3),
+                                    K, st8_xpack, st8_scpack, Bc,
+                                    o[0], o[1], o[2], o[3]);
+                                for (int s = 0; s < Bc; s++) {
+                                    ys[s0 + s][r]     = o[0][s];
+                                    ys[s0 + s][r + 1] = o[1][s];
+                                    ys[s0 + s][r + 2] = o[2][s];
+                                    ys[s0 + s][r + 3] = o[3][s];
+                                }
+                            }
+                        });
+                    for (int t = 0; t < tail; t++) {
+                        int r = N - tail + t;
+                        float out[ST_MS_BMAX];
+                        q8_0_dot_row_sdot_multix_pack(st_q8_0_row_ptr(w, K, r), K,
+                                                      st8_xpack, st8_scpack, Bc, out);
                         for (int s = 0; s < Bc; s++) ys[s0 + s][r] = out[s];
                     }
                 }

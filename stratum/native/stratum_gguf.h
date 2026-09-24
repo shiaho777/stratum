@@ -42,6 +42,9 @@ typedef enum {
     /* type 43: Q4K_W16 — w16 k-major i16 blob for the AMX multiseq path
      * (gguf_w16_convert output; values identical to Q4_K, layout only) */
     GGML_TYPE_Q4K_W16  = 43,
+    /* type-44: Q6K_W16 — q6k values re-laid as w16[k]=sc16*(q6-32) i16 tiles +
+     * per-256-block d (dm=0, no minterm). Same exactness class as 42/43. */
+    GGML_TYPE_Q6K_W16  = 44,
     GGML_TYPE_COUNT,
 } GgmlType;
 
@@ -72,6 +75,7 @@ static const GgmlTypeInfo gguf_type_info[] = {
     [GGML_TYPE_BF16]   = { 1,   2,   "BF16"  },
     /* nominal entry so bounds checks pass; real blob = 2B/elem + tail */
     [GGML_TYPE_Q4K_W16] = { 1,  2,   "Q4K_W16" },
+    [GGML_TYPE_Q6K_W16] = { 1,  2,   "Q6K_W16" },
 };
 
 static inline int64_t gguf_tensor_bytes(GgmlType t, int64_t nelem) {
