@@ -1501,3 +1501,171 @@ kernel void q6k_h3_mlp2_ostride(
         y[(size_t)bidx * N + row] = tot;
     }
 }
+
+/* ===== Whole-layer fusion kernels (single-token decode) ===== */
+
+/* Q6_K coal16 GEMV with rmsnorm prologue: y = W * rmsnorm(x)*gain.
+ * The norm scale is recomputed per threadgroup on an L2-hot x — cheaper
+ * than a separate norm dispatch + barrier. */
+kernel void q6k_sgemv_row_coal16_norm(
+    device const block_q6_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device const float*      gain        [[buffer(2)]],
+    device float*            y           [[buffer(3)]],
+    constant uint&           K           [[buffer(4)]],
+    constant uint&           N_total     [[buffer(5)]],
+    constant float&          eps         [[buffer(6)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    threadgroup float tg_red[8];
+    threadgroup float tg_scale;
+    {
+        float ss = 0.0f;
+        for (uint i = tid; i < K; i += 256u) { float v = x[i]; ss += v*v; }
+        ss += simd_shuffle_xor(ss, 16);
+        ss += simd_shuffle_xor(ss, 8);
+        ss += simd_shuffle_xor(ss, 4);
+        ss += simd_shuffle_xor(ss, 2);
+        ss += simd_shuffle_xor(ss, 1);
+        if ((tid & 31u) == 0u) tg_red[tid >> 5] = ss;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float t = 0.0f;
+            for (int i = 0; i < 8; i++) t += tg_red[i];
+            tg_scale = 1.0f / sqrt(t / float(K) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const float nrm = tg_scale;
+
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q6_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint half_idx = lane >> 3;
+    const uint t8       = lane & 7;
+    const uint l0       = t8 * 4;
+    const uint is       = t8 >> 2;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q6_K& b = row_blocks[blk];
+        const float d = float(b.d);
+        const uint n = half_idx * 128;
+        const device uchar* ql = b.ql + n / 2;
+        const device uchar* qh = b.qh + n / 4;
+        const device char*  s  = b.scales + n / 16;
+        const uint base = blk * 256 + n;
+
+        float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
+        #pragma unroll
+        for (int dl = 0; dl < 4; dl++) {
+            const uint l = l0 + (uint)dl;
+            const uchar ql_lo = ql[l];
+            const uchar ql_hi = ql[l + 32];
+            const uchar qh_b  = qh[l];
+            const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
+            const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
+            const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
+            const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
+            a1 += float(q1) * (x[base + l +  0] * nrm * gain[base + l +  0]);
+            a2 += float(q2) * (x[base + l + 32] * nrm * gain[base + l + 32]);
+            a3 += float(q3) * (x[base + l + 64] * nrm * gain[base + l + 64]);
+            a4 += float(q4) * (x[base + l + 96] * nrm * gain[base + l + 96]);
+        }
+        partial += d * float(s[is + 0]) * a1;
+        partial += d * float(s[is + 2]) * a2;
+        partial += d * float(s[is + 4]) * a3;
+        partial += d * float(s[is + 6]) * a4;
+    }
+
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] = tot;
+}
+
+/* Q6_K coal16 GEMV with fused SwiGLU prologue and residual epilogue:
+ * fa[i] = silu(g[i]) * u[i];  y[row] += dot(W_row, fa). Removes the
+ * separate swiglu dispatch, the down->x add, and their barriers. */
+kernel void q6k_sgemv_row_coal16_swires(
+    device const block_q6_K* W           [[buffer(0)]],
+    device const float*      g           [[buffer(1)]],
+    device const float*      u           [[buffer(2)]],
+    device float*            y           [[buffer(3)]],
+    constant uint&           K           [[buffer(4)]],
+    constant uint&           N_total     [[buffer(5)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    if (K > 4096u) return;
+    /* fa = silu(g)*u computed once per threadgroup into shared memory —
+     * all 16 rows of a tg read the same activations, so computing it
+     * inline would redo 16x the exp work. */
+    threadgroup float fa_s[4096];
+    for (uint i = tid; i < K; i += 256u) {
+        float gi = g[i];
+        fa_s[i] = gi / (1.0f + exp(-gi)) * u[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q6_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint half_idx = lane >> 3;
+    const uint t8       = lane & 7;
+    const uint l0       = t8 * 4;
+    const uint is       = t8 >> 2;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q6_K& b = row_blocks[blk];
+        const float d = float(b.d);
+        const uint n = half_idx * 128;
+        const device uchar* ql = b.ql + n / 2;
+        const device uchar* qh = b.qh + n / 4;
+        const device char*  s  = b.scales + n / 16;
+        const uint base = blk * 256 + n;
+
+        float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
+        #pragma unroll
+        for (int dl = 0; dl < 4; dl++) {
+            const uint l = l0 + (uint)dl;
+            const uchar ql_lo = ql[l];
+            const uchar ql_hi = ql[l + 32];
+            const uchar qh_b  = qh[l];
+            const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
+            const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
+            const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
+            const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
+            a1 += float(q1) * fa_s[base + l +  0];
+            a2 += float(q2) * fa_s[base + l + 32];
+            a3 += float(q3) * fa_s[base + l + 64];
+            a4 += float(q4) * fa_s[base + l + 96];
+        }
+        partial += d * float(s[is + 0]) * a1;
+        partial += d * float(s[is + 2]) * a2;
+        partial += d * float(s[is + 4]) * a3;
+        partial += d * float(s[is + 6]) * a4;
+    }
+
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] += tot;
+}

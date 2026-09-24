@@ -174,10 +174,11 @@ static inline const float* st_f32_tensor_ptr(const GgufTensor* t) {
     do { \
         int _N = (N); \
         int _T = g_st.nchunks; \
-        int _tmax = (_N + 255) / 256;   /* >=256 rows/chunk: measured peak \
-                                         * at ~4-5 chunks on small hot \
-                                         * models; >6 loses to fork-join \
-                                         * overhead + bandwidth contention */ \
+        int _tmax = (_N + 127) / 128;   /* >=128 rows/chunk: 256 was measured \
+                                         * peak on ~4-5 chunks, but N<=1024 \
+                                         * matmuls (o/down) only fed half \
+                                         * the pool; 128 keeps tickets at \
+                                         * 2x64 rows while using all workers */ \
         if (_T > _tmax) _T = _tmax; \
         if (_T > _N) _T = _N; \
         if (_T < 1) _T = 1; \
@@ -275,7 +276,10 @@ static inline void st_par_run(int B, void (^blk)(int)) {
         }
     }
     st_par_tls = 1;
-    st_par_blk = Block_copy(blk);
+    st_par_blk = blk;   /* stack block is fine: caller joins on per-worker
+                         * acks which are stored only after the worker's
+                         * last blk() call returns — no worker can touch
+                         * blk after all acks land */
     st_par_B = B;
     atomic_store_explicit(&st_par_next, 0, memory_order_relaxed);
     unsigned sq = __atomic_add_fetch(&st_par_seq, 1, __ATOMIC_RELEASE);
@@ -290,7 +294,6 @@ static inline void st_par_run(int B, void (^blk)(int)) {
         st_par_blk(s);
     for (int i = 0; i < st_par_nw; i++)
         while (__atomic_load_n(&st_par_ack[i], __ATOMIC_ACQUIRE) != sq) { }
-    Block_release(st_par_blk);
     st_par_blk = NULL;
     st_par_tls = 0;
     atomic_store_explicit(&st_par_busy, 0, memory_order_release);
@@ -766,6 +769,53 @@ static inline void st_q4k_fused_sdot(const float* x, int K,
 }
 #endif
 
+#if defined(__ARM_FEATURE_DOTPROD)
+/* Mixed-type fused group: same single-dispatch row sweep as
+ * st_q4k_fused_sdot but each row dispatches on its tensor's type
+ * (Q4_K -> per-32 pack, Q6_K -> per-16 pack). Numerics identical to
+ * unfused per-tensor st_linear_dispatch — same kernels, same packs —
+ * only the dispatch count shrinks (e.g. QKV when attn_v is Q6_K). */
+static inline void st_mixed_fused_sdot(const float* x, int K,
+                                       const GgufTensor* const* ws,
+                                       float* const* ys,
+                                       const int* Ns, int nw) {
+    int need4 = 0, need6 = 0;
+    for (int i = 0; i < nw; i++) {
+        if (ws[i]->type == GGML_TYPE_Q4_K) need4 = 1;
+        else if (ws[i]->type == GGML_TYPE_Q6_K) need6 = 1;
+    }
+    int nb32 = K / 32, ng16 = K / 16;
+    int8_t* xq4 = NULL; float* xs4 = NULL; int32_t* xsum4 = NULL;
+    if (need4) {
+        xq4 = (int8_t*)alloca((size_t)K);
+        xs4 = (float*)alloca((size_t)nb32 * sizeof(float));
+        xsum4 = (int32_t*)alloca((size_t)nb32 * sizeof(int32_t));
+        q4k_quantize_x_q8(x, K, xq4, xs4);
+        for (int g = 0; g < nb32; g++) xsum4[g] = q4k_sum_i8_32(xq4 + (size_t)g * 32);
+    }
+    int8_t* xq6 = NULL; float* xs6 = NULL;
+    if (need6) {
+        xq6 = (int8_t*)alloca((size_t)K);
+        xs6 = (float*)alloca((size_t)ng16 * sizeof(float));
+        q6k_quantize_x_q8_g16(x, K, xq6, xs6);
+    }
+    int R = 0;
+    int* pref = (int*)alloca((size_t)nw * sizeof(int));
+    for (int i = 0; i < nw; i++) { pref[i] = R; R += Ns[i]; }
+    ST_PAR_ROWS(R, {
+        int wi = nw - 1;
+        while (wi > 0 && r < pref[wi]) wi--;
+        int lr = r - pref[wi];
+        if (ws[wi]->type == GGML_TYPE_Q4_K)
+            ys[wi][lr] = q4k_dot_row_sdot_f(st_q4k_row_ptr(ws[wi], K, lr), K,
+                                            xq4, xs4, xsum4);
+        else
+            ys[wi][lr] = q6k_dot_row_sdot_f(st_q6k_row_ptr(ws[wi], K, lr), K,
+                                            xq6, xs6);
+    });
+}
+#endif
+
 static inline void st_q4k_group(const float* x, int K,
                                 const GgufTensor* w0, float* y0, int N0,
                                 const GgufTensor* w1, float* y1, int N1,
@@ -789,9 +839,15 @@ static inline void st_q4k_group(const float* x, int K,
 #endif
 #if defined(__ARM_FEATURE_DOTPROD)
     if (g_st.use_sdot && !g_st.use_metal) {
-        int all_q4k = 1;
-        for (int i = 0; i < nw; i++) if (ws[i]->type != GGML_TYPE_Q4_K) all_q4k = 0;
+        int all_q4k = 1, all_q4k_q6k = 1;
+        for (int i = 0; i < nw; i++) {
+            if (ws[i]->type != GGML_TYPE_Q4_K) all_q4k = 0;
+            if (ws[i]->type != GGML_TYPE_Q4_K && ws[i]->type != GGML_TYPE_Q6_K)
+                all_q4k_q6k = 0;
+        }
         if (all_q4k) { st_q4k_fused_sdot(x, K, ws, ys, Ns, nw); return; }
+        if (all_q4k_q6k && (K % 256) == 0) {
+            st_mixed_fused_sdot(x, K, ws, ys, Ns, nw); return; }
     }
 #endif
     for (int i = 0; i < nw; i++) st_linear_dispatch(ws[i], x, ys[i], Ns[i], K);

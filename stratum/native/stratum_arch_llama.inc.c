@@ -288,7 +288,7 @@ static void la_forward_block(int li, int position) {
     int Nk = la_g_cfg.n_kv_heads;
     int Ff = la_g_cfg.n_ff;
 
-    int dbg = getenv("STRATUM_BLOCK_DBG") && position == 1;
+    int dbg = getenv("STRATUM_BLOCK_DBG") && position <= 2;
     memcpy(la_g_x_resid, la_g_x, sizeof(float) * H);
     {
         const float* gain = st_f32_tensor_ptr(b->attn_norm);
@@ -322,6 +322,9 @@ static void la_forward_block(int li, int position) {
     for (int h = 0; h < Nk; h++) {
         la_rope(la_g_k_buf + h * Hd, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
     }
+    if (dbg && li == 0)
+        fprintf(stderr, "  [cL0] q0=%.5f q1=%.5f k0=%.5f k1=%.5f\n",
+                la_g_q_buf[0], la_g_q_buf[1], la_g_k_buf[0], la_g_k_buf[1]);
 
     int kv_len_now = la_g_kv_len + 1;
     {
@@ -335,7 +338,7 @@ static void la_forward_block(int li, int position) {
     /* heads are independent: parallelize when the serial loop is long
      * enough to matter (kv_len grows with context). Same math, same
      * output — only the head iteration order across threads changes. */
-    int attn_par = (kv_len_now >= 512 && Nq >= 4);
+    int attn_par = (kv_len_now >= 32 && Nq >= 4);
     void (^attn_head)(int) = ^(int h) {
         int kv_h = h * Nk / Nq;
         const float* qh = la_g_q_buf + h * Hd;
@@ -392,16 +395,18 @@ static void la_forward_block(int li, int position) {
         }
     };
     if (attn_par)
-        dispatch_apply((size_t)Nq,
-                       dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-                       ^(size_t hh) { attn_head((int)hh); });
+        st_par_run(Nq, attn_head);
     else
         for (int h = 0; h < Nq; h++) attn_head(h);
 
     static float attn_proj[8192];
     if (H > 8192) { fprintf(stderr, "H exceeds buffer\n"); exit(2); }
+    if (dbg && li == 0)
+        fprintf(stderr, "  [cL0] ao0=%.5f ao1=%.5f\n", la_g_attn_out[0], la_g_attn_out[1]);
     st_linear_dispatch(b->attn_output, la_g_attn_out, attn_proj, H, Nq * Hd);
     for (int i = 0; i < H; i++) la_g_x[i] = la_g_x_resid[i] + attn_proj[i];
+    if (dbg && li == 0)
+        fprintf(stderr, "  [cL0] x0=%.5f x1=%.5f (post-attn)\n", la_g_x[0], la_g_x[1]);
 
     memcpy(la_g_x_resid, la_g_x, sizeof(float) * H);
     {
@@ -557,8 +562,13 @@ static int la_forward_one_token(int token_id, int position) {
 
     la_embed_lookup(token_id, la_g_x);
 
-    for (int li = 0; li < la_g_cfg.n_layers; li++) {
+    int _nl = la_g_cfg.n_layers;
+    { const char* e = getenv("STRATUM_FWD_NL"); if (e) { int v=atoi(e); if (v>=0 && v<_nl) _nl=v; } }
+    for (int li = 0; li < _nl; li++) {
         la_forward_block(li, position);
+        if (getenv("STRATUM_FWD_NL") && position == 0)
+            fprintf(stderr, "  [cx] L%d x[0..3]=%.6f %.6f %.6f %.6f\n",
+                    li, la_g_x[0], la_g_x[1], la_g_x[2], la_g_x[3]);
     }
 
     {
@@ -592,6 +602,8 @@ static int la_forward_one_token_gpu(int token_id, int position) {
         for (int i = 0; i < nL; i++) {
             la_BlockTensors* b = &la_g_blocks[i];
             la_g_lys[i].attn_norm_off = b->attn_norm->offset; la_g_lys[i].ffn_norm_off = b->ffn_norm->offset;
+            la_g_lys[i].qnorm_off = b->attn_q_norm ? b->attn_q_norm->offset : 0;
+            la_g_lys[i].knorm_off = b->attn_k_norm ? b->attn_k_norm->offset : 0;
             la_g_lys[i].q_off=b->attn_q->offset; la_g_lys[i].q_tb=b->attn_q->nbytes; la_g_lys[i].q_ty=b->attn_q->type;
             la_g_lys[i].k_off=b->attn_k->offset; la_g_lys[i].k_tb=b->attn_k->nbytes; la_g_lys[i].k_ty=b->attn_k->type;
             la_g_lys[i].v_off=b->attn_v->offset; la_g_lys[i].v_tb=b->attn_v->nbytes; la_g_lys[i].v_ty=b->attn_v->type;
@@ -607,12 +619,13 @@ static int la_forward_one_token_gpu(int token_id, int position) {
     /* V-opt: fused argmax on GPU when STRATUM_GPU_FUSED_ARGMAX is set.
      * Skips 128KB logits transfer per token. */
     float* logits_ptr = getenv("STRATUM_GPU_FUSED_ARGMAX") ? NULL : la_g_logits;
-    int rc = stratum_metal_forward(la_g_lys, nL, la_g_output_norm->offset,
+    int rc = stratum_metal_forward(la_g_lys, la_g_cfg.n_layers, la_g_output_norm->offset,
                                    lm->offset, lm->nbytes, lm->type == GGML_TYPE_Q6_K,
                                    la_g_x, logits_ptr,
                                    H, la_g_cfg.head_dim, la_g_cfg.n_q_heads, la_g_cfg.n_kv_heads,
                                    la_g_cfg.n_ff, V, la_g_cfg.rope_dim, position,
-                                   la_g_cfg.rope_theta, la_g_cfg.rms_eps, la_g_kv_len, la_MAX_KV);
+                                   la_g_cfg.rope_theta, la_g_cfg.rms_eps, la_g_kv_len, la_MAX_KV,
+                                   la_g_rope_neox, 0, 0, -1);
     if (rc != 0) return -1;
     /* V-opt: if fused argmax, get token from GPU.
      * Write token to la_g_logits[0] as a sentinel — caller checks
@@ -1712,6 +1725,46 @@ int run_llama_arch(int argc, char** argv) {
                         (double)spec_nodes / spec_calls);
         free(hist);
     } else
+#ifdef STRATUM_USE_METAL
+    /* Chained GPU decode: the token ring + embd gather live on GPU — all
+     * n_gen command buffers are submitted back-to-back with no CPU wait
+     * between tokens, removing the per-token sync gap. */
+    if (la_g_gpu_full && getenv("STRATUM_GPU_CHAIN") && n_gen <= 1000
+        && la_g_token_embd->type == GGML_TYPE_F32) {
+        const GgufTensor* lm = la_g_output_w ? la_g_output_w : la_g_token_embd;
+        stratum_metal_chain_seed(0, next_tok);
+        int ok = 1;
+        for (int s = 0; s < n_gen && ok; s++) {
+            int rc = stratum_metal_forward(la_g_lys, la_g_cfg.n_layers, la_g_output_norm->offset,
+                lm->offset, lm->nbytes, lm->type == GGML_TYPE_Q6_K,
+                NULL, NULL,
+                la_g_cfg.n_embed, la_g_cfg.head_dim, la_g_cfg.n_q_heads,
+                la_g_cfg.n_kv_heads, la_g_cfg.n_ff, la_g_cfg.vocab_size,
+                la_g_cfg.rope_dim, position + s, la_g_cfg.rope_theta,
+                la_g_cfg.rms_eps, la_g_kv_len + s, la_MAX_KV,
+                la_g_rope_neox,
+                la_g_token_embd->offset, la_g_token_embd->nbytes, s);
+            if (rc != 0) ok = 0;
+        }
+        if (!ok || stratum_metal_chain_wait() != 0) {
+            fprintf(stderr, "  chain decode failed\n"); return 1;
+        }
+        const uint32_t* ring = stratum_metal_chain_ring();
+        for (int s = 0; s < n_gen; s++) {
+            int tok = (int)ring[(s + 1) & 255];
+            fprintf(stderr, "  step %2d  stratum_argmax=%d  (chain)\n", s, tok);
+            if (la_vocab.available) {
+                char tok_text[256];
+                stratum_decode_token(&la_vocab, tok, tok_text, sizeof(tok_text));
+                fprintf(stdout, "%s", tok_text);
+            }
+        }
+        fflush(stdout);
+        next_tok = (int)ring[n_gen & 255];
+        la_g_kv_len += n_gen;
+        position    += n_gen;
+    } else
+#endif
     for (int g = 0; g < n_gen; g++) {
         last_tok = next_tok;
         if (la_forward_one_token(last_tok, position++) != 0) return 1;
