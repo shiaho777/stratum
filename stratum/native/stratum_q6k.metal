@@ -1544,53 +1544,80 @@ kernel void q6k_sgemv_row_coal16_norm(
     const uint blocks_per_row = K / 256;
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
-    const uint row = tgid * 16u + local_row;
-    const uint rr  = min(row, N_total - 1u);
-    device const block_q6_K* row_blocks = W + (uint)rr * blocks_per_row;
+    /* row-pair: lane covers rows r0,r0+1 sharing the x/gain slice —
+     * vector float4/uchar4 loads replace the per-scalar loads. */
+    const uint r0 = tgid * 32u + local_row * 2u;
+    if (r0 >= N_total) return;
+    const uint r1 = r0 + 1u;
+    const bool has1 = r1 < N_total;
+    device const block_q6_K* rb0 = W + (uint)r0 * blocks_per_row;
+    device const block_q6_K* rb1 = W + (uint)(has1 ? r1 : r0) * blocks_per_row;
 
     const uint half_idx = lane >> 3;
     const uint t8       = lane & 7;
     const uint l0       = t8 * 4;
     const uint is       = t8 >> 2;
 
-    float partial = 0.0f;
+    float partial0 = 0.0f, partial1 = 0.0f;
     for (uint blk = 0; blk < blocks_per_row; blk++) {
-        const device block_q6_K& b = row_blocks[blk];
-        const float d = float(b.d);
+        const device block_q6_K& b0 = rb0[blk];
+        const device block_q6_K& b1 = rb1[blk];
+        const float d0 = float(b0.d), d1 = float(b1.d);
         const uint n = half_idx * 128;
-        const device uchar* ql = b.ql + n / 2;
-        const device uchar* qh = b.qh + n / 4;
-        const device char*  s  = b.scales + n / 16;
-        const uint base = blk * 256 + n;
+        const device uchar* ql0 = b0.ql + n / 2;
+        const device uchar* qh0 = b0.qh + n / 4;
+        const device char*  s0  = b0.scales + n / 16;
+        const device uchar* ql1 = b1.ql + n / 2;
+        const device uchar* qh1 = b1.qh + n / 4;
+        const device char*  s1  = b1.scales + n / 16;
+        const uint base = blk * 256 + n + l0;
 
-        float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
-        #pragma unroll
-        for (int dl = 0; dl < 4; dl++) {
-            const uint l = l0 + (uint)dl;
-            const uchar ql_lo = ql[l];
-            const uchar ql_hi = ql[l + 32];
-            const uchar qh_b  = qh[l];
-            const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
-            const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
-            const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
-            const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
-            a1 += float(q1) * (x[base + l +  0] * nrm * gain[base + l +  0]);
-            a2 += float(q2) * (x[base + l + 32] * nrm * gain[base + l + 32]);
-            a3 += float(q3) * (x[base + l + 64] * nrm * gain[base + l + 64]);
-            a4 += float(q4) * (x[base + l + 96] * nrm * gain[base + l + 96]);
+        uchar4 ql_lo0 = *(device const uchar4*)(ql0 + l0);
+        uchar4 ql_hi0 = *(device const uchar4*)(ql0 + l0 + 32);
+        uchar4 qh_0   = *(device const uchar4*)(qh0 + l0);
+        uchar4 ql_lo1 = *(device const uchar4*)(ql1 + l0);
+        uchar4 ql_hi1 = *(device const uchar4*)(ql1 + l0 + 32);
+        uchar4 qh_1   = *(device const uchar4*)(qh1 + l0);
+        float4 x1 = *(device const float4*)(x + base +  0);
+        float4 g1 = *(device const float4*)(gain + base +  0); x1 = (x1 * nrm) * g1;
+        float4 x2 = *(device const float4*)(x + base + 32);
+        float4 g2 = *(device const float4*)(gain + base + 32); x2 = (x2 * nrm) * g2;
+        float4 x3 = *(device const float4*)(x + base + 64);
+        float4 g3 = *(device const float4*)(gain + base + 64); x3 = (x3 * nrm) * g3;
+        float4 x4 = *(device const float4*)(x + base + 96);
+        float4 g4 = *(device const float4*)(gain + base + 96); x4 = (x4 * nrm) * g4;
+
+        int4 q10 = (int4(ql_lo0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(0)) & 3) << 4)) - 32;
+        int4 q20 = (int4(ql_hi0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(2)) & 3) << 4)) - 32;
+        int4 q30 = (int4(ql_lo0 >> uchar4(4))    | ((int4(qh_0 >> uchar4(4)) & 3) << 4)) - 32;
+        int4 q40 = (int4(ql_hi0 >> uchar4(4))    | ((int4(qh_0 >> uchar4(6)) & 3) << 4)) - 32;
+        int4 q11 = (int4(ql_lo1 & uchar4(0xF)) | ((int4(qh_1 >> uchar4(0)) & 3) << 4)) - 32;
+        int4 q21 = (int4(ql_hi1 & uchar4(0xF)) | ((int4(qh_1 >> uchar4(2)) & 3) << 4)) - 32;
+        int4 q31 = (int4(ql_lo1 >> uchar4(4))    | ((int4(qh_1 >> uchar4(4)) & 3) << 4)) - 32;
+        int4 q41 = (int4(ql_hi1 >> uchar4(4))    | ((int4(qh_1 >> uchar4(6)) & 3) << 4)) - 32;
+
+        float a1 = dot(float4(q10), x1), a2 = dot(float4(q20), x2),
+              a3 = dot(float4(q30), x3), a4 = dot(float4(q40), x4);
+        partial0 += d0 * float(s0[is + 0]) * a1;
+        partial0 += d0 * float(s0[is + 2]) * a2;
+        partial0 += d0 * float(s0[is + 4]) * a3;
+        partial0 += d0 * float(s0[is + 6]) * a4;
+        if (has1) {
+            float b1a = dot(float4(q11), x1), b2a = dot(float4(q21), x2),
+                  b3a = dot(float4(q31), x3), b4a = dot(float4(q41), x4);
+            partial1 += d1 * float(s1[is + 0]) * b1a;
+            partial1 += d1 * float(s1[is + 2]) * b2a;
+            partial1 += d1 * float(s1[is + 4]) * b3a;
+            partial1 += d1 * float(s1[is + 6]) * b4a;
         }
-        partial += d * float(s[is + 0]) * a1;
-        partial += d * float(s[is + 2]) * a2;
-        partial += d * float(s[is + 4]) * a3;
-        partial += d * float(s[is + 6]) * a4;
     }
 
-    float tot = partial;
-    tot += simd_shuffle_xor(tot, 8);
-    tot += simd_shuffle_xor(tot, 4);
-    tot += simd_shuffle_xor(tot, 2);
-    tot += simd_shuffle_xor(tot, 1);
-    if (lane == 0 && row < N_total) y[row] = tot;
+    float tot0 = partial0, tot1 = partial1;
+    tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+    tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+    tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+    tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    if (lane == 0) { y[r0] = tot0; if (has1) y[r1] = tot1; }
 }
 
 /* Q6_K coal16 GEMV with fused SwiGLU prologue and residual epilogue:
@@ -1619,53 +1646,69 @@ kernel void q6k_sgemv_row_coal16_swires(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     const uint blocks_per_row = K / 256;
+    /* row-pair: lane covers rows r0,r0+1 sharing one fa_s slice (32 rows/tg) */
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
-    const uint row = tgid * 16u + local_row;
-    const uint rr  = min(row, N_total - 1u);
-    device const block_q6_K* row_blocks = W + (uint)rr * blocks_per_row;
+    const uint r0 = tgid * 32u + local_row * 2u;
+    if (r0 >= N_total) return;
+    const uint r1 = min(r0 + 1u, N_total - 1u);
+    device const block_q6_K* rb0 = W + (uint)r0 * blocks_per_row;
+    device const block_q6_K* rb1 = W + (uint)r1 * blocks_per_row;
 
     const uint half_idx = lane >> 3;
     const uint t8       = lane & 7;
     const uint l0       = t8 * 4;
     const uint is       = t8 >> 2;
 
-    float partial = 0.0f;
+    float partial0 = 0.0f, partial1 = 0.0f;
     for (uint blk = 0; blk < blocks_per_row; blk++) {
-        const device block_q6_K& b = row_blocks[blk];
-        const float d = float(b.d);
+        const device block_q6_K& b0 = rb0[blk];
+        const device block_q6_K& b1 = rb1[blk];
+        const float d0 = float(b0.d), d1 = float(b1.d);
         const uint n = half_idx * 128;
-        const device uchar* ql = b.ql + n / 2;
-        const device uchar* qh = b.qh + n / 4;
-        const device char*  s  = b.scales + n / 16;
+        const device uchar* ql0 = b0.ql + n / 2;
+        const device uchar* ql1 = b1.ql + n / 2;
+        const device uchar* qh0 = b0.qh + n / 4;
+        const device uchar* qh1 = b1.qh + n / 4;
+        const device char*  s0 = b0.scales + n / 16;
+        const device char*  s1 = b1.scales + n / 16;
         const uint base = blk * 256 + n;
 
-        float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
-        #pragma unroll
-        for (int dl = 0; dl < 4; dl++) {
-            const uint l = l0 + (uint)dl;
-            const uchar ql_lo = ql[l];
-            const uchar ql_hi = ql[l + 32];
-            const uchar qh_b  = qh[l];
-            const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
-            const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
-            const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
-            const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
-            a1 += float(q1) * fa_s[base + l +  0];
-            a2 += float(q2) * fa_s[base + l + 32];
-            a3 += float(q3) * fa_s[base + l + 64];
-            a4 += float(q4) * fa_s[base + l + 96];
-        }
-        partial += d * float(s[is + 0]) * a1;
-        partial += d * float(s[is + 2]) * a2;
-        partial += d * float(s[is + 4]) * a3;
-        partial += d * float(s[is + 6]) * a4;
+        const uchar4 ql_lo0 = *(device const uchar4*)(ql0 + l0);
+        const uchar4 ql_hi0 = *(device const uchar4*)(ql0 + l0 + 32);
+        const uchar4 qhb0   = *(device const uchar4*)(qh0 + l0);
+        const uchar4 ql_lo1 = *(device const uchar4*)(ql1 + l0);
+        const uchar4 ql_hi1 = *(device const uchar4*)(ql1 + l0 + 32);
+        const uchar4 qhb1   = *(device const uchar4*)(qh1 + l0);
+        const int4 q10 = int4(ql_lo0 & uchar4(0xF)) | (int4((qhb0 >> uchar4(0)) & uchar4(3)) << 4);
+        const int4 q20 = int4(ql_hi0 & uchar4(0xF)) | (int4((qhb0 >> uchar4(2)) & uchar4(3)) << 4);
+        const int4 q30 = int4(ql_lo0 >> uchar4(4))    | (int4((qhb0 >> uchar4(4)) & uchar4(3)) << 4);
+        const int4 q40 = int4(ql_hi0 >> uchar4(4))    | (int4((qhb0 >> uchar4(6)) & uchar4(3)) << 4);
+        const int4 q11 = int4(ql_lo1 & uchar4(0xF)) | (int4((qhb1 >> uchar4(0)) & uchar4(3)) << 4);
+        const int4 q21 = int4(ql_hi1 & uchar4(0xF)) | (int4((qhb1 >> uchar4(2)) & uchar4(3)) << 4);
+        const int4 q31 = int4(ql_lo1 >> uchar4(4))    | (int4((qhb1 >> uchar4(4)) & uchar4(3)) << 4);
+        const int4 q41 = int4(ql_hi1 >> uchar4(4))    | (int4((qhb1 >> uchar4(6)) & uchar4(3)) << 4);
+        const float4 f1 = *(threadgroup const float4*)(fa_s + base + l0);
+        const float4 f2 = *(threadgroup const float4*)(fa_s + base + l0 + 32);
+        const float4 f3 = *(threadgroup const float4*)(fa_s + base + l0 + 64);
+        const float4 f4 = *(threadgroup const float4*)(fa_s + base + l0 + 96);
+        float a1 = dot(float4(q10 - 32), f1), a2 = dot(float4(q20 - 32), f2);
+        float a3 = dot(float4(q30 - 32), f3), a4 = dot(float4(q40 - 32), f4);
+        float c1 = dot(float4(q11 - 32), f1), c2 = dot(float4(q21 - 32), f2);
+        float c3 = dot(float4(q31 - 32), f3), c4 = dot(float4(q41 - 32), f4);
+        partial0 += d0 * float(s0[is + 0]) * a1 + d0 * float(s0[is + 2]) * a2
+                  + d0 * float(s0[is + 4]) * a3 + d0 * float(s0[is + 6]) * a4;
+        partial1 += d1 * float(s1[is + 0]) * c1 + d1 * float(s1[is + 2]) * c2
+                  + d1 * float(s1[is + 4]) * c3 + d1 * float(s1[is + 6]) * c4;
     }
 
-    float tot = partial;
-    tot += simd_shuffle_xor(tot, 8);
-    tot += simd_shuffle_xor(tot, 4);
-    tot += simd_shuffle_xor(tot, 2);
-    tot += simd_shuffle_xor(tot, 1);
-    if (lane == 0 && row < N_total) y[row] += tot;
+    float tot0 = partial0, tot1 = partial1;
+    tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+    tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+    tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+    tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    if (lane == 0) {
+        y[r0] += tot0;
+        if (r1 != r0) y[r1] += tot1;
+    }
 }

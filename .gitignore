@@ -21,6 +21,7 @@ stratum/native/q4k_test
 stratum/native/q5k_test
 stratum/native/q6k_test
 stratum/native/spec_sample_test
+stratum/native/logit_compare
 stratum/native/gguf_inspect
 stratum/native/llama_inspect
 stratum/native/hotcold_probe

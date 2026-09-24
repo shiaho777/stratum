@@ -1950,6 +1950,41 @@ kernel void attn_decode_f32_batched(
     }
 }
 
+/* Stage-1 tiled argmax over a logits row: each tg scans a contiguous
+ * slice and emits one (val, idx) pair. top1_reduce_tiles merges. */
+kernel void argmax_f32_tiles(
+    device const float* logits [[buffer(0)]],
+    device float*       vals   [[buffer(1)]],
+    device uint*        idxs   [[buffer(2)]],
+    constant uint&      V      [[buffer(3)]],
+    uint t   [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    const uint per = (V + 63u) / 64u;
+    const uint beg = t * per;
+    const uint end = min(V, beg + per);
+    threadgroup float tv[256];
+    threadgroup uint  ti[256];
+    float best = -INFINITY;
+    uint best_i = 0;
+    for (uint i = beg + tid; i < end; i += tg) {
+        float v = logits[i];
+        if (v > best) { best = v; best_i = i; }
+    }
+    tv[tid] = best;
+    ti[tid] = best_i;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint st = tg / 2; st > 0; st >>= 1) {
+        if (tid < st && tv[tid + st] > tv[tid]) {
+            tv[tid] = tv[tid + st];
+            ti[tid] = ti[tid + st];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0u) { vals[t] = tv[0]; idxs[t] = ti[0]; }
+}
+
 kernel void argmax_f32_batched(
     device const float* logits [[buffer(0)]],
     device uint*        out    [[buffer(1)]],
@@ -2464,18 +2499,22 @@ kernel void qkv_coal16_norm(
             uchar sc, m;
             unpack_scale_min(sub_block, b.scales, sc, m);
             const float d_sc = d * float(sc), dmin_m = dmin * float(m);
-            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
-            const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 8;
+            const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
             float qx = 0.0f, xs = 0.0f;
             #pragma unroll
-            for (int l4 = 0; l4 < 4; l4++) {
-                uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
-                uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
-                float4 xv  = *(device const float4*)(x    + xoff + 8u*l4);
-                float4 gv  = *(device const float4*)(gain + xoff + 8u*l4);
-                xv = (xv * nrm) * gv;
-                qx += dot(float4(nib), xv);
-                xs += xv.x + xv.y + xv.z + xv.w;
+            for (int l2 = 0; l2 < 2; l2++) {
+                uint2  w2  = *(device const uint2*)(qp + 16u*l2);
+                uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+                uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+                float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
+                float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
+                xa = (xa * nrm) * ga;
+                float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
+                float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
+                xb = (xb * nrm) * gb;
+                qx += dot(float4(na), xa) + dot(float4(nb), xb);
+                xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
             }
             partial += d_sc * qx - dmin_m * xs;
         }
@@ -2500,18 +2539,22 @@ kernel void qkv_coal16_norm(
             uchar sc, m;
             unpack_scale_min(sub_block, b.scales, sc, m);
             const float d_sc = d * float(sc), dmin_m = dmin * float(m);
-            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
-            const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 8;
+            const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
             float qx = 0.0f, xs = 0.0f;
             #pragma unroll
-            for (int l4 = 0; l4 < 4; l4++) {
-                uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
-                uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
-                float4 xv  = *(device const float4*)(x    + xoff + 8u*l4);
-                float4 gv  = *(device const float4*)(gain + xoff + 8u*l4);
-                xv = (xv * nrm) * gv;
-                qx += dot(float4(nib), xv);
-                xs += xv.x + xv.y + xv.z + xv.w;
+            for (int l2 = 0; l2 < 2; l2++) {
+                uint2  w2  = *(device const uint2*)(qp + 16u*l2);
+                uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+                uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+                float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
+                float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
+                xa = (xa * nrm) * ga;
+                float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
+                float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
+                xb = (xb * nrm) * gb;
+                qx += dot(float4(na), xa) + dot(float4(nb), xb);
+                xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
             }
             partial += d_sc * qx - dmin_m * xs;
         }
@@ -2537,21 +2580,27 @@ kernel void qkv_coal16_norm(
             const device uchar* qh = b.qh + n / 4;
             const device char*  s  = b.scales + n / 16;
             const uint base = blk * 256 + n;
+            /* vectorized: ql/qh bytes gathered via uchar4, x/gain via float4 */
             float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
-            #pragma unroll
-            for (int dl = 0; dl < 4; dl++) {
-                const uint l = l0 + (uint)dl;
-                const uchar ql_lo = ql[l], ql_hi = ql[l + 32];
-                const uchar qh_b  = qh[l];
-                const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
-                const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
-                const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
-                const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
-                a1 += float(q1) * (x[base+l+ 0] * nrm * gain[base+l+ 0]);
-                a2 += float(q2) * (x[base+l+32] * nrm * gain[base+l+32]);
-                a3 += float(q3) * (x[base+l+64] * nrm * gain[base+l+64]);
-                a4 += float(q4) * (x[base+l+96] * nrm * gain[base+l+96]);
-            }
+            const uchar4 ql_lo4 = *(device const uchar4*)(ql + l0);
+            const uchar4 ql_hi4 = *(device const uchar4*)(ql + l0 + 32);
+            const uchar4 qh4    = *(device const uchar4*)(qh + l0);
+            const int4 q1v = int4(ql_lo4 & uchar4(0xF)) | (int4((qh4 >> uchar4(0)) & uchar4(3)) << 4);
+            const int4 q2v = int4(ql_hi4 & uchar4(0xF)) | (int4((qh4 >> uchar4(2)) & uchar4(3)) << 4);
+            const int4 q3v = int4(ql_lo4 >> uchar4(4))    | (int4((qh4 >> uchar4(4)) & uchar4(3)) << 4);
+            const int4 q4v = int4(ql_hi4 >> uchar4(4))    | (int4((qh4 >> uchar4(6)) & uchar4(3)) << 4);
+            const float4 xv1 = (*(device const float4*)(x + base + l0)) * nrm;
+            const float4 gv1 = *(device const float4*)(gain + base + l0);
+            const float4 xv2 = (*(device const float4*)(x + base + l0 + 32)) * nrm;
+            const float4 gv2 = *(device const float4*)(gain + base + l0 + 32);
+            const float4 xv3 = (*(device const float4*)(x + base + l0 + 64)) * nrm;
+            const float4 gv3 = *(device const float4*)(gain + base + l0 + 64);
+            const float4 xv4 = (*(device const float4*)(x + base + l0 + 96)) * nrm;
+            const float4 gv4 = *(device const float4*)(gain + base + l0 + 96);
+            a1 = dot(float4(q1v - 32), xv1 * gv1);
+            a2 = dot(float4(q2v - 32), xv2 * gv2);
+            a3 = dot(float4(q3v - 32), xv3 * gv3);
+            a4 = dot(float4(q4v - 32), xv4 * gv4);
             partial += d * float(s[is + 0]) * a1;
             partial += d * float(s[is + 2]) * a2;
             partial += d * float(s[is + 4]) * a3;
@@ -2604,50 +2653,68 @@ kernel void gateup_coal16_norm(
     }
     const float nrm = tg_scale;
 
+    /* row-pair variant: each lane computes TWO adjacent rows sharing one
+     * x/gain slice — halves x-load issue. 32 rows per threadgroup. */
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
-    const uint grow      = tgid * 16u + local_row;
-    if (grow >= 2u * nf) return;
-    device const block_q4_K* W; device float* y; uint r;
-    if (grow < nf) { W = Wg; y = yg; r = grow; }
-    else           { W = Wu; y = yu; r = grow - nf; }
+    const uint r0        = tgid * 32u + local_row * 2u;
+    if (r0 >= 2u * nf) return;
+    const uint r1        = r0 + 1u;
+    const bool has1      = r1 < 2u * nf;
+    device const block_q4_K* W0; device float* y0; uint rr0;
+    if (r0 < nf) { W0 = Wg; y0 = yg; rr0 = r0; }
+    else         { W0 = Wu; y0 = yu; rr0 = r0 - nf; }
+    device const block_q4_K* W1; device float* y1; uint rr1;
+    if (r1 < nf) { W1 = Wg; y1 = yg; rr1 = r1; }
+    else         { W1 = Wu; y1 = yu; rr1 = r1 - nf; }
     const uint blocks_per_row = K / 256;
-    device const block_q4_K* row_blocks = W + (uint)r * blocks_per_row;
+    device const block_q4_K* rb0 = W0 + (uint)rr0 * blocks_per_row;
+    device const block_q4_K* rb1 = W1 + (uint)(has1 ? rr1 : rr0) * blocks_per_row;
     const uint sub_block = lane >> 1;
     const uint elem      = lane & 1;
     const uint shift     = (sub_block & 1) ? 4u : 0u;
-    float partial = 0.0f;
+    float partial0 = 0.0f, partial1 = 0.0f;
     for (uint blk = 0; blk < blocks_per_row; blk++) {
-        const device block_q4_K& b = row_blocks[blk];
-        const float d = float(b.d), dmin = float(b.dmin);
-        uchar sc, m;
-        unpack_scale_min(sub_block, b.scales, sc, m);
-        const float d_sc = d * float(sc), dmin_m = dmin * float(m);
-        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 8;
+        const device block_q4_K& b0 = rb0[blk];
+        const device block_q4_K& b1 = rb1[blk];
+        const float d0 = float(b0.d), dmin0 = float(b0.dmin);
+        const float d1 = float(b1.d), dmin1 = float(b1.dmin);
+        uchar sc0, m0, sc1, m1;
+        unpack_scale_min(sub_block, b0.scales, sc0, m0);
+        unpack_scale_min(sub_block, b1.scales, sc1, m1);
+        const float d_sc0 = d0 * float(sc0), dmin_m0 = dmin0 * float(m0);
+        const float d_sc1 = d1 * float(sc1), dmin_m1 = dmin1 * float(m1);
+        const device uchar* qp0 = b0.qs + (sub_block / 2) * 32 + elem * 8;
+        const device uchar* qp1 = b1.qs + (sub_block / 2) * 32 + elem * 8;
         const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
-        float qx = 0.0f, xs = 0.0f;
+        float qx0 = 0.0f, qx1 = 0.0f, xs = 0.0f;
         #pragma unroll
         for (int l2 = 0; l2 < 2; l2++) {
-            uint2  w2  = *(device const uint2*)(qp + 16u*l2);
-            uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
-            uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uint2  w20 = *(device const uint2*)(qp0 + 16u*l2);
+            uint2  w21 = *(device const uint2*)(qp1 + 16u*l2);
+            uchar4 na0 = (as_type<uchar4>(w20.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb0 = (as_type<uchar4>(w20.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 na1 = (as_type<uchar4>(w21.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb1 = (as_type<uchar4>(w21.y) >> uchar4((uchar)shift)) & uchar4(0xF);
             float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
             float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
             xa = (xa * nrm) * ga;
             float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
             float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
             xb = (xb * nrm) * gb;
-            qx += dot(float4(na), xa) + dot(float4(nb), xb);
+            qx0 += dot(float4(na0), xa) + dot(float4(nb0), xb);
+            qx1 += dot(float4(na1), xa) + dot(float4(nb1), xb);
             xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
         }
-        partial += d_sc * qx - dmin_m * xs;
+        partial0 += d_sc0 * qx0 - dmin_m0 * xs;
+        partial1 += d_sc1 * qx1 - dmin_m1 * xs;
     }
-    float tot = partial;
-    tot += simd_shuffle_xor(tot, 8);
-    tot += simd_shuffle_xor(tot, 4);
-    tot += simd_shuffle_xor(tot, 2);
-    tot += simd_shuffle_xor(tot, 1);
-    if (lane == 0) y[r] = tot;
+    float tot0 = partial0, tot1 = partial1;
+    tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+    tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+    tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+    tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    if (lane == 0) { y0[rr0] = tot0; if (has1) y1[rr1] = tot1; }
 }
 
 /* coal16 GEMV with residual-accumulate epilogue: y[row] += dot(W_row, x).
@@ -2664,47 +2731,59 @@ kernel void q4k_sgemv_row_coal16_accum(
 {
     if (tg_size != 256) return;
     const uint blocks_per_row = K / 256;
+    /* row-pair: lane covers rows r0,r0+1 sharing one x slice (32 rows/tg) */
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
-    const uint row = tgid * 16u + local_row;
-    const uint rr  = min(row, N_total - 1u);
-    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row;
+    const uint r0 = tgid * 32u + local_row * 2u;
+    if (r0 >= N_total) return;
+    const uint r1 = min(r0 + 1u, N_total - 1u);
+    device const block_q4_K* rb0 = W + (uint)r0 * blocks_per_row;
+    device const block_q4_K* rb1 = W + (uint)r1 * blocks_per_row;
 
     const uint sub_block = lane >> 1;
     const uint elem      = lane & 1;
     const uint shift     = (sub_block & 1) ? 4u : 0u;
 
-    float partial = 0.0f;
+    float partial0 = 0.0f, partial1 = 0.0f;
     for (uint blk = 0; blk < blocks_per_row; blk++) {
-        const device block_q4_K& b = row_blocks[blk];
-        const float d    = float(b.d);
-        const float dmin = float(b.dmin);
-        uchar sc, m;
-        unpack_scale_min(sub_block, b.scales, sc, m);
-        const float d_sc   = d    * float(sc);
-        const float dmin_m = dmin * float(m);
-
-        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
-        const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
-
-        float qx = 0.0f, xs = 0.0f;
+        const device block_q4_K& b0 = rb0[blk];
+        const device block_q4_K& b1 = rb1[blk];
+        uchar sc0, m0, sc1, m1;
+        unpack_scale_min(sub_block, b0.scales, sc0, m0);
+        unpack_scale_min(sub_block, b1.scales, sc1, m1);
+        const float d_sc0 = float(b0.d) * float(sc0), dmin_m0 = float(b0.dmin) * float(m0);
+        const float d_sc1 = float(b1.d) * float(sc1), dmin_m1 = float(b1.dmin) * float(m1);
+        const device uchar* qp0 = b0.qs + (sub_block / 2) * 32 + elem * 8;
+        const device uchar* qp1 = b1.qs + (sub_block / 2) * 32 + elem * 8;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
+        float qx0 = 0.0f, qx1 = 0.0f, xs = 0.0f;
         #pragma unroll
-        for (int l4 = 0; l4 < 4; l4++) {
-            uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
-            uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
-            float4 xv  = *(device const float4*)(x + xoff + 8u*l4);
-            qx += dot(float4(nib), xv);
-            xs += xv.x + xv.y + xv.z + xv.w;
+        for (int l2 = 0; l2 < 2; l2++) {
+            uint2 w20 = *(device const uint2*)(qp0 + 16u*l2);
+            uint2 w21 = *(device const uint2*)(qp1 + 16u*l2);
+            uchar4 na0 = (as_type<uchar4>(w20.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb0 = (as_type<uchar4>(w20.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 na1 = (as_type<uchar4>(w21.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb1 = (as_type<uchar4>(w21.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xa = *(device const float4*)(x + xoff + 16u*l2);
+            float4 xb = *(device const float4*)(x + xoff + 16u*l2 + 4);
+            qx0 += dot(float4(na0), xa) + dot(float4(nb0), xb);
+            qx1 += dot(float4(na1), xa) + dot(float4(nb1), xb);
+            xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
         }
-        partial += d_sc * qx - dmin_m * xs;
+        partial0 += d_sc0 * qx0 - dmin_m0 * xs;
+        partial1 += d_sc1 * qx1 - dmin_m1 * xs;
     }
 
-    float tot = partial;
-    tot += simd_shuffle_xor(tot, 8);
-    tot += simd_shuffle_xor(tot, 4);
-    tot += simd_shuffle_xor(tot, 2);
-    tot += simd_shuffle_xor(tot, 1);
-    if (lane == 0 && row < N_total) y[row] += tot;
+    float tot0 = partial0, tot1 = partial1;
+    tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+    tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+    tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+    tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    if (lane == 0) {
+        y[r0] += tot0;
+        if (r1 != r0) y[r1] += tot1;
+    }
 }
 
 /* Per-head qk-norm + rope for q and k in ONE dispatch:
@@ -2787,45 +2866,134 @@ kernel void q4k_sgemv_row_coal16_swires(
     const uint blocks_per_row = K / 256;
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
-    const uint row = tgid * 16u + local_row;
-    const uint rr  = min(row, N_total - 1u);
-    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row;
+    const uint r0 = tgid * 32u + local_row * 2u;
+    if (r0 >= N_total) return;
+    const uint r1 = min(r0 + 1u, N_total - 1u);
+    device const block_q4_K* rb0 = W + (uint)r0 * blocks_per_row;
+    device const block_q4_K* rb1 = W + (uint)r1 * blocks_per_row;
 
     const uint sub_block = lane >> 1;
     const uint elem      = lane & 1;
     const uint shift     = (sub_block & 1) ? 4u : 0u;
 
-    float partial = 0.0f;
+    float partial0 = 0.0f, partial1 = 0.0f;
     for (uint blk = 0; blk < blocks_per_row; blk++) {
-        const device block_q4_K& b = row_blocks[blk];
-        const float d    = float(b.d);
-        const float dmin = float(b.dmin);
-        uchar sc, m;
-        unpack_scale_min(sub_block, b.scales, sc, m);
-        const float d_sc   = d    * float(sc);
-        const float dmin_m = dmin * float(m);
-
-        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
-        const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
-
-        float qx = 0.0f, xs = 0.0f;
+        const device block_q4_K& b0 = rb0[blk];
+        const device block_q4_K& b1 = rb1[blk];
+        uchar sc0, m0, sc1, m1;
+        unpack_scale_min(sub_block, b0.scales, sc0, m0);
+        unpack_scale_min(sub_block, b1.scales, sc1, m1);
+        const float d_sc0 = float(b0.d) * float(sc0), dmin_m0 = float(b0.dmin) * float(m0);
+        const float d_sc1 = float(b1.d) * float(sc1), dmin_m1 = float(b1.dmin) * float(m1);
+        const device uchar* qp0 = b0.qs + (sub_block / 2) * 32 + elem * 8;
+        const device uchar* qp1 = b1.qs + (sub_block / 2) * 32 + elem * 8;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
+        float qx0 = 0.0f, qx1 = 0.0f, xs = 0.0f;
         #pragma unroll
-        for (int l4 = 0; l4 < 4; l4++) {
-            uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
-            uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
-            float4 xv  = *(threadgroup const float4*)(fa_s + xoff + 8u*l4);
-            qx += dot(float4(nib), xv);
-            xs += xv.x + xv.y + xv.z + xv.w;
+        for (int l2 = 0; l2 < 2; l2++) {
+            uint2 w20 = *(device const uint2*)(qp0 + 16u*l2);
+            uint2 w21 = *(device const uint2*)(qp1 + 16u*l2);
+            uchar4 na0 = (as_type<uchar4>(w20.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb0 = (as_type<uchar4>(w20.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 na1 = (as_type<uchar4>(w21.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb1 = (as_type<uchar4>(w21.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xa = *(threadgroup const float4*)(fa_s + xoff + 16u*l2);
+            float4 xb = *(threadgroup const float4*)(fa_s + xoff + 16u*l2 + 4);
+            qx0 += dot(float4(na0), xa) + dot(float4(nb0), xb);
+            qx1 += dot(float4(na1), xa) + dot(float4(nb1), xb);
+            xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
         }
-        partial += d_sc * qx - dmin_m * xs;
+        partial0 += d_sc0 * qx0 - dmin_m0 * xs;
+        partial1 += d_sc1 * qx1 - dmin_m1 * xs;
     }
 
-    float tot = partial;
-    tot += simd_shuffle_xor(tot, 8);
-    tot += simd_shuffle_xor(tot, 4);
-    tot += simd_shuffle_xor(tot, 2);
-    tot += simd_shuffle_xor(tot, 1);
-    if (lane == 0 && row < N_total) y[row] += tot;
+    float tot0 = partial0, tot1 = partial1;
+    tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+    tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+    tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+    tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    if (lane == 0) {
+        y[r0] += tot0;
+        if (r1 != r0) y[r1] += tot1;
+    }
+}
+
+/* Shared flash-decode scan: simd sid sweeps positions [tbeg,tend) with
+ * stride nsimd, batching 4 positions per iteration so the four xor-reduce
+ * chains pipeline instead of serializing. Lane l32 owns dims [d4,d4+4)
+ * (inactive when d4 >= Hd). Maintains running (m,l,acc4); caller merges
+ * across simds. kh_s holds the roped+normed current-token K (position
+ * tcur) — its K row is read from shared, its V row from device. */
+static inline void flash_scan4(
+    threadgroup const float* qh_s,
+    threadgroup const float* kh_s,
+    device const float* Kc,
+    device const float* Vc,
+    const uint   kv_h, const uint Hd, const uint Nk,
+    const uint   tbeg, const uint tend, const uint tcur,
+    const uint   sid,  const uint nsimd, const uint d4,
+    const float  scale,
+    thread float& m_run, thread float& l_run, thread float4& acc4)
+{
+    const size_t row = (size_t)Nk * Hd;
+    const bool   act = (d4 < Hd);
+    threadgroup const float4* q4 = (threadgroup const float4*)(qh_s + d4);
+    threadgroup const float4* k4 = (threadgroup const float4*)(kh_s + d4);
+    uint t = tbeg + sid;
+    for (; t + 3u*nsimd < tend; t += 4u*nsimd) {
+        const uint t0 = t, t1 = t + nsimd, t2 = t + 2u*nsimd, t3 = t + 3u*nsimd;
+        float d0 = 0.0f, d1 = 0.0f, d2 = 0.0f, d3 = 0.0f;
+        float4 v0 = 0.0f, v1 = 0.0f, v2 = 0.0f, v3 = 0.0f;
+        if (act) {
+            d0 = dot(*q4, (t0 == tcur) ? *k4 : *(device const float4*)(Kc + (size_t)t0*row + kv_h*Hd + d4));
+            d1 = dot(*q4, (t1 == tcur) ? *k4 : *(device const float4*)(Kc + (size_t)t1*row + kv_h*Hd + d4));
+            d2 = dot(*q4, (t2 == tcur) ? *k4 : *(device const float4*)(Kc + (size_t)t2*row + kv_h*Hd + d4));
+            d3 = dot(*q4, (t3 == tcur) ? *k4 : *(device const float4*)(Kc + (size_t)t3*row + kv_h*Hd + d4));
+            v0 = *(device const float4*)(Vc + (size_t)t0*row + kv_h*Hd + d4);
+            v1 = *(device const float4*)(Vc + (size_t)t1*row + kv_h*Hd + d4);
+            v2 = *(device const float4*)(Vc + (size_t)t2*row + kv_h*Hd + d4);
+            v3 = *(device const float4*)(Vc + (size_t)t3*row + kv_h*Hd + d4);
+        }
+        d0 += simd_shuffle_xor(d0, 16); d1 += simd_shuffle_xor(d1, 16);
+        d2 += simd_shuffle_xor(d2, 16); d3 += simd_shuffle_xor(d3, 16);
+        d0 += simd_shuffle_xor(d0, 8);  d1 += simd_shuffle_xor(d1, 8);
+        d2 += simd_shuffle_xor(d2, 8);  d3 += simd_shuffle_xor(d3, 8);
+        d0 += simd_shuffle_xor(d0, 4);  d1 += simd_shuffle_xor(d1, 4);
+        d2 += simd_shuffle_xor(d2, 4);  d3 += simd_shuffle_xor(d3, 4);
+        d0 += simd_shuffle_xor(d0, 2);  d1 += simd_shuffle_xor(d1, 2);
+        d2 += simd_shuffle_xor(d2, 2);  d3 += simd_shuffle_xor(d3, 2);
+        d0 += simd_shuffle_xor(d0, 1);  d1 += simd_shuffle_xor(d1, 1);
+        d2 += simd_shuffle_xor(d2, 1);  d3 += simd_shuffle_xor(d3, 1);
+        const float s0 = d0*scale, s1 = d1*scale, s2 = d2*scale, s3 = d3*scale;
+        const float m_new = max(m_run, max(max(s0, s1), max(s2, s3)));
+        const float resc  = (m_run == -INFINITY) ? 0.0f : exp(m_run - m_new);
+        const float e0 = exp(s0 - m_new), e1 = exp(s1 - m_new);
+        const float e2 = exp(s2 - m_new), e3 = exp(s3 - m_new);
+        l_run = l_run * resc + ((e0 + e1) + (e2 + e3));
+        acc4  = acc4 * resc + ((e0*v0 + e1*v1) + (e2*v2 + e3*v3));
+        m_run = m_new;
+    }
+    for (; t < tend; t += nsimd) {
+        float dp = 0.0f;
+        float4 vv4 = 0.0f;
+        if (act) {
+            dp = dot(*q4, (t == tcur) ? *k4
+                     : *(device const float4*)(Kc + (size_t)t*row + kv_h*Hd + d4));
+            vv4 = *(device const float4*)(Vc + (size_t)t*row + kv_h*Hd + d4);
+        }
+        dp += simd_shuffle_xor(dp, 16);
+        dp += simd_shuffle_xor(dp, 8);
+        dp += simd_shuffle_xor(dp, 4);
+        dp += simd_shuffle_xor(dp, 2);
+        dp += simd_shuffle_xor(dp, 1);
+        const float score = dp * scale;
+        const float m_new = max(m_run, score);
+        const float resc  = (m_run == -INFINITY) ? 0.0f : exp(m_run - m_new);
+        const float e     = exp(score - m_new);
+        l_run = l_run * resc + e;
+        acc4  = acc4 * resc + e * vv4;
+        m_run = m_new;
+    }
 }
 
 /* Attention decode with fused per-head qk-norm + rope (qwen3-style).
@@ -2850,11 +3018,12 @@ kernel void attn_decode_qkr_f32(
     constant float&     theta    [[buffer(13)]],
     constant uint&      neox     [[buffer(14)]],
     constant float&     eps      [[buffer(15)]],
+    device const float* cs       [[buffer(16)]],
     uint h   [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
     uint tg  [[threads_per_threadgroup]])
 {
-    if (Hd > 128u || tg > 256u) return;
+    if (Hd > 128u || tg > 512u) return;
     const uint kv_h = h * Nk / Nq;
     device const float* qh_raw = q + h*Hd;
     device float* kslot = Kc + (size_t)(kvlen-1)*Nk*Hd + kv_h*Hd;
@@ -2863,40 +3032,38 @@ kernel void attn_decode_qkr_f32(
     threadgroup float red[256];
     threadgroup float ssum;
 
-    /* ---- q head: rmsnorm scale ---- */
-    float lq = 0.0f;
-    for (uint i = tid; i < Hd; i += tg) { float v = qh_raw[i]; lq += v*v; }
-    red[tid] = lq;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s = tg/2; s > 0; s >>= 1) {
-        if (tid < s) red[tid] += red[tid+s];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    /* ---- q head + current k row: rmsnorm scales in ONE pass ----
+     * simd_xor reduction + single cross-simd combine: 2 barriers total
+     * instead of two ~log2(tg) tree reductions. */
+    float lq = 0.0f, lk = 0.0f;
+    for (uint i = tid; i < Hd; i += tg) {
+        float v = qh_raw[i]; lq += v*v;
+        float w = kslot[i];  lk += w*w;
     }
-    if (tid == 0) ssum = red[0];
+    lq += simd_shuffle_xor(lq, 16); lk += simd_shuffle_xor(lk, 16);
+    lq += simd_shuffle_xor(lq, 8);  lk += simd_shuffle_xor(lk, 8);
+    lq += simd_shuffle_xor(lq, 4);  lk += simd_shuffle_xor(lk, 4);
+    lq += simd_shuffle_xor(lq, 2);  lk += simd_shuffle_xor(lk, 2);
+    lq += simd_shuffle_xor(lq, 1);  lk += simd_shuffle_xor(lk, 1);
+    const uint nsimd0 = tg >> 5;
+    if ((tid & 31u) == 0u) { red[tid >> 5] = lq; red[16u + (tid >> 5)] = lk; }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    const float qscale = 1.0f / sqrt(ssum/float(Hd) + eps);
-
-    /* ---- current k row: rmsnorm scale ---- */
-    float lk = 0.0f;
-    for (uint i = tid; i < Hd; i += tg) { float v = kslot[i]; lk += v*v; }
-    red[tid] = lk;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s = tg/2; s > 0; s >>= 1) {
-        if (tid < s) red[tid] += red[tid+s];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float a = 0.0f, b = 0.0f;
+        for (uint i = 0; i < nsimd0; i++) { a += red[i]; b += red[16u + i]; }
+        red[32] = a; red[33] = b;
     }
-    if (tid == 0) ssum = red[0];
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    const float kscale = 1.0f / sqrt(ssum/float(Hd) + eps);
+    const float qscale = 1.0f / sqrt(red[32]/float(Hd) + eps);
+    const float kscale = 1.0f / sqrt(red[33]/float(Hd) + eps);
+    (void)ssum;
 
     /* ---- apply norm gain + rope into shared ---- */
     const uint pairs = rope_dim/2;
     for (uint kk = tid; kk < pairs; kk += tg) {
         uint i0 = neox ? kk : 2*kk;
         uint i1 = neox ? kk + pairs : 2*kk + 1;
-        float freq  = 1.0f / pow(theta, float(2*kk)/float(rope_dim));
-        float angle = float(position) * freq;
-        float c = cos(angle), s = sin(angle);
+        float c = cs[kk], s = cs[128u + kk];
         { float v0 = qh_raw[i0]*qscale*qgain[i0];
           float v1 = qh_raw[i1]*qscale*qgain[i1];
           qh_s[i0] = v0*c - v1*s;
@@ -2916,56 +3083,34 @@ kernel void attn_decode_qkr_f32(
     if ((h % (Nq/Nk)) == 0) {
         for (uint i = tid; i < Hd; i += tg) kslot[i] = kh_s[i];
     }
-    /* ---- standard attention with qh_s / kh_s for the current slot ---- */
-    threadgroup float sc[512];
-    for (uint t = tid; t < kvlen; t += tg) {
-        float dot = 0.0f;
-        if (t == kvlen - 1) {
-            for (uint d = 0; d < Hd; d++) dot += qh_s[d]*kh_s[d];
-        } else {
-            device const float* kt = Kc + (size_t)t*Nk*Hd + kv_h*Hd;
-            for (uint d = 0; d < Hd; d++) dot += qh_s[d]*kt[d];
-        }
-        sc[t] = dot*scale;
-    }
+    /* ---- single-pass flash-decode over [0, kvlen): each simd keeps a
+     * running (m, l, acc4); lane l32 owns dims [l32*4, l32*4+4). One
+     * merge barrier instead of score-buffer + tiled-V phases. ---- */
+    const uint sid = tid >> 5, l32 = tid & 31u;
+    const uint nsimd = tg >> 5;
+    const uint d4 = l32 * 4u;
+    float m_run = -INFINITY, l_run = 0.0f;
+    float4 acc4 = 0.0f;
+    flash_scan4(qh_s, kh_s, Kc, Vc, kv_h, Hd, Nk,
+                0u, kvlen, kvlen - 1u, sid, nsimd, d4, scale,
+                m_run, l_run, acc4);
+    threadgroup float ms[16], ls[16];
+    threadgroup float accm[16][128];
+    if (l32 == 0u) { ms[sid] = m_run; ls[sid] = l_run; }
+    if (d4 < Hd) *(threadgroup float4*)(accm[sid] + d4) = acc4;
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    float m = -INFINITY;
-    for (uint t = tid; t < kvlen; t += tg) m = max(m, sc[t]);
-    red[tid] = m; threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s = tg/2; s>0; s>>=1){ if(tid<s) red[tid]=max(red[tid],red[tid+s]); threadgroup_barrier(mem_flags::mem_threadgroup);}
-    float maxv = red[0];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    float lsum = 0.0f;
-    for (uint t = tid; t < kvlen; t += tg) { float e = exp(sc[t]-maxv); sc[t]=e; lsum+=e; }
-    red[tid]=lsum; threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s = tg/2; s>0; s>>=1){ if(tid<s) red[tid]+=red[tid+s]; threadgroup_barrier(mem_flags::mem_threadgroup);}
-    float inv = 1.0f/red[0];
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float m_st = ms[0], l_st = 0.0f;
+    for (uint i = 1; i < nsimd; i++) m_st = max(m_st, ms[i]);
+    for (uint i = 0; i < nsimd; i++) l_st += ls[i] * exp(ms[i] - m_st);
+    const float inv = 1.0f / l_st;
     device float* oh = out + h*Hd;
-    if (tg == 256u) {
-        /* two threads per dim: halves the strided-load chain */
-        threadgroup float acc_s[128][2];
-        const uint d = tid & 127u, vseg = tid >> 7;
-        const uint t0 = vseg ? (kvlen + 1) / 2 : 0;
-        const uint t1 = vseg ? kvlen : (kvlen + 1) / 2;
-        float acc = 0.0f;
-        for (uint t = t0; t < t1; t++) {
-            device const float* vt = Vc + (size_t)t*Nk*Hd + kv_h*Hd;
-            acc += sc[t]*inv*vt[d];
-        }
-        acc_s[d][vseg] = acc;
-        threadgroup_barrier(mem_flags::mem_threadgroup);
-        if (tid < 128u) oh[tid] = acc_s[tid][0] + acc_s[tid][1];
-    } else {
-        for (uint d = tid; d < Hd; d += tg) {
-            float acc = 0.0f;
-            for (uint t = 0; t < kvlen; t++) {
-                device const float* vt = Vc + (size_t)t*Nk*Hd + kv_h*Hd;
-                acc += sc[t]*inv*vt[d];
-            }
-            oh[d] = acc;
-        }
+    if (tid < Hd) {
+        float a = 0.0f;
+        for (uint i = 0; i < nsimd; i++)
+            a += accm[i][tid] * exp(ms[i] - m_st);
+        oh[tid] = a * inv;
     }
+
 }
 
 /* Chained-decode embedding gather: x[i] = embd[tok*H+i] where tok is read
@@ -2982,3 +3127,193 @@ kernel void embd_gather_f32(
     device const float* src = embd + (size_t)(*tokp) * H;
     for (uint i = tid; i < H; i += tg) x[i] = src[i];
 }
+
+/* Flash-decoding split-KV variant of attn_decode_qkr_f32 for long contexts.
+ * Grid = (Nq heads) x (nsplit seq tiles); each tg repeats the fused
+ * qk-norm+rope prologue (cheap, identical results) and computes an
+ * UNNORMALIZED partial attention over its position range:
+ *   part[(h*nsplit+s)] = { m_s, l_s, acc_s[Hd] }
+ * where acc_s = sum_t e^(score_t - m_s) * V_t  (softmax numerator).
+ * attn_combine_f32 then merges partials across splits. The roped current-k
+ * is written back by the split tg that owns position kvlen-1 (the last
+ * split), once per kv group — same rule as the single-tg kernel. */
+kernel void attn_decode_qkr_split_f32(
+    device const float* q       [[buffer(0)]],
+    device float*       Kc      [[buffer(1)]],
+    device const float* Vc      [[buffer(2)]],
+    device float*       part    [[buffer(3)]],   // [Nq*nsplit*(Hd+2)]
+    device const float* qgain   [[buffer(4)]],
+    device const float* kgain   [[buffer(5)]],
+    constant uint&      Hd      [[buffer(6)]],
+    constant uint&      Nq      [[buffer(7)]],
+    constant uint&      Nk      [[buffer(8)]],
+    constant uint&      kvlen   [[buffer(9)]],
+    constant float&     scale   [[buffer(10)]],
+    constant uint&      rope_dim [[buffer(11)]],
+    constant int&       position [[buffer(12)]],
+    constant float&     theta    [[buffer(13)]],
+    constant uint&      neox     [[buffer(14)]],
+    constant float&     eps      [[buffer(15)]],
+    constant uint&      nsplit   [[buffer(16)]],
+    device const float* cs       [[buffer(17)]],
+    device atomic_uint* cnt      [[buffer(18)]],  // [Nq] self-resetting tickets
+    device float*       out      [[buffer(19)]],  // [Nq*Hd] combine target
+    uint    tgid [[threadgroup_position_in_grid]],
+    uint    tid  [[thread_position_in_threadgroup]],
+    uint    tg   [[threads_per_threadgroup]])
+{
+    if (Hd > 128u || tg != 256u) return;
+    const uint h = tgid / nsplit, s = tgid % nsplit;
+    const uint per   = (kvlen + nsplit - 1u) / nsplit;
+    const uint tbeg  = s * per;
+    const uint tend  = min(kvlen, tbeg + per);
+    const uint kv_h  = h * Nk / Nq;
+    device const float* qh_raw = q + h*Hd;
+    device float* kslot = Kc + (size_t)(kvlen-1)*Nk*Hd + kv_h*Hd;
+    device float* pout  = part + (size_t)(h*nsplit + s)*(Hd + 2u);
+    const uint nsimd0 = tg >> 5;
+    threadgroup float qh_s[128];
+    threadgroup float kh_s[128];
+    threadgroup float red[256];
+    threadgroup uint  tk;
+
+    if (tbeg < kvlen) {
+    /* ---- q head + current k row: rmsnorm scales in ONE pass ---- */
+    float lq = 0.0f, lk = 0.0f;
+    for (uint i = tid; i < Hd; i += tg) {
+        float v = qh_raw[i]; lq += v*v;
+        float w = kslot[i];  lk += w*w;
+    }
+    lq += simd_shuffle_xor(lq, 16); lk += simd_shuffle_xor(lk, 16);
+    lq += simd_shuffle_xor(lq, 8);  lk += simd_shuffle_xor(lk, 8);
+    lq += simd_shuffle_xor(lq, 4);  lk += simd_shuffle_xor(lk, 4);
+    lq += simd_shuffle_xor(lq, 2);  lk += simd_shuffle_xor(lk, 2);
+    lq += simd_shuffle_xor(lq, 1);  lk += simd_shuffle_xor(lk, 1);
+    if ((tid & 31u) == 0u) { red[tid >> 5] = lq; red[16u + (tid >> 5)] = lk; }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0) {
+        float a = 0.0f, b = 0.0f;
+        for (uint i = 0; i < nsimd0; i++) { a += red[i]; b += red[16u + i]; }
+        red[32] = a; red[33] = b;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float qscale = 1.0f / sqrt(red[32]/float(Hd) + eps);
+    const float kscale = 1.0f / sqrt(red[33]/float(Hd) + eps);
+
+    /* ---- apply norm gain + rope into shared ---- */
+    const uint pairs = rope_dim/2;
+    for (uint kk = tid; kk < pairs; kk += tg) {
+        uint i0 = neox ? kk : 2*kk;
+        uint i1 = neox ? kk + pairs : 2*kk + 1;
+        float c = cs[kk], sn = cs[128u + kk];
+        { float v0 = qh_raw[i0]*qscale*qgain[i0];
+          float v1 = qh_raw[i1]*qscale*qgain[i1];
+          qh_s[i0] = v0*c - v1*sn;
+          qh_s[i1] = v0*sn + v1*c; }
+        { float v0 = kslot[i0]*kscale*kgain[i0];
+          float v1 = kslot[i1]*kscale*kgain[i1];
+          kh_s[i0] = v0*c - v1*sn;
+          kh_s[i1] = v0*sn + v1*c; }
+    }
+    for (uint i = rope_dim + tid; i < Hd; i += tg) {
+        qh_s[i] = qh_raw[i]*qscale*qgain[i];
+        kh_s[i] = kslot[i]*kscale*kgain[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    /* write roped current k back: only the split owning kvlen-1 (the last
+     * split) and only the first q head of each kv group. */
+    if (s == nsplit - 1u && (h % (Nq/Nk)) == 0) {
+        for (uint i = tid; i < Hd; i += tg) kslot[i] = kh_s[i];
+    }
+
+    /* ---- single-pass flash-decode over [tbeg, tend): each simd keeps a
+     * running (m, l, acc4) — lane l32 owns dims [l32*4, l32*4+4). No score
+     * buffer, no V tile: ~3 barriers instead of ~18. ---- */
+    const uint sid  = tid >> 5, l32 = tid & 31u;
+    const uint nsimd = tg >> 5;
+    const uint d4   = l32 * 4u;
+    float m_run = -INFINITY, l_run = 0.0f;
+    float4 acc4 = 0.0f;
+    flash_scan4(qh_s, kh_s, Kc, Vc, kv_h, Hd, Nk,
+                tbeg, tend, kvlen - 1u, sid, nsimd, d4, scale,
+                m_run, l_run, acc4);
+    /* merge nsimd partials in shared: ms/ls per simd + acc row each */
+    threadgroup float ms[8], ls[8];
+    threadgroup float accm[8][128];
+    if (l32 == 0u) { ms[sid] = m_run; ls[sid] = l_run; }
+    if (d4 < Hd) *(threadgroup float4*)(accm[sid] + d4) = acc4;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float m_tg = ms[0], l_tg = 0.0f;
+    for (uint i = 1; i < nsimd; i++) m_tg = max(m_tg, ms[i]);
+    for (uint i = 0; i < nsimd; i++) l_tg += ls[i] * exp(ms[i] - m_tg);
+    if (tid == 0u) { pout[0] = m_tg; pout[1] = l_tg; }
+    if (tid < Hd) {
+        float a = 0.0f;
+        for (uint i = 0; i < nsimd; i++)
+            a += accm[i][tid] * exp(ms[i] - m_tg);
+        pout[2u + tid] = a;
+    }
+
+    } else {                      /* empty split: neutral partial */
+        if (tid == 0u) { pout[0] = -INFINITY; pout[1] = 0.0f; }
+        for (uint i = tid; i < Hd; i += tg) pout[2u + i] = 0.0f;
+    }
+
+    /* ---- last-arriving tg for head h merges all splits inline ----
+     * Device-scope release fence + ticket: the tg that observes
+     * ticket == nsplit-1 knows every sibling's partial writes are
+     * visible and performs the softmax merge for this head. The
+     * counter self-resets so the next layer/token reuses it. */
+    threadgroup_barrier(mem_flags::mem_device);
+    atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+    if (tid == 0u)
+        tk = atomic_fetch_add_explicit(&cnt[h], 1u, memory_order_relaxed);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tk != nsplit - 1u) return;
+    atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
+    if (tid == 0u) atomic_store_explicit(&cnt[h], 0u, memory_order_relaxed);
+
+    device const float* pb = part + (size_t)h * nsplit * (Hd + 2u);
+    float m2 = -INFINITY;
+    for (uint s2 = tid; s2 < nsplit; s2 += tg) m2 = max(m2, pb[s2*(Hd+2u)]);
+    m2 = max(m2, simd_shuffle_xor(m2, 16));
+    m2 = max(m2, simd_shuffle_xor(m2, 8));
+    m2 = max(m2, simd_shuffle_xor(m2, 4));
+    m2 = max(m2, simd_shuffle_xor(m2, 2));
+    m2 = max(m2, simd_shuffle_xor(m2, 1));
+    if ((tid & 31u) == 0u) red[tid >> 5] = m2;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        float mm = -INFINITY;
+        for (uint i = 0; i < nsimd0; i++) mm = max(mm, red[i]);
+        red[32] = mm;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float gm = red[32];
+    float l2 = 0.0f;
+    for (uint s2 = tid; s2 < nsplit; s2 += tg)
+        l2 += pb[s2*(Hd+2u) + 1u] * exp(pb[s2*(Hd+2u)] - gm);
+    l2 += simd_shuffle_xor(l2, 16);
+    l2 += simd_shuffle_xor(l2, 8);
+    l2 += simd_shuffle_xor(l2, 4);
+    l2 += simd_shuffle_xor(l2, 2);
+    l2 += simd_shuffle_xor(l2, 1);
+    if ((tid & 31u) == 0u) red[16u + (tid >> 5)] = l2;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        float sv = 0.0f;
+        for (uint i = 0; i < nsimd0; i++) sv += red[16u + i];
+        red[33] = sv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = 1.0f / red[33];
+    for (uint d4 = tid*4u; d4 < Hd; d4 += tg*4u) {
+        float4 a4 = 0.0f;
+        for (uint s2 = 0u; s2 < nsplit; s2++) {
+            device const float* pp = pb + s2*(Hd+2u);
+            a4 += exp(pp[0] - gm) * (*(device const float4*)(pp + 2u + d4));
+        }
+        *(device float4*)(out + (size_t)h*Hd + d4) = a4 * inv;
+    }
+}
+
