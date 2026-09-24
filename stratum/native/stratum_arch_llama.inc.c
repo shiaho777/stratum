@@ -180,7 +180,7 @@ static int    la_g_ms_maxkv = 0;
 
 static float* la_g_logits  = NULL;
 
-#define la_B_MAX 32
+#define la_B_MAX 64
 static float* la_gb_xn[la_B_MAX];
 static float* la_gb_logits[la_B_MAX];
 
@@ -212,8 +212,8 @@ static void la_linear_multix_blas(const GgufTensor* w, const float* const* xs,
         for (int k = 0; k < K; k++) Xt[(size_t)k*B + s] = xs[s][k];
     int ntile = (N + TILE - 1) / TILE;
     /* parallelize dequant+gemm across tiles */
-    dispatch_apply(ntile, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
-        ^(size_t ti) {
+    st_par_run(ntile,
+        ^(int ti) {
             int r0 = (int)ti * TILE;
             int rows = (r0 + TILE <= N) ? TILE : (N - r0);
             float* Wf = (float*)malloc((size_t)rows * K * sizeof(float));
@@ -268,6 +268,20 @@ static int   la_hidden_dump_layer = -1;
 
 static void la_forward_block(int li, int position) {
     la_BlockTensors* b = &la_g_blocks[li];
+    /* optional advisory prefetch of the NEXT layer's weights — measures
+     * whether B=1 is page-in bound. Reclaimable hint only; off by default. */
+    static int pf_next = -1;
+    if (pf_next < 0) pf_next = getenv("STRATUM_PF_NEXT") ? 1 : 0;
+    if (pf_next && li + 1 < la_g_cfg.n_layers) {
+        const la_BlockTensors* nb = &la_g_blocks[li + 1];
+        const GgufTensor* ts[] = { nb->attn_q, nb->attn_k, nb->attn_v,
+                                   nb->attn_output, nb->ffn_gate,
+                                   nb->ffn_up, nb->ffn_down };
+        for (int i = 0; i < 7; i++)
+            if (ts[i])
+                madvise((void*)((const char*)g_st.mmap_base + ts[i]->offset),
+                        (size_t)ts[i]->nbytes, MADV_WILLNEED);
+    }
     int H  = la_g_cfg.n_embed;
     int Hd = la_g_cfg.head_dim;
     int Nq = la_g_cfg.n_q_heads;
@@ -608,7 +622,8 @@ static int la_forward_one_token_gpu(int token_id, int position) {
 }
 #endif
 
-static int la_forward_batch(const int* tokens, const int* positions, int B) {
+static int la_forward_batch_ex(const int* tokens, const int* positions,
+                               const int* parents, int B) {
     int H  = la_g_cfg.n_embed;
     int Hd = la_g_cfg.head_dim;
     int Nq = la_g_cfg.n_q_heads;
@@ -710,6 +725,44 @@ static int la_forward_batch(const int* tokens, const int* positions, int B) {
         const float* K_layer = la_g_K_cache + (size_t)li*per_layer;
         const float* V_layer = la_g_V_cache + (size_t)li*per_layer;
         for (int s = 0; s < B; s++) {
+            if (parents) {
+                /* tree-verify: slot s attends the committed prefix plus its
+                 * ancestor draft slots in path order plus itself. The visited
+                 * sequence of KV entries is identical to sequential greedy
+                 * for whichever path gets accepted (bit-exact). */
+                int path[la_B_MAX]; int pn = 0;
+                for (int a = s; a >= 0; a = parents[a]) { path[pn++] = a; }
+                for (int h = 0; h < Nq; h++) {
+                    int kv_h = h * Nk / Nq;
+                    const float* qh = qb[s] + h*Hd;
+                    float lg[la_MAX_KV];
+                    int nl = 0;
+                    for (int t = 0; t < la_g_kv_len; t++) {
+                        const float* kt = K_layer + (size_t)t*Nk*Hd + kv_h*Hd;
+                        float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
+                        lg[nl++]=dot*scale;
+                    }
+                    for (int a = pn - 1; a >= 0; a--) {
+                        const float* kt = K_layer
+                            + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv_h*Hd;
+                        float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
+                        lg[nl++]=dot*scale;
+                    }
+                    la_softmax_inplace(lg, nl);
+                    float* hd = ao[s] + h*Hd;
+                    memset(hd,0,sizeof(float)*Hd);
+                    nl = 0;
+                    for (int t = 0; t < la_g_kv_len; t++) {
+                        const float* vt=V_layer+(size_t)t*Nk*Hd+kv_h*Hd;
+                        float p=lg[nl++]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
+                    }
+                    for (int a = pn - 1; a >= 0; a--) {
+                        const float* vt = V_layer
+                            + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv_h*Hd;
+                        float p=lg[nl++]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
+                    }
+                }
+            } else {
             int klen = la_g_kv_len + s + 1;
             for (int h = 0; h < Nq; h++) {
                 int kv_h = h * Nk / Nq;
@@ -727,6 +780,7 @@ static int la_forward_batch(const int* tokens, const int* positions, int B) {
                     const float* vt=V_layer+(size_t)t*Nk*Hd+kv_h*Hd;
                     float p=lg[t]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
                 }
+            }
             }
         }
         la_linear_multix(b->attn_output, (const float* const*)cao, cap, B, H, Nq*Hd);
@@ -777,6 +831,19 @@ static int la_forward_batch(const int* tokens, const int* positions, int B) {
     return 0;
 }
 
+static int la_forward_batch(const int* tokens, const int* positions, int B) {
+    return la_forward_batch_ex(tokens, positions, NULL, B);
+}
+
+
+/* ---- persistent worker pool for per-stream sections ---------------------
+ * the pool itself lives in stratum_linear.h (st_par_run); la_par_run keeps
+ * its per-stream threshold heuristic (serial below 6) */
+static void la_par_run(int B, void (^blk)(int)) {
+    if (B < 6) { for (int s = 0; s < B; s++) blk(s); return; }
+    st_par_run(B, blk);
+}
+
 /* Multi-sequence forward: B INDEPENDENT streams, one token each, sharing
  * one weight load per matmul. Each slot s has its own position pos[s] and
  * its own KV stream in la_g_msK/msV at [L][s][kvlen[s]]. Per-slot logits
@@ -806,41 +873,40 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
     /* per-slot KV stride: [L][B][MAX_KV][Nk*Hd] */
     size_t kv_seqstride=(size_t)la_g_ms_maxkv*Nk*Hd;
     size_t kv_laystride=(size_t)B*kv_seqstride;
+    static double lt_acc=0; static int lt_n=0;
+    double lt0=0; if(getenv("STRATUM_MSTIME")){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);lt0=ts.tv_sec*1e6+ts.tv_nsec/1e3;}
     for(int li=0;li<la_g_cfg.n_layers;li++){
         la_BlockTensors* b=&la_g_blocks[li];
-        for(int s=0;s<B;s++){memcpy(xr[s],x[s],sizeof(float)*H);
-            la_rmsnorm(x[s],st_f32_tensor_ptr(b->attn_norm),H,la_g_cfg.rms_eps,xn[s]);}
+        double aT=0; int _mt=!!getenv("STRATUM_MSTIME");
+        if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);aT=ts.tv_sec*1e6+ts.tv_nsec/1e3;}
+        la_par_run(B, ^(int s){memcpy(xr[s],x[s],sizeof(float)*H);
+            la_rmsnorm(x[s],st_f32_tensor_ptr(b->attn_norm),H,la_g_cfg.rms_eps,xn[s]);});
+        if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+            static double a=0;static int n=0;a+=ts.tv_sec*1e6+ts.tv_nsec/1e3-aT;n++;
+            if(n%896==0)fprintf(stderr,"[mst] rmsA %.0f us\n",a/n);}
         la_linear_multix(b->attn_q,cxn,cqb,B,Nq*Hd,H);
         la_linear_multix(b->attn_k,cxn,ckb,B,Nk*Hd,H);
         la_linear_multix(b->attn_v,cxn,cvb,B,Nk*Hd,H);
         /* per-head q/k RMSNorm (Qwen3-style) — must match la_forward_block;
          * absent on plain Llama files (NULL tensor skips) */
-        if (b->attn_q_norm) {
-            const float* gain = st_f32_tensor_ptr(b->attn_q_norm);
-            for (int s=0;s<B;s++)
-                for (int h=0;h<Nq;h++)
-                    la_rmsnorm(qb[s]+h*Hd, gain, Hd, la_g_cfg.rms_eps,
-                               qb[s]+h*Hd);
-        }
-        if (b->attn_k_norm) {
-            const float* gain = st_f32_tensor_ptr(b->attn_k_norm);
-            for (int s=0;s<B;s++)
-                for (int h=0;h<Nk;h++)
-                    la_rmsnorm(kb[s]+h*Hd, gain, Hd, la_g_cfg.rms_eps,
-                               kb[s]+h*Hd);
-        }
-        for(int s=0;s<B;s++){
+        const float* qng = b->attn_q_norm ? st_f32_tensor_ptr(b->attn_q_norm) : NULL;
+        const float* kng = b->attn_k_norm ? st_f32_tensor_ptr(b->attn_k_norm) : NULL;
+        double rpT=0; if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);rpT=ts.tv_sec*1e6+ts.tv_nsec/1e3;}
+        { int mp=0; for(int s=0;s<B;s++) if(pos[s]>mp) mp=pos[s];
+          la_rope_tables_grow(mp, la_g_cfg.rope_dim/2, la_g_cfg.rope_theta); }
+        la_par_run(B, ^(int s){
+            if (qng) for (int h=0;h<Nq;h++)
+                la_rmsnorm(qb[s]+h*Hd, qng, Hd, la_g_cfg.rms_eps, qb[s]+h*Hd);
+            if (kng) for (int h=0;h<Nk;h++)
+                la_rmsnorm(kb[s]+h*Hd, kng, Hd, la_g_cfg.rms_eps, kb[s]+h*Hd);
             for(int h=0;h<Nq;h++) la_rope(qb[s]+h*Hd,Hd,la_g_cfg.rope_dim,pos[s],la_g_cfg.rope_theta);
             for(int h=0;h<Nk;h++) la_rope(kb[s]+h*Hd,Hd,la_g_cfg.rope_dim,pos[s],la_g_cfg.rope_theta);
             float* Kbase=la_g_msK+(size_t)li*kv_laystride+(size_t)s*kv_seqstride;
             float* Vbase=la_g_msV+(size_t)li*kv_laystride+(size_t)s*kv_seqstride;
             memcpy(Kbase+(size_t)kvlen[s]*Nk*Hd,kb[s],sizeof(float)*Nk*Hd);
             memcpy(Vbase+(size_t)kvlen[s]*Nk*Hd,vb[s],sizeof(float)*Nk*Hd);
-        }
-        for(int s=0;s<B;s++){
             int klen=kvlen[s]+1;
-            const float* Kbase=la_g_msK+(size_t)li*kv_laystride+(size_t)s*kv_seqstride;
-            const float* Vbase=la_g_msV+(size_t)li*kv_laystride+(size_t)s*kv_seqstride;
+            const float* Kb2=Kbase; const float* Vb2=Vbase; (void)Kb2;(void)Vb2;
             for(int h=0;h<Nq;h++){
                 int kv_h=h*Nk/Nq; const float* qh=qb[s]+h*Hd;
                 float lg[la_MAX_KV];
@@ -866,35 +932,60 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
 #endif
                     lg[t]=dot*scale;}
                 la_softmax_inplace(lg,klen);
-                float* hd=ao[s]+h*Hd; memset(hd,0,sizeof(float)*Hd);
+                float* hd=ao[s]+h*Hd;
+                for (int d=0;d<Hd;d++) hd[d]=0.0f;
                 for(int t=0;t<klen;t++){const float* vt=Vbase+(size_t)t*Nk*Hd+kv_h*Hd;
-                    float p=lg[t];for(int d=0;d<Hd;d++)hd[d]+=p*vt[d];}
+                    float p=lg[t];
+#if defined(__ARM_NEON) || defined(__aarch64__)
+                    /* NOTE: f32x4 lanewise accumulation changes fp add order vs
+                     * scalar; identical across all streams/runs (deterministic) */
+                    float32x4_t pv=vdupq_n_f32(p);
+                    for(int d=0;d+4<=Hd;d+=4)
+                        vst1q_f32(hd+d,vfmaq_f32(vld1q_f32(hd+d),pv,vld1q_f32(vt+d)));
+                    for(int d=(Hd&~3);d<Hd;d++)hd[d]+=p*vt[d];
+#else
+                    for(int d=0;d<Hd;d++)hd[d]+=p*vt[d];
+#endif
+                }
             }
-        }
+        });
+        if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+            static double a=0;static int n=0;a+=ts.tv_sec*1e6+ts.tv_nsec/1e3-rpT;n++;
+            if(n%896==0)fprintf(stderr,"[mst] attn-region %.0f us\n",a/n);}
         la_linear_multix(b->attn_output,(const float* const*)cao,cap,B,H,Nq*Hd);
-        for(int s=0;s<B;s++)for(int i=0;i<H;i++)x[s][i]=xr[s][i]+ap[s][i];
-        for(int s=0;s<B;s++){memcpy(xr[s],x[s],sizeof(float)*H);
-            la_rmsnorm(x[s],st_f32_tensor_ptr(b->ffn_norm),H,la_g_cfg.rms_eps,xn[s]);}
+        la_par_run(B, ^(int s){for(int i=0;i<H;i++)x[s][i]=xr[s][i]+ap[s][i];
+            memcpy(xr[s],x[s],sizeof(float)*H);
+            la_rmsnorm(x[s],st_f32_tensor_ptr(b->ffn_norm),H,la_g_cfg.rms_eps,xn[s]);});
+        if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+            static double a=0;static int n=0;a+=ts.tv_sec*1e6+ts.tv_nsec/1e3-rpT;n++;
+            if(n%896==0)fprintf(stderr,"[mst] resid+ffnnorm %.0f us\n",a/n);}
         la_linear_multix(b->ffn_gate,cxn,cfg,B,Ff,H);
         la_linear_multix(b->ffn_up,cxn,cfu,B,Ff,H);
-        for(int s=0;s<B;s++)la_swiglu(fg[s],fu[s],Ff,fa[s]);
-        for(int s=0;s<B;s++)cfa_in[s]=fa[s];
+        { const float** cfi=(const float**)cfa_in;
+          la_par_run(B, ^(int s){la_swiglu(fg[s],fu[s],Ff,fa[s]);cfi[s]=fa[s];}); }
         la_linear_multix(b->ffn_down,cfa_in,cap,B,H,Ff);
-        for(int s=0;s<B;s++)for(int i=0;i<H;i++)x[s][i]=xr[s][i]+ap[s][i];
+        la_par_run(B, ^(int s){for(int i=0;i<H;i++)x[s][i]=xr[s][i]+ap[s][i];});
         if (li == la_hidden_dump_layer && la_hidden_dump_fp) {
             fwrite(x[0], sizeof(float), H, la_hidden_dump_fp);
             fflush(la_hidden_dump_fp);
         }
     }
+    if(getenv("STRATUM_MSTIME")){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+        lt_acc+=ts.tv_sec*1e6+ts.tv_nsec/1e3-lt0; lt_n++;
+        if(lt_n%32==0)fprintf(stderr,"[mstime] layers avg %.0f us over %d\n",lt_acc/lt_n,lt_n);}
     const float* gain=st_f32_tensor_ptr(la_g_output_norm);
-    for(int s=0;s<B;s++)la_rmsnorm(x[s],gain,H,la_g_cfg.rms_eps,xn[s]);
+    la_par_run(B, ^(int s){la_rmsnorm(x[s],gain,H,la_g_cfg.rms_eps,xn[s]);});
     if (getenv("STRATUM_MS_DUMPXN")) {
         FILE* df=fopen(getenv("STRATUM_MS_DUMPXN"),"ab");
         if (df) { fwrite(x[0],4,H,df); fwrite(xn[0],4,H,df); fclose(df); }
     }
     const GgufTensor* lm=la_g_output_w?la_g_output_w:la_g_token_embd;
     float* clog[la_B_MAX]; for(int s=0;s<B;s++)clog[s]=la_gb_logits[s];
+    double t0=0; if(getenv("STRATUM_MSTIME")){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);t0=ts.tv_sec*1e6+ts.tv_nsec/1e3;}
     la_linear_multix(lm,cxn,clog,B,V,H);
+    if(getenv("STRATUM_MSTIME")){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);
+        static double acc=0; static int n=0; acc+=ts.tv_sec*1e6+ts.tv_nsec/1e3-t0; n++;
+        if(n%32==0)fprintf(stderr,"[mstime] lm_head avg %.0f us over %d calls\n",acc/n,n);}
     return 0;
 }
 
@@ -1209,6 +1300,11 @@ int run_llama_arch(int argc, char** argv) {
                      * single-stream kernels (~0.2 max logit drift on Qwen3-0.6B,
                      * hidden-state drift compounds ~5x/layer — verified same
                      * token sequence). pf_B=1 or STRATUM_SDOT=0 gives bit-exact. */
+    /* W16 weights feed the 32-lane AMX tile — fill it (measured ~1.9x
+     * prefill on Qwen3-0.6B-W16, same greedy sequence). */
+    if (la_g_blocks && la_g_blocks[0].attn_q
+        && (la_g_blocks[0].attn_q->type == 43 || la_g_blocks[0].attn_q->type == 44))
+        pf_B = 32;
     if (la_hidden_dump_fp) pf_B = 1;  /* probe mode: capture every position */
     { const char* e = getenv("STRATUM_BATCH_PREFILL"); if (e) pf_B = atoi(e); }
 #ifdef STRATUM_USE_METAL
@@ -1284,6 +1380,9 @@ int run_llama_arch(int argc, char** argv) {
     int spec_k = 0;
     { const char* e = getenv("STRATUM_NGRAM_SPEC"); if (e) spec_k = atoi(e); }
     if (spec_k > la_B_MAX - 1) spec_k = la_B_MAX - 1;
+    int tree_br = 0;
+    { const char* e = getenv("STRATUM_NGRAM_TREE"); if (e) tree_br = atoi(e); }
+    if (tree_br > 8) tree_br = 8;
 
     if (spec_k >= 1) {
         /* n-gram (prompt-lookup) speculative decoding.
@@ -1296,7 +1395,7 @@ int run_llama_arch(int argc, char** argv) {
         int* hist = (int*)malloc(sizeof(int)*(n_prompt + n_gen + la_B_MAX + 2));
         int hlen = 0;
         for (int i = 0; i < n_prompt; i++) hist[hlen++] = prompt[i];
-        int spec_calls = 0, spec_accepts = 0;
+        int spec_calls = 0, spec_accepts = 0, spec_nodes = 0;
         int g = 0;
         while (g < n_gen) {
             /* build batch: slot0 = next_tok (known-correct), slots 1..d =
@@ -1304,6 +1403,132 @@ int run_llama_arch(int argc, char** argv) {
             int btok[la_B_MAX], bpos[la_B_MAX];
             btok[0] = next_tok; bpos[0] = position;
             int B = 1;
+
+            if (tree_br >= 2) {
+                /* ---- n-gram TREE speculation ---------------------------
+                 * Each node expands up to tree_br DISTINCT continuations
+                 * found by prompt-lookup along its own ancestor context.
+                 * One batched forward verifies the whole tree; argmax being
+                 * single-valued means at most one child per node matches,
+                 * so the accepted path is unique. Output = greedy exactly. */
+                int n_tok[la_B_MAX], n_par[la_B_MAX], n_dep[la_B_MAX];
+                int front[la_B_MAX], nfront[la_B_MAX];
+                int nn = 1, nf = 1;
+                n_tok[0] = next_tok; n_par[0] = -1; n_dep[0] = 0; front[0] = 0;
+                static int* ctx = NULL; static size_t ctxcap = 0;
+                size_t ctxneed = (size_t)hlen + la_B_MAX;
+                if (ctxneed > ctxcap) {
+                    free(ctx); ctx = malloc(ctxneed * sizeof(int));
+                    ctxcap = ctxneed;
+                }
+                while (nn <= spec_k && nf > 0) {
+                    int nnf = 0;
+                    for (int f = 0; f < nf && nn <= spec_k; f++) {
+                        int node = front[f];
+                        /* ctx = committed hist + ancestor path tokens */
+                        int clen = hlen, ch[la_B_MAX], cn = 0;
+                        for (int a = node;; a = n_par[a]) {
+                            ch[cn++] = a; if (a == 0) break;
+                        }
+                        memcpy(ctx, hist, sizeof(int) * hlen);
+                        for (int a = cn - 1; a >= 0; a--)
+                            ctx[clen++] = n_tok[ch[a]];
+                        /* distinct continuations: try ng=3 then ng=2 */
+                        int props[8], np = 0;
+                        for (int ng = 3; ng >= 2 && np < tree_br; ng--) {
+                            if (clen < ng + 1) continue;
+                            const int* suf = ctx + clen - ng;
+                            for (int st = clen - ng - 1;
+                                 st >= 0 && np < tree_br; st--) {
+                                int m = 1;
+                                for (int i = 0; i < ng; i++)
+                                    if (ctx[st + i] != suf[i]) { m = 0; break; }
+                                if (!m) continue;
+                                int cand = ctx[st + ng], seen = 0;
+                                for (int i = 0; i < np; i++)
+                                    if (props[i] == cand) seen = 1;
+                                if (!seen) props[np++] = cand;
+                            }
+                        }
+                        for (int i = 0; i < np && nn <= spec_k; i++) {
+                            n_tok[nn] = props[i]; n_par[nn] = node;
+                            n_dep[nn] = n_dep[node] + 1;
+                            nfront[nnf++] = nn; nn++;
+                        }
+                    }
+                    nf = nnf;
+                    memcpy(front, nfront, sizeof(int) * nf);
+                }
+                B = nn;
+                if (B > 1) {
+                    int bpar[la_B_MAX];
+                    for (int s = 0; s < B; s++) {
+                        btok[s] = n_tok[s];
+                        bpos[s] = position + n_dep[s];
+                        bpar[s] = n_par[s];
+                    }
+                    if (la_forward_batch_ex(btok, bpos, bpar, B) != 0)
+                        return 1;
+                    spec_calls++;
+                    spec_nodes += B;
+                    /* unique accepted path: follow argmax-matching child */
+                    int path[la_B_MAX]; int plen = 1, cur = 0;
+                    path[0] = 0;
+                    int final_argm;
+                    for (;;) {
+                        int argm = stratum_argmax(la_gb_logits[cur],
+                                                  la_g_cfg.vocab_size);
+                        int nxt = -1;
+                        for (int s = 1; s < B; s++)
+                            if (n_par[s] == cur && n_tok[s] == argm) {
+                                nxt = s; break;
+                            }
+                        if (nxt < 0) { final_argm = argm; break; }
+                        path[plen++] = nxt; cur = nxt;
+                    }
+                    for (int i = 0; i < plen && g < n_gen; i++) {
+                        fprintf(stderr,
+                            "  step %2d  in=%d  stratum_argmax=%d  (tspec)\n",
+                            g, n_tok[path[i]],
+                            (i + 1 < plen) ? n_tok[path[i + 1]] : final_argm);
+                        hist[hlen++] = n_tok[path[i]];
+                        g++;
+                    }
+                    spec_accepts += plen - 1;
+                    next_tok = final_argm;
+                    /* repack accepted-path KV into the committed prefix:
+                     * node path[i] was written at kv slot kvlen+path[i] and
+                     * must live at kvlen+i (path[i] >= i always in BFS
+                     * order, so in-order moves never clobber a source). */
+                    static float* reptmp = NULL;
+                    static size_t  repcap = 0;
+                    size_t kvblk = (size_t)la_g_cfg.n_kv_heads
+                                 * la_g_cfg.head_dim;
+                    if (kvblk > repcap) {
+                        free(reptmp); reptmp = malloc(kvblk * sizeof(float));
+                        repcap = kvblk;
+                    }
+                    for (int li = 0; li < la_g_cfg.n_layers; li++) {
+                        float* Kl = la_g_K_cache
+                            + (size_t)li * la_MAX_KV * kvblk;
+                        float* Vl = la_g_V_cache
+                            + (size_t)li * la_MAX_KV * kvblk;
+                        for (int i = 1; i < plen; i++) {
+                            if (path[i] == i) continue;
+                            size_t so = (size_t)(la_g_kv_len + path[i]) * kvblk;
+                            size_t do_ = (size_t)(la_g_kv_len + i) * kvblk;
+                            memcpy(reptmp, Kl + so, kvblk * 4);
+                            memcpy(Kl + do_, reptmp, kvblk * 4);
+                            memcpy(reptmp, Vl + so, kvblk * 4);
+                            memcpy(Vl + do_, reptmp, kvblk * 4);
+                        }
+                    }
+                    la_g_kv_len += plen;
+                    position    += plen;
+                    continue;
+                }
+                /* B == 1: fall through to single-token step below */
+            }
             int hyp[la_B_MAX]; hyp[0] = next_tok; int hn = 1;
             while (B <= spec_k) {
                 /* propose token after the current hypothesis tail via
@@ -1450,6 +1675,7 @@ int run_llama_arch(int argc, char** argv) {
 #endif
             if (la_forward_batch(btok, bpos, B) != 0) return 1;
             spec_calls++;
+            spec_nodes += B;
             /* slot s predicts the token AFTER btok[s]. Accept draft
              * btok[s+1] iff it equals argmax(slot s). */
             int accepted = 0;   /* number of drafts accepted */
@@ -1478,8 +1704,12 @@ int run_llama_arch(int argc, char** argv) {
         }
         if (getenv("STRATUM_TIMING") || getenv("STRATUM_SPEC_STATS"))
             fprintf(stderr, "\n  [ngram-spec] %d batched calls, %d drafts accepted "
-                    "(%.2f tok/call)\n", spec_calls, spec_accepts,
-                    spec_calls ? (double)(spec_accepts + spec_calls) / spec_calls : 0.0);
+                    "(%.2f tok/call)%s\n", spec_calls, spec_accepts,
+                    spec_calls ? (double)(spec_accepts + spec_calls) / spec_calls : 0.0,
+                    tree_br >= 2 ? "" : "");
+            if (tree_br >= 2 && spec_calls)
+                fprintf(stderr, "  [tree-spec] avg batch width %.1f nodes/call\n",
+                        (double)spec_nodes / spec_calls);
         free(hist);
     } else
     for (int g = 0; g < n_gen; g++) {

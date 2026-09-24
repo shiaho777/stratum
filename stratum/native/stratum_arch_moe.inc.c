@@ -39,6 +39,8 @@ typedef struct {
     const GgufTensor* attn_k;
     const GgufTensor* attn_v;
     const GgufTensor* attn_output;
+    const GgufTensor* attn_q_norm;   /* optional QK-norm (OLMoE, Qwen-MoE) */
+    const GgufTensor* attn_k_norm;
     const GgufTensor* ffn_norm;
     const GgufTensor* ffn_gate_inp;
     const GgufTensor* ffn_gate_exps;
@@ -64,16 +66,22 @@ static void moe_swiglu(const float* g, const float* u, int N, float* y) {
     stratum_swiglu(g, u, N, y);
 }
 
+static int moe_g_rope_neox = 0;   /* NEOX half-split vs NORM adjacent pairs */
 static void moe_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
     int n_pairs = rope_dim / 2;
     for (int k = 0; k < n_pairs; k++) {
         float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)rope_dim);
         float angle = (float)position * freq;
         float c = cosf(angle), s = sinf(angle);
-        float x0 = x[2 * k];
-        float x1 = x[2 * k + 1];
-        x[2 * k]     = x0 * c - x1 * s;
-        x[2 * k + 1] = x0 * s + x1 * c;
+        if (moe_g_rope_neox) {
+            float x0 = x[k], x1 = x[k + n_pairs];
+            x[k]           = x0 * c - x1 * s;
+            x[k + n_pairs] = x0 * s + x1 * c;
+        } else {
+            float x0 = x[2 * k], x1 = x[2 * k + 1];
+            x[2 * k]     = x0 * c - x1 * s;
+            x[2 * k + 1] = x0 * s + x1 * c;
+        }
     }
     (void)head_dim;
 }
@@ -105,9 +113,10 @@ static float* moe_g_logits  = NULL;
 static float* moe_g_K_cache = NULL;
 static float* moe_g_V_cache = NULL;
 static int    moe_g_kv_len  = 0;
+static int    moe_g_kv_stride = 0;   /* allocated per-layer KV positions */
 
 /* multiseq/spec-verify state: per-slot KV when running independent streams */
-#define moe_B_MAX 32
+#define moe_B_MAX 64
 static float* moe_g_msK = NULL;
 static float* moe_g_msV = NULL;
 static int    moe_g_ms_maxkv = 0;
@@ -177,6 +186,15 @@ static void moe_embed_lookup(int token_id, float* out) {
 
 /* bytes of ONE expert slice within a stacked [K_in, N_out, E] tensor */
 static int64_t moe_slice_bytes(const GgufTensor* t, int K_in, int N_out) {
+    /* W16-converted experts: per-slice blob bytes are derivable from dims
+     * (t->nbytes is only the nominal 2B/elem — understates the real blob) */
+    if (t->type == 43)   /* GGML_TYPE_Q4K_W16: w16 + d/dm per 256 + m16 */
+        return (int64_t)N_out * K_in * 2
+             + (int64_t)N_out * (K_in / 256) * 8
+             + (int64_t)N_out * (K_in / 32) * 2;
+    if (t->type == 44)   /* GGML_TYPE_Q6K_W16: same minus the m16 section */
+        return (int64_t)N_out * K_in * 2
+             + (int64_t)N_out * (K_in / 256) * 8;
     int64_t one = (int64_t)K_in * N_out;
     if (t->nbytes <= 0 || t->nelem <= 0) return gguf_tensor_bytes((GgmlType)t->type, one);
     int64_t e_all = t->nelem / one;
@@ -227,6 +245,15 @@ static void moe_forward_block(int li, int position) {
     st_linear_dispatch(b->attn_k, moe_g_xn, moe_g_k_buf, Nk * Hd, H);
     st_linear_dispatch(b->attn_v, moe_g_xn, moe_g_v_buf, Nk * Hd, H);
 
+    /* QK-norm (OLMoE/Qwen-MoE): one RMS norm over the WHOLE projected
+     * vector, applied before the head split (llama.cpp olmoe semantics) */
+    if (b->attn_q_norm)
+        moe_rmsnorm(moe_g_q_buf, st_f32_tensor_ptr(b->attn_q_norm),
+                    Nq * Hd, moe_g_cfg.rms_eps, moe_g_q_buf);
+    if (b->attn_k_norm)
+        moe_rmsnorm(moe_g_k_buf, st_f32_tensor_ptr(b->attn_k_norm),
+                    Nk * Hd, moe_g_cfg.rms_eps, moe_g_k_buf);
+
     for (int h = 0; h < Nq; h++)
         moe_rope(moe_g_q_buf + h * Hd, Hd, moe_g_cfg.rope_dim,
                  position, moe_g_cfg.rope_theta);
@@ -236,7 +263,7 @@ static void moe_forward_block(int li, int position) {
 
     int kv_len_now = moe_g_kv_len + 1;
     {
-        size_t per_layer = (size_t)moe_MAX_KV * Nk * Hd;
+        size_t per_layer = (size_t)moe_g_kv_stride * Nk * Hd;
         size_t off = (size_t)li * per_layer
                    + (size_t)moe_g_kv_len * Nk * Hd;
         memcpy(moe_g_K_cache + off, moe_g_k_buf, sizeof(float) * Nk * Hd);
@@ -247,7 +274,7 @@ static void moe_forward_block(int li, int position) {
     for (int h = 0; h < Nq; h++) {
         int kv_h = h * Nk / Nq;
         const float* qh = moe_g_q_buf + h * Hd;
-        size_t per_layer = (size_t)moe_MAX_KV * Nk * Hd;
+        size_t per_layer = (size_t)moe_g_kv_stride * Nk * Hd;
         const float* K_layer = moe_g_K_cache + (size_t)li * per_layer;
         const float* V_layer = moe_g_V_cache + (size_t)li * per_layer;
 
@@ -424,9 +451,13 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
     static float* vb[moe_B_MAX];
     static float* ao[moe_B_MAX]; static float* ap[moe_B_MAX];
     static float* rt[moe_B_MAX]; static float* ac[moe_B_MAX];
-    /* expert member staging (indexed by member slot j) + ordered outputs */
-    static float* mg[moe_B_MAX]; static float* mu[moe_B_MAX];
-    static float* ma[moe_B_MAX]; static float* mo[moe_B_MAX];
+    /* expert member staging indexed by GLOBAL member id (s*K_+k, up to
+     * B*K_-1): per-expert tickets then write disjoint slots, and a single
+     * expert can never overflow the scratch (the old local-j arrays were
+     * only moe_B_MAX deep — an overflow when >moe_B_MAX members routed to
+     * one expert). */
+    static float* mgf = NULL; static float* muf = NULL;
+    static float* maf = NULL; static size_t mem_cap = 0;
     static float* ffo = NULL;    static size_t ffo_cap = 0;   /* [B*K_][H] */
     static int*   sel_all = NULL; static float* selw_all = NULL;
     static size_t sel_cap = 0;
@@ -443,12 +474,9 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
             vb[s] = calloc(Nk*Hd, 4);
             ao[s] = calloc(Nq*Hd, 4); ap[s] = calloc(H, 4);
             rt[s] = calloc(E, 4);     ac[s] = calloc(H, 4);
-            mg[s] = calloc(Ff, 4);    mu[s] = calloc(Ff, 4);
-            ma[s] = calloc(Ff, 4);    mo[s] = calloc(H, 4);
             if (!moe_gb_logits[s]) moe_gb_logits[s] = calloc(V, 4);
             if (!x[s]||!xr[s]||!xn[s]||!qb[s]||!kb[s]||!vb[s]||!ao[s]||
-                !ap[s]||!rt[s]||!ac[s]||!mg[s]||!mu[s]||!ma[s]||!mo[s]||
-                !moe_gb_logits[s]) return -1;
+                !ap[s]||!rt[s]||!ac[s]||!moe_gb_logits[s]) return -1;
         }
         alloc_done = 1;
     }
@@ -466,6 +494,14 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
         ffo_cap = ffo ? need_ffo : 0;
         if (!ffo_cap) return -1;
     }
+    size_t need_mem = need_sel * (size_t)Ff;
+    if (need_mem > mem_cap) {
+        free(mgf); free(muf); free(maf);
+        mgf = malloc(need_mem * 4); muf = malloc(need_mem * 4);
+        maf = malloc(need_mem * 4);
+        mem_cap = (mgf && muf && maf) ? need_sel : 0;
+        if (!mem_cap) return -1;
+    }
     if ((size_t)E * B > memb_cap) {
         free(memb); memb = malloc((size_t)E * B * 4);
         memb_cap = memb ? (size_t)E * B : 0;
@@ -482,29 +518,86 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
     const float scale = 1.0f / sqrtf((float)Hd);
     size_t kv_seqstride = (size_t)moe_g_ms_maxkv * Nk * Hd;
     size_t kv_laystride = (size_t)B * kv_seqstride;
-    size_t sh_laystride = (size_t)moe_MAX_KV * Nk * Hd;
+    size_t sh_laystride = (size_t)moe_g_kv_stride * Nk * Hd;
 
     const float* cxn[moe_B_MAX]; float* cqb[moe_B_MAX];
     float* ckb[moe_B_MAX]; float* cvb[moe_B_MAX];
     float* cao[moe_B_MAX]; float* cap[moe_B_MAX];
     float* crt[moe_B_MAX]; float* clog[moe_B_MAX];
 
+    /* section profiling (STRATUM_MOE_PROF): cumulative µs per section */
+    static double prof_us[8];
+    static int prof_on = -1;
+    if (prof_on < 0) prof_on = getenv("STRATUM_MOE_PROF") ? 1 : 0;
+#define MOE_PROF_T() ({ struct timespec ts; clock_gettime(CLOCK_MONOTONIC,&ts); \
+                        ts.tv_sec*1e6 + ts.tv_nsec*1e-3; })
+#define MOE_PROF_ACC(i, t0) do { if (prof_on) prof_us[i] += MOE_PROF_T() - (t0); } while(0)
+    double pt;
+
     moe_stats_begin_step();
     for (int li = 0; li < moe_g_cfg.n_layers; li++) {
         moe_BlockTensors* b = &moe_g_blocks[li];
-        for (int s = 0; s < B; s++) {
-            memcpy(xr[s], x[s], sizeof(float) * H);
+        pt = MOE_PROF_T();
+        {
             const float* gain = st_f32_tensor_ptr(b->attn_norm);
-            moe_rmsnorm(x[s], gain, H, moe_g_cfg.rms_eps, xn[s]);
-            cxn[s] = xn[s];
+            float eps = moe_g_cfg.rms_eps;
+            const float** cxn_p = cxn;
+            if (B >= 32) st_par_run(B, ^(int s) {
+                memcpy(xr[s], x[s], sizeof(float) * H);
+                moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+                cxn_p[s] = xn[s];
+            }); else
+            for (int s = 0; s < B; s++) {
+                memcpy(xr[s], x[s], sizeof(float) * H);
+                moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+                cxn[s] = xn[s];
+            }
         }
         for (int s = 0; s < B; s++) {
             cqb[s] = qb[s]; ckb[s] = kb[s]; cvb[s] = vb[s];
         }
+        MOE_PROF_ACC(0, pt); pt = MOE_PROF_T();
         st_linear_multix(b->attn_q, cxn, cqb, B, Nq * Hd, H);
         st_linear_multix(b->attn_k, cxn, ckb, B, Nk * Hd, H);
         st_linear_multix(b->attn_v, cxn, cvb, B, Nk * Hd, H);
+        MOE_PROF_ACC(1, pt); pt = MOE_PROF_T();
 
+        if (b->attn_q_norm) {
+            const float* gq = st_f32_tensor_ptr(b->attn_q_norm);
+            for (int s = 0; s < B; s++)
+                moe_rmsnorm(qb[s], gq, Nq * Hd, moe_g_cfg.rms_eps, qb[s]);
+        }
+        if (b->attn_k_norm) {
+            const float* gk = st_f32_tensor_ptr(b->attn_k_norm);
+            for (int s = 0; s < B; s++)
+                moe_rmsnorm(kb[s], gk, Nk * Hd, moe_g_cfg.rms_eps, kb[s]);
+        }
+
+        /* rope+KV write: pooled only at wide B — at ms16 the pool barrier
+         * costs more than the ~50us serial pass saves */
+        if (B >= 24) st_par_run(B, ^(int s) {
+            for (int h = 0; h < Nq; h++)
+                moe_rope(qb[s] + h * Hd, Hd, moe_g_cfg.rope_dim,
+                         pos[s], moe_g_cfg.rope_theta);
+            for (int h = 0; h < Nk; h++)
+                moe_rope(kb[s] + h * Hd, Hd, moe_g_cfg.rope_dim,
+                         pos[s], moe_g_cfg.rope_theta);
+            if (shared_kv) {
+                size_t off = (size_t)li * sh_laystride
+                           + (size_t)(kvlen[0] + s) * Nk * Hd;
+                memcpy(moe_g_K_cache + off, kb[s], sizeof(float) * Nk * Hd);
+                memcpy(moe_g_V_cache + off, vb[s], sizeof(float) * Nk * Hd);
+            } else {
+                float* Kb = moe_g_msK + (size_t)li * kv_laystride
+                          + (size_t)s * kv_seqstride;
+                float* Vb = moe_g_msV + (size_t)li * kv_laystride
+                          + (size_t)s * kv_seqstride;
+                memcpy(Kb + (size_t)kvlen[s] * Nk * Hd, kb[s],
+                       sizeof(float) * Nk * Hd);
+                memcpy(Vb + (size_t)kvlen[s] * Nk * Hd, vb[s],
+                       sizeof(float) * Nk * Hd);
+            }
+        }); else
         for (int s = 0; s < B; s++) {
             for (int h = 0; h < Nq; h++)
                 moe_rope(qb[s] + h * Hd, Hd, moe_g_cfg.rope_dim,
@@ -528,8 +621,9 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                        sizeof(float) * Nk * Hd);
             }
         }
+        MOE_PROF_ACC(2, pt); pt = MOE_PROF_T();
 
-        for (int s = 0; s < B; s++) {
+        st_par_run(B, ^(int s) {
             int klen = shared_kv ? kvlen[0] + s + 1 : kvlen[s] + 1;
             const float* K_layer; const float* V_layer;
             if (shared_kv) {
@@ -562,35 +656,53 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                     for (int d = 0; d < Hd; d++) hd[d] += p * vt[d];
                 }
             }
-        }
+        });
+        MOE_PROF_ACC(3, pt); pt = MOE_PROF_T();
         for (int s = 0; s < B; s++) { cao[s] = ao[s]; cap[s] = ap[s]; }
         st_linear_multix(b->attn_output, (const float* const*)cao, cap,
                          B, H, Nq * Hd);
+        MOE_PROF_ACC(4, pt); pt = MOE_PROF_T();
+        if (B >= 32) st_par_run(B, ^(int s) {
+            for (int i = 0; i < H; i++) x[s][i] = xr[s][i] + ap[s][i];
+        }); else
         for (int s = 0; s < B; s++)
             for (int i = 0; i < H; i++) x[s][i] = xr[s][i] + ap[s][i];
 
         /* ---- MoE FFN, expert-grouped batching ---- */
-        for (int s = 0; s < B; s++) {
-            memcpy(xr[s], x[s], sizeof(float) * H);
+        {
             const float* gain = st_f32_tensor_ptr(b->ffn_norm);
-            moe_rmsnorm(x[s], gain, H, moe_g_cfg.rms_eps, xn[s]);
-            crt[s] = rt[s];
+            float eps = moe_g_cfg.rms_eps;
+            float** crt_p = crt;
+            if (B >= 32) st_par_run(B, ^(int s) {
+                memcpy(xr[s], x[s], sizeof(float) * H);
+                moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+                crt_p[s] = rt[s];
+            }); else
+            for (int s = 0; s < B; s++) {
+                memcpy(xr[s], x[s], sizeof(float) * H);
+                moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+                crt[s] = rt[s];
+            }
         }
         st_linear_multix(b->ffn_gate_inp, cxn, crt, B, E, H);
 
         /* per-stream softmax + top-k (same stable lower-id tie-break as
-         * the single-stream path) */
+         * the single-stream path). The top-k is per-stream private →
+         * pooled at wide B; the memb append stays serial (E*B int writes
+         * — cheaper than a barrier at any B). */
         memset(mcnt, 0, sizeof(int) * (size_t)E);
         int* sel = sel_all; float* selw = selw_all;
-        for (int s = 0; s < B; s++) {
-            int* sel_s = sel + s * K_; float* selw_s = selw + s * K_;
-            moe_softmax_inplace(rt[s], E);
-            for (int k = 0; k < K_; k++) { sel_s[k] = -1; selw_s[k] = -1.0f; }
-            for (int e = 0; e < E; e++) {
-                float w = rt[s][e];
-                for (int k = 0; k < K_; k++) {
+        int Kc = K_, Ec = E;
+        float* const* rt_p = (float* const*)rt;
+        void (^topk)(int) = ^(int s) {
+            int* sel_s = sel + s * Kc; float* selw_s = selw + s * Kc;
+            moe_softmax_inplace(rt_p[s], Ec);
+            for (int k = 0; k < Kc; k++) { sel_s[k] = -1; selw_s[k] = -1.0f; }
+            for (int e = 0; e < Ec; e++) {
+                float w = rt_p[s][e];
+                for (int k = 0; k < Kc; k++) {
                     if (w > selw_s[k]) {
-                        for (int t2 = K_ - 1; t2 > k; t2--) {
+                        for (int t2 = Kc - 1; t2 > k; t2--) {
                             sel_s[t2] = sel_s[t2 - 1];
                             selw_s[t2] = selw_s[t2 - 1];
                         }
@@ -599,11 +711,17 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                     }
                 }
             }
+        };
+        if (B >= 32) st_par_run(B, topk);
+        else for (int s = 0; s < B; s++) topk(s);
+        for (int s = 0; s < B; s++) {
+            int* sel_s = sel + s * K_;
             for (int k = 0; k < K_; k++)
                 if (sel_s[k] >= 0)
                     memb[(size_t)sel_s[k] * B + mcnt[sel_s[k]]++] = s * K_ + k;
         }
 
+        MOE_PROF_ACC(5, pt); pt = MOE_PROF_T();
         int64_t g_sb = moe_slice_bytes(b->ffn_gate_exps, H, Ff);
         int64_t u_sb = moe_slice_bytes(b->ffn_up_exps, H, Ff);
         int64_t d_sb = moe_slice_bytes(b->ffn_down_exps, Ff, H);
@@ -616,36 +734,66 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
             if (moe_stats_on()) moe_stat_expert_touches += mcnt[e];
         }
 
-        /* per expert: batch its member streams through one multix */
+        /* measured: WILLNEED on next-layer attn tensors gains nothing —
+         * those matmuls are AMX-compute-bound, not cold-read bound */
+
+        /* per expert: batch its member streams through one multix.
+         * Experts are independent — farm them across the persistent pool;
+         * nested st_linear_multix calls serialize inside each ticket
+         * (thread-local pack buffers) so the parallelism is at the expert
+         * level. down writes straight into ffo[m] — no scatter pass. */
+        /* chunked tickets: split hot experts' member lists into ~8-member
+         * chunks so one overloaded expert can't straggle behind the pool */
+        enum { CH = 8 }; int tk_cap = B * K_ / CH + E + 2;
+        int* tk_e  = (int*)malloc(sizeof(int) * 3 * tk_cap);
+        int* tk_j0 = tk_e + tk_cap;
+        int* tk_j1 = tk_e + 2 * tk_cap;
+        int nt = 0;
         for (int e = 0; e < E; e++) {
             int M = mcnt[e];
-            if (!M) continue;
-            const float* xe[moe_B_MAX]; float* og[moe_B_MAX];
-            float* ou[moe_B_MAX];     float* od[moe_B_MAX];
-            const float* oa[moe_B_MAX];
+            for (int j0 = 0; j0 < M; j0 += CH) {
+                tk_e[nt] = e; tk_j0[nt] = j0;
+                tk_j1[nt] = (j0 + CH < M) ? j0 + CH : M;
+                nt++;
+            }
+        }
+        st_par_run(nt, ^(int t) {
+            int e = tk_e[t], M = tk_j1[t] - tk_j0[t];
+            const float* xe[CH]; float* og[CH];
+            float* ou[CH];     float* od[CH];
+            const float* oa[CH];
             for (int j = 0; j < M; j++) {
-                int s = memb[(size_t)e * B + j] / K_;
-                xe[j] = xn[s]; og[j] = mg[j]; ou[j] = mu[j];
-                oa[j] = ma[j];    od[j] = mo[j];
+                int m = memb[(size_t)e * B + tk_j0[t] + j];
+                int s = m / K_;
+                xe[j] = xn[s];
+                og[j] = mgf + (size_t)m * Ff;
+                ou[j] = muf + (size_t)m * Ff;
+                oa[j] = maf + (size_t)m * Ff;
+                od[j] = ffo + (size_t)m * H;
             }
             moe_multix_slice(b->ffn_gate_exps, e, g_sb, xe, og, M, Ff, H);
             moe_multix_slice(b->ffn_up_exps,   e, u_sb, xe, ou, M, Ff, H);
-            for (int j = 0; j < M; j++)
-                moe_swiglu(mg[j], mu[j], Ff, ma[j]);
+            for (int j = 0; j < M; j++) {
+                int m = memb[(size_t)e * B + tk_j0[t] + j];
+                moe_swiglu(mgf + (size_t)m * Ff, muf + (size_t)m * Ff,
+                           Ff, maf + (size_t)m * Ff);
+            }
             moe_multix_slice(b->ffn_down_exps, e, d_sb, oa, od, M, H, Ff);
-            for (int j = 0; j < M; j++)
-                memcpy(ffo + (size_t)memb[(size_t)e * B + j] * H, mo[j],
-                       sizeof(float) * H);
             if (moe_stats_on())
                 for (int j = 0; j < M; j++) {
                     int ee = e + li * E;
-                    if (ee / 64 < 256) moe_stat_mask[ee / 64] |= 1ULL << (ee % 64);
+                    if (ee / 64 < 256)
+                        __atomic_or_fetch(&moe_stat_mask[ee / 64],
+                                          1ULL << (ee % 64),
+                                          __ATOMIC_RELAXED);
                 }
-        }
+        });
+        free(tk_e);
 
         /* accumulate in each stream's own top-k rank order (FP order ==
          * single-stream path) */
-        for (int s = 0; s < B; s++) {
+        MOE_PROF_ACC(6, pt); pt = MOE_PROF_T();
+        st_par_run(B, ^(int s) {
             memset(ac[s], 0, sizeof(float) * H);
             const int* sel_s = sel + s * K_;
             const float* selw_s = selw + s * K_;
@@ -656,19 +804,44 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                 for (int i = 0; i < H; i++) ac[s][i] += w * o[i];
             }
             for (int i = 0; i < H; i++) x[s][i] = xr[s][i] + ac[s][i];
-        }
+        });
+        MOE_PROF_ACC(7, pt);
     }
     moe_stats_end_step();
 
+    if (prof_on) {
+        static int pc = 0;
+        if (++pc % 8 == 0) {
+            fprintf(stderr, "  [moe-prof] rmsN=%.0f qkv=%.0f ropekv=%.0f "
+                    "attn=%.0f attnO=%.0f rtr+topk=%.0f expert=%.0f accum=%.0f us\n",
+                    prof_us[0]/pc*8, prof_us[1]/pc*8, prof_us[2]/pc*8,
+                    prof_us[3]/pc*8, prof_us[4]/pc*8, prof_us[5]/pc*8,
+                    prof_us[6]/pc*8, prof_us[7]/pc*8);
+        }
+    }
+
+    double pt2 = MOE_PROF_T();
     {
         const float* gain = st_f32_tensor_ptr(moe_g_output_norm);
+        float eps = moe_g_cfg.rms_eps;
+        float** clog_p = clog;
+        if (B >= 32) st_par_run(B, ^(int s) {
+            moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+            clog_p[s] = moe_gb_logits[s];
+        }); else
         for (int s = 0; s < B; s++) {
-            moe_rmsnorm(x[s], gain, H, moe_g_cfg.rms_eps, xn[s]);
-            clog[s] = moe_gb_logits[s];
+            moe_rmsnorm(x[s], gain, H, eps, xn[s]);
+            clog_p[s] = moe_gb_logits[s];
         }
     }
     const GgufTensor* lm = moe_g_output_w ? moe_g_output_w : moe_g_token_embd;
     st_linear_multix(lm, cxn, clog, B, V, H);
+    if (prof_on) {
+        static double lm_us = 0; static int lc = 0;
+        lm_us += MOE_PROF_T() - pt2;
+        if (++lc % 8 == 0)
+            fprintf(stderr, "  [moe-prof] lm_head=%.0f us\n", lm_us/lc*8);
+    }
     return 0;
 }
 
@@ -723,6 +896,11 @@ static int moe_discover_blocks(void) {
         FIND(ffn_up_exps,    "ffn_up_exps");
         FIND(ffn_down_exps,  "ffn_down_exps");
 
+        /* QK-norm is optional (OLMoE, Qwen-MoE) — absent on llama-moe */
+        snprintf(nm, sizeof nm, "blk.%d.attn_q_norm.weight", li);
+        moe_g_blocks[li].attn_q_norm = gguf_find_tensor(&moe_g_gguf, nm);
+        snprintf(nm, sizeof nm, "blk.%d.attn_k_norm.weight", li);
+        moe_g_blocks[li].attn_k_norm = gguf_find_tensor(&moe_g_gguf, nm);
     }
 #undef FIND
     moe_g_token_embd  = gguf_find_tensor(&moe_g_gguf, "token_embd.weight");
@@ -735,7 +913,7 @@ static int moe_discover_blocks(void) {
     return 0;
 }
 
-static int moe_allocate_state(void) {
+static int moe_allocate_state(int kv_need) {
     int H  = moe_g_cfg.n_embed;
     int Hd = moe_g_cfg.head_dim;
     int Nq = moe_g_cfg.n_q_heads;
@@ -758,7 +936,10 @@ static int moe_allocate_state(void) {
     moe_g_ff_acc   = (float*)calloc(H, sizeof(float));
     moe_g_logits   = (float*)calloc(V, sizeof(float));
 
-    size_t kv_floats = (size_t)L * moe_MAX_KV * Nk * Hd;
+    /* KV sized to actual need (prompt+gen+spec slack), not the context
+     * ceiling — anonymous memory is the metric we compete on */
+    moe_g_kv_stride = kv_need < moe_MAX_KV ? kv_need : moe_MAX_KV;
+    size_t kv_floats = (size_t)L * moe_g_kv_stride * Nk * Hd;
     moe_g_K_cache = (float*)calloc(kv_floats, sizeof(float));
     moe_g_V_cache = (float*)calloc(kv_floats, sizeof(float));
 
@@ -792,6 +973,19 @@ int run_moe_arch(int argc, char** argv) {
             moe_g_gguf.version,
             (unsigned long long)moe_g_gguf.n_tensors,
             (unsigned long long)moe_g_gguf.body_offset);
+    {
+        /* rope layout: llama-arch GGUFs permute Q/K so adjacent-pair rope
+         * reproduces HF rotate_half; OLMoE/Qwen-MoE store unpermuted and
+         * need NEOX half-split rotation (same convention as qwen3). */
+        char* a = gguf_get_string_dup(&moe_g_gguf, "general.architecture");
+        if (a) {
+            moe_g_rope_neox = (strcmp(a, "olmoe") == 0
+                               || strcmp(a, "qwen3moe") == 0);
+            fprintf(stderr, "  rope layout: %s (arch %s)\n",
+                    moe_g_rope_neox ? "NEOX half-split" : "NORM adjacent-pairs", a);
+            free(a);
+        }
+    }
 
     stratum_linear_init(moe_g_gguf.mmap_base, moe_g_gguf.mmap_size);
     stratum_engine_init(moe_g_gguf.mmap_size);
@@ -801,7 +995,6 @@ int run_moe_arch(int argc, char** argv) {
     fprintf(stderr, "\n");
 
     if (moe_discover_blocks() != 0) return 1;
-    if (moe_allocate_state()  != 0) return 1;
 
     {
         int ncpu = 0; size_t l = sizeof(ncpu);
@@ -824,6 +1017,10 @@ int run_moe_arch(int argc, char** argv) {
     for (int i = 3; i < argc && n_prompt < 2048; i++)
         prompt[n_prompt++] = atoi(argv[i]);
     if (n_prompt == 0) prompt[n_prompt++] = 1;
+
+    int spec_k = 0;
+    { const char* e = getenv("STRATUM_NGRAM_SPEC"); if (e) spec_k = atoi(e); }
+    if (moe_allocate_state(n_prompt + n_gen + spec_k + 4) != 0) return 1;
 
     int ms_B = 0;
     { const char* e = getenv("STRATUM_MULTISEQ"); if (e) ms_B = atoi(e); }
@@ -888,16 +1085,41 @@ int run_moe_arch(int argc, char** argv) {
 
     int position = 0;
     int last_tok = -1;
-    for (int t = 0; t < n_prompt; t++) {
-        moe_forward_one_token(prompt[t], position++);
-        last_tok = prompt[t];
+    /* Batched prefill through the shared-KV verify path: each expert slice
+     * read serves every routed position in the chunk (vs one weight+expert
+     * scan per token). Greedy-equal, not bit-exact (batched SDOT order);
+     * STRATUM_PREFILL_B overrides the chunk size, 1 = old serial path. */
+    int pf_B = moe_B_MAX;
+    { const char* e = getenv("STRATUM_PREFILL_B"); if (e) pf_B = atoi(e); }
+    if (pf_B < 1) pf_B = 1;
+    if (pf_B > moe_B_MAX) pf_B = moe_B_MAX;
+    {
+        struct timespec pf0, pf1; clock_gettime(CLOCK_MONOTONIC, &pf0);
+        int btok[moe_B_MAX], bpos[moe_B_MAX], bkv[moe_B_MAX];
+        for (int t = 0; t < n_prompt; ) {
+            int Bk = n_prompt - t; if (Bk > pf_B) Bk = pf_B;
+            if (Bk == 1) {
+                moe_forward_one_token(prompt[t], position++);
+                t++; last_tok = prompt[t - 1]; continue;
+            }
+            for (int s = 0; s < Bk; s++) {
+                btok[s] = prompt[t + s]; bpos[s] = position + s;
+                bkv[s] = position;
+            }
+            if (moe_forward_batch(btok, bpos, bkv, Bk) != 0) return 1;
+            memcpy(moe_g_logits, moe_gb_logits[Bk - 1],
+                   sizeof(float) * moe_g_cfg.vocab_size);
+            last_tok = prompt[t + Bk - 1];
+            t += Bk; position += Bk; moe_g_kv_len += Bk;
+        }
+        clock_gettime(CLOCK_MONOTONIC, &pf1);
+        fprintf(stderr, "  prefill %d tok in %.3fs (B=%d)\n", n_prompt,
+                (pf1.tv_sec-pf0.tv_sec)+(pf1.tv_nsec-pf0.tv_nsec)/1e9, pf_B);
     }
     int next_tok = stratum_argmax(moe_g_logits, moe_g_cfg.vocab_size);
     fprintf(stderr, "  after prefill, sampled = %d  (logit=%g)\n",
             next_tok, moe_g_logits[next_tok]);
 
-    int spec_k = 0;
-    { const char* e = getenv("STRATUM_NGRAM_SPEC"); if (e) spec_k = atoi(e); }
     if (spec_k > moe_B_MAX - 1) spec_k = moe_B_MAX - 1;
 
     if (spec_k >= 1) {
@@ -963,7 +1185,7 @@ int run_moe_arch(int argc, char** argv) {
             }
 
             /* batched verify over shared KV: slot s attends 0..kv_len+s */
-            if (moe_g_kv_len + B >= moe_MAX_KV) {
+            if (moe_g_kv_len + B >= moe_g_kv_stride) {
                 /* KV full: fall back to single-token step */
                 moe_forward_one_token(next_tok, position);
                 int argm = stratum_argmax(moe_g_logits, moe_g_cfg.vocab_size);
@@ -1007,6 +1229,8 @@ int run_moe_arch(int argc, char** argv) {
         return 0;
     }
 
+    struct timespec t_dec0, t_dec1;
+    clock_gettime(CLOCK_MONOTONIC, &t_dec0);
     for (int g = 0; g < n_gen; g++) {
         last_tok = next_tok;
         moe_forward_one_token(last_tok, position++);
@@ -1017,10 +1241,14 @@ int run_moe_arch(int argc, char** argv) {
         if (moe_vocab.available) {
             char tok_text[256];
             stratum_decode_token(&moe_vocab, next_tok, tok_text, sizeof(tok_text));
-            fprintf(stdout, "%s", tok_text);
             fflush(stdout);
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_dec1);
+    double dec_s = (t_dec1.tv_sec - t_dec0.tv_sec)
+                 + (t_dec1.tv_nsec - t_dec0.tv_nsec) / 1e9;
+    fprintf(stderr, "\n  decode: %d tokens in %.2fs = %.1f tok/s\n",
+            n_gen, dec_s, n_gen / dec_s);
 
     gguf_close(&moe_g_gguf);
     return 0;
@@ -1031,7 +1259,7 @@ int run_moe_arch(int argc, char** argv) {
 /* ------------------------------------------------------------------ */
 
 static const StratumArch stratum_arch_moe = {
-    .arch_names   = "llama-moe,llama_moe,moe",
+    .arch_names   = "llama-moe,llama_moe,moe,olmoe",
     .description  = "MoE (llama.cpp expert tensors; router top-k; streaming expert slices)",
     .run          = run_moe_arch,
 };

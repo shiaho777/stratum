@@ -23,16 +23,16 @@ int main(int argc, char** argv){
     int B = argc>3 ? atoi(argv[3]) : 64;
     int iters = argc>4 ? atoi(argv[4]) : 20;
     if (N%32||K%256){ fprintf(stderr,"need N%%32==0 && K%%256==0\n"); return 1; }
-    int NG=K/32;
-    size_t blob = (size_t)N*K*2 + (size_t)N*8 + (size_t)N*NG*2;
+    int NG=K/32, NB=K/256;
+    size_t blob = (size_t)N*K*2 + (size_t)N*NB*8 + (size_t)N*NG*2;
     uint8_t* buf = aligned_alloc(128, (blob+127)&~127ull);
     int16_t* w16 = (int16_t*)buf;
     float* dv = (float*)(buf + (size_t)N*K*2);
-    float* dmv = dv + N;
-    int16_t* m16 = (int16_t*)(dmv + N);   /* [rt][g][32] = m[rt*32+j][g] */
+    float* dmv = dv + (size_t)N*NB;
+    int16_t* m16 = (int16_t*)(dmv + (size_t)N*NB);   /* [rt][g][32] = m[rt*32+j][g] */
     srand(1);
     for (size_t i=0;i<(size_t)N*K;i++) w16[i] = (int16_t)(rand()%946);   /* n*sc <=945 */
-    for (int i=0;i<N;i++){ dv[i]=0.05f+0.001f*(i%13); dmv[i]=0.004f+0.0002f*(i%7); }
+    for (int i=0;i<N*NB;i++){ dv[i]=0.05f+0.001f*(i%13); dmv[i]=0.004f+0.0002f*(i%7); }
     for (int rt=0;rt<N/32;rt++) for (int g=0;g<NG;g++) for (int j=0;j<32;j++)
         m16[(size_t)rt*NG*32 + (size_t)g*32 + j]=(int16_t)(rand()%64);
 

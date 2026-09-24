@@ -728,7 +728,7 @@ static void q35_prequant_x_q8_multix(const float* const* xs, int B, int K) {
         float* const* scpool = q35_g_xsc_pool;
         int32_t* const* sp = q35_g_xsum_pool;
         if (B >= 2) {
-            dispatch_apply((size_t)B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)((size_t)B),
                 ^(size_t s) {
                     int8_t* pool = xpool[s];
                     float* scp = scpool[s];
@@ -788,7 +788,7 @@ static void q35_prequant_x_q8_multix(const float* const* xs, int B, int K) {
         }
     } else {
         if (B >= 2) {
-            dispatch_apply(B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)(B),
                 ^(size_t s) {
                     q4k_quantize_x_q8(xs[s], K, q35_g_xq_pool[s], q35_g_xsc_pool[s]);
                 });
@@ -854,7 +854,7 @@ static void q35_linear_q4k_multix_preq(const GgufTensor* w,
         if (_T > nq) _T = nq;
         if (_T < 1) _T = 1;
         int _chunk = (nq + _T - 1) / _T;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -911,7 +911,7 @@ static void q35_linear_q4k_multix_preq(const GgufTensor* w,
         if (_T > np) _T = np;
         if (_T < 1) _T = 1;
         int _chunk = (np + _T - 1) / _T;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -974,7 +974,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
         if (_T > nq) _T = nq;
         if (_T < 1) _T = 1;
         int _chunk = (nq + _T - 1) / _T;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -1026,7 +1026,7 @@ static void q35_linear_q6k_multix_preq(const GgufTensor* w,
         if (_T > np) _T = np;
         if (_T < 1) _T = 1;
         int _chunk = (np + _T - 1) / _T;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -1313,7 +1313,7 @@ static void q35_linear_q8_0(const GgufTensor* w, const float* x, float* y, int N
 }
 static void q35_linear_f16(const GgufTensor* w, const float* x, float* y, int N, int K) {
     const uint16_t* raw = (const uint16_t*)q35_tensor_data(w);
-    dispatch_apply(N, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)(N),
         ^(size_t r) {
             const uint16_t* row = raw + (size_t)r * K;
             double acc = 0.0;
@@ -2230,13 +2230,13 @@ static void q35_swiglu_multix(float* const* gs, float* const* us, float* const* 
         if (B == 1) q35_swiglu(gs[0], us[0], N, ys[0]);
         return;
     }
-    dispatch_apply((size_t)B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)((size_t)B),
         ^(size_t s) { q35_swiglu(gs[s], us[s], N, ys[s]); });
 }
 
 static void q35_resid_fuse_multix(float* const* xs, const float* const* resid,
                                   const float* const* add, int B, int N) {
-    dispatch_apply((size_t)B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)((size_t)B),
         ^(size_t s) {
             float* x = xs[s];
             const float* r = resid[s];
@@ -2285,7 +2285,7 @@ static void q35_vdccs_k4(float* conv_state, const float* conv_w,
     q35_g_vdccs_n++;
     if (parallel && CONV_DIM >= 512) {
         int n_chunks = (CONV_DIM + 255) / 256;
-        dispatch_apply((size_t)n_chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)n_chunks),
             ^(size_t ci) {
                 int c0 = (int)ci * 256;
                 int c1 = c0 + 256;
@@ -2308,7 +2308,7 @@ static void q35_vdccs_k4_multislot(float* const* convs, const float* conv_w,
     }
     int n_chunks = (CONV_DIM + 255) / 256;
     if (n_chunks < 1) n_chunks = 1;
-    dispatch_apply((size_t)n_chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)((size_t)n_chunks),
         ^(size_t ci) {
             int c0 = (int)ci * 256;
             int c1 = c0 + 256;
@@ -2351,7 +2351,7 @@ static void q35_ssm_silu_norm_all(float* const* cores, float* const* zs,
         float* core = cores[0];
         float* zb = zs[0];
         float* out = outs[0];
-        dispatch_apply((size_t)NV, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)NV),
             ^(size_t hz) {
                 int h = (int)hz;
                 q35_ssm_silu_norm_head(core + h * HV, zb + h * HV, lin_norm, HV, eps,
@@ -2360,7 +2360,7 @@ static void q35_ssm_silu_norm_all(float* const* cores, float* const* zs,
         return;
     }
     if (parallel_heads && B > 1 && NV * B >= 8) {
-        dispatch_apply((size_t)(B * NV), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)(B * NV)),
             ^(size_t idx) {
                 int s = (int)idx / NV;
                 int h = (int)idx % NV;
@@ -2420,7 +2420,7 @@ static void q35_ssm_beta_g_one(const float* b_buf, const float* a_buf,
 
 static void q35_ssm_l2norm_pairs(float* qk_post, float* kk_post, int LIN_NK, int HK) {
     if (LIN_NK >= 4) {
-        dispatch_apply((size_t)LIN_NK, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)LIN_NK),
             ^(size_t hz) {
                 int h = (int)hz;
                 ssm_v3_l2norm_inplace(qk_post + h * HK, HK, 1e-6f);
@@ -2486,7 +2486,7 @@ static void q35_pbsc_copy(void* dst, const void* src, size_t n) {
     if (n >= (size_t)(8 * 1024 * 1024)) chunks = 10;
     if (chunks > 12) chunks = 12;
     size_t cs = (n + (size_t)chunks - 1) / (size_t)chunks;
-    dispatch_apply((size_t)chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)((size_t)chunks),
         ^(size_t i) {
             size_t off = (size_t)i * cs;
             if (off >= n) return;
@@ -2554,7 +2554,7 @@ static void q35_ssm_kghs_slot(
     if (HV == 128) {
         const int heads_per = (NV + LIN_NK - 1) / LIN_NK;
         if (heads_per >= 2 && LIN_NK >= 4) {
-            dispatch_apply((size_t)LIN_NK, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)((size_t)LIN_NK),
                 ^(size_t gz) {
                     int g = (int)gz;
                     const float* qt = qk_post + g * HK;
@@ -2582,7 +2582,7 @@ static void q35_ssm_kghs_slot(
                     }
                 });
         } else {
-            dispatch_apply((size_t)NV, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)((size_t)NV),
                 ^(size_t hz) {
                     int h = (int)hz;
                     int kv_h = h % LIN_NK;
@@ -2652,7 +2652,7 @@ static void q35_rmsnorm_multix(float* const* xs, const float* gain, int B, int N
         if (B == 1) q35_rmsnorm(xs[0], gain, N, eps, ys[0]);
         return;
     }
-    dispatch_apply((size_t)B, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+    st_par_dispatch((int)((size_t)B),
         ^(size_t s) { q35_rmsnorm(xs[s], gain, N, eps, ys[s]); });
 }
 
@@ -7976,7 +7976,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
         int _chunk = (nq + _T - 1) / _T;
         int gtt = gt;
         size_t rb = rowb;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -8059,7 +8059,7 @@ static int q35_linear_from_buf_multix(const uint8_t* buf, int gt, size_t rowb,
         int _chunk = (np + _T - 1) / _T;
         int gtt = gt;
         size_t rb = rowb;
-        dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+        st_par_dispatch((int)((size_t)_T),
             ^(size_t _t) {
                 int _s = (int)_t * _chunk;
                 int _e = _s + _chunk;
@@ -8847,7 +8847,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                 size_t rb = rowb;
                 int rbase = r0;
                 const uint8_t* bptr = buf;
-                dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                st_par_dispatch((int)((size_t)_T),
                     ^(size_t _t) {
                         int _s = (int)_t * _chunk;
                         int _e = _s + _chunk;
@@ -8924,7 +8924,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
                 size_t rb = rowb;
                 int rbase = r0;
                 const uint8_t* bptr = buf;
-                dispatch_apply((size_t)_T, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                st_par_dispatch((int)((size_t)_T),
                     ^(size_t _t) {
                         int _s = (int)_t * _chunk;
                         int _e = _s + _chunk;
@@ -10029,7 +10029,7 @@ ssm_projections_done:
         } else {
             const int KERNEL_l = KERNEL;
             int n_chunks = (CONV_DIM + 63) / 64;
-            dispatch_apply(n_chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)(n_chunks),
                 ^(size_t ci) {
                     int c_start = (int)ci * 64;
                     int c_end = c_start + 64;
@@ -10371,7 +10371,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
                     } else {
                         const int KERNEL_l = KERNEL;
                         int n_chunks = (CONV_DIM + 255) / 256;
-                        dispatch_apply((size_t)n_chunks, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+                        st_par_dispatch((int)((size_t)n_chunks),
                             ^(size_t ci) {
                                 int c0 = (int)ci * 256;
                                 int c1 = c0 + 256;
@@ -10420,7 +10420,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
                     }
                     q35_vdccs_k4_multislot(convs, conv_w, qkvs, posts, n_at, CONV_DIM);
                 }
-                dispatch_apply((size_t)n_at, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t zi) {
+                st_par_dispatch((int)((size_t)n_at), ^(size_t zi) {
                     int s = ids[zi];
                     float* my_conv = q35_g_ssm_tree_conv_slot[s];
                     if (KERNEL != 4) {
@@ -10459,8 +10459,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
                         const int HK_local = HK, HV_local = HV, LIN_NK_local = LIN_NK;
                         const float* ln = lin_norm;
                         float eps = q35_g_cfg.rms_eps;
-                        dispatch_apply((size_t)n_at * (size_t)NV,
-                            dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t idx) {
+                        st_par_dispatch((int)(n_at * NV), ^(size_t idx) {
                             int zi = (int)(idx / (size_t)NV);
                             int h = (int)(idx % (size_t)NV);
                             int s = ids[zi];
@@ -10488,7 +10487,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
                         q35_g_fhe_n += (long)n_at * (long)NV;
                         q35_g_kghs_n += n_at;
                     } else {
-                        dispatch_apply((size_t)n_at, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t zi) {
+                        st_par_dispatch((int)((size_t)n_at), ^(size_t zi) {
                             int s = ids[zi];
                             uint16_t* my_rec = q35_g_ssm_tree_rec_slot[s];
                             float* qk_post = q35_g_ssm_post_b[s];
@@ -10537,7 +10536,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
                         });
                     }
                 }
-                dispatch_apply((size_t)n_at, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^(size_t zi) {
+                st_par_dispatch((int)((size_t)n_at), ^(size_t zi) {
                     int s = ids[zi];
                     if (q35_g_ssm_treefull_conv[s]) {
                         float* my_conv = q35_g_ssm_tree_conv_slot[s];
@@ -10645,7 +10644,7 @@ static void q35_forward_ssm_batched(int li, int B, const int* positions) {
             float* out_local = q35_g_ssm_out_pre_b[s];
             const float* ln = lin_norm;
             float eps = q35_g_cfg.rms_eps;
-            dispatch_apply(NV, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
+            st_par_dispatch((int)(NV),
                 ^(size_t hz) {
                     int h = (int)hz;
                     uint16_t* S = rec_state + (size_t)h * HK_local * HV_local;
@@ -17343,6 +17342,16 @@ server_request:
     }
 
     if (spec_enabled && !getenv("STRATUM_SPEC_CHAIN")) tree_enabled = 1;
+
+    /* Tree/SPEC/MTP all dereference the MTP draft head (q35_g_main_hidden,
+     * q35_g_mtp_*) unconditionally — models without nextn layers would
+     * crash on NULL. Degrade to greedy instead. */
+    if (!(q35_g_cfg.n_nextn_layers > 0 && q35_g_mtp.block)) {
+        if (tree_enabled || spec_enabled || mtp_enabled)
+            fprintf(stderr, "  spec-decode: model has no MTP draft head — "
+                            "TREE/SPEC/MTP disabled (greedy fallback)\n");
+        tree_enabled = spec_enabled = mtp_enabled = 0;
+    }
 
     if (tree_enabled) {
 
