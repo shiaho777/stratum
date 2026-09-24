@@ -61,6 +61,16 @@ static id<MTLComputePipelineState> g_rmsnorm_b = nil;
 /* Qwen3.5-specific kernels */
 static id<MTLComputePipelineState> g_rope_half = nil;
 static id<MTLComputePipelineState> g_rmsnorm_ph = nil;   /* per-head */
+static id<MTLComputePipelineState> g_rmsnorm_resid = nil;/* resid add + rmsnorm */
+static id<MTLComputePipelineState> g_qknorm_rope = nil;  /* qk-norm + rope */
+static id<MTLComputePipelineState> g_qkv_norm = nil;    /* fused qkv + rmsnorm */
+static id<MTLComputePipelineState> g_gu_norm = nil;     /* fused gate+up + rmsnorm */
+static id<MTLComputePipelineState> g_qkr_dual = nil;    /* qk-norm+rope, q&k one dispatch */
+static id<MTLComputePipelineState> g_q4k_accum = nil;   /* coal16 GEMV y+=dot */
+static id<MTLComputePipelineState> g_q6k_norm = nil;    /* coal16 q6k + rmsnorm */
+static id<MTLComputePipelineState> g_q6k_swires = nil;  /* coal16 q6k swiglu+resid */
+static id<MTLComputePipelineState> g_q4k_swires = nil;  /* coal16 q4k swiglu+resid */
+static id<MTLComputePipelineState> g_attn_qkr = nil;    /* attn + fused qknorm/rope */
 static id<MTLComputePipelineState> g_sigmoid_gate = nil;
 static id<MTLComputePipelineState> g_split_qgate = nil;
 static id<MTLComputePipelineState> g_attn_gated = nil;
@@ -72,6 +82,9 @@ static id<MTLComputePipelineState> g_q4k_coalesced = nil;  /* V12 */
 static id<MTLComputePipelineState> g_kv_scatter = nil;
 static id<MTLComputePipelineState> g_kv_rope_scatter = nil;
 static id<MTLComputePipelineState> g_argmax_b = nil;
+static id<MTLComputePipelineState> g_embd_gather = nil;
+static id<MTLBuffer> g_tok_ring = nil;          /* 256 x uint32 token ring */
+static id<MTLCommandBuffer> g_chain_last = nil; /* last committed chain cmd */
 static id<MTLComputePipelineState> g_add = nil;
 static id<MTLComputePipelineState> g_copy = nil;
 static id<MTLBuffer> g_ffn_gate = nil, g_ffn_up = nil, g_ffn_a = nil, g_ffn_out = nil;
@@ -447,6 +460,9 @@ int stratum_metal_init(const char* metallib_path,
         LOAD_PSO(g_kv_scatter,  "kv_scatter_f32");
         LOAD_PSO(g_kv_rope_scatter, "kv_rope_scatter_f32");
         LOAD_PSO(g_argmax_b,    "argmax_f32_batched");
+        LOAD_PSO(g_embd_gather, "embd_gather_f32");
+        g_tok_ring = [g_device newBufferWithLength:1024
+            options:MTLResourceStorageModeShared];
         #undef LOAD_PSO
 
         /* V12: coalesced Q4_K pipeline */
@@ -466,9 +482,19 @@ int stratum_metal_init(const char* metallib_path,
         } while(0)
         LOAD_PSO_Q(g_rope_half,    "rope_half_f32");
         LOAD_PSO_Q(g_rmsnorm_ph,   "rmsnorm_per_head_f32");
+        LOAD_PSO_Q(g_rmsnorm_resid,"rmsnorm_resid_f32");
+        LOAD_PSO_Q(g_qknorm_rope,  "qknorm_rope_f32");
         LOAD_PSO_Q(g_sigmoid_gate, "sigmoid_gate_inplace_f32");
         LOAD_PSO_Q(g_split_qgate,  "split_qgate_f32");
         LOAD_PSO_Q(g_attn_gated,   "attn_decode_gated_f32");
+        LOAD_PSO_Q(g_qkv_norm,     "qkv_coal16_norm");
+        LOAD_PSO_Q(g_gu_norm,      "gateup_coal16_norm");
+        LOAD_PSO_Q(g_qkr_dual,     "qknorm_rope_dual_f32");
+        LOAD_PSO_Q(g_q4k_accum,    "q4k_sgemv_row_coal16_accum");
+        LOAD_PSO_Q(g_q6k_norm,     "q6k_sgemv_row_coal16_norm");
+        LOAD_PSO_Q(g_q6k_swires,   "q6k_sgemv_row_coal16_swires");
+        LOAD_PSO_Q(g_q4k_swires,   "q4k_sgemv_row_coal16_swires");
+        LOAD_PSO_Q(g_attn_qkr,     "attn_decode_qkr_f32");
         #undef LOAD_PSO_Q
 
         if (model_base && model_size) {
@@ -840,6 +866,19 @@ int stratum_metal_get_last_token(void) {
     return (int)p[0];
 }
 
+void stratum_metal_chain_seed(int slot, int tok) {
+    if (g_tok_ring)
+        ((uint32_t*)[g_tok_ring contents])[slot & 255] = (uint32_t)tok;
+}
+const uint32_t* stratum_metal_chain_ring(void) {
+    return g_tok_ring ? (const uint32_t*)[g_tok_ring contents] : NULL;
+}
+int stratum_metal_chain_wait(void) {
+    if (!g_chain_last) return -1;
+    [g_chain_last waitUntilCompleted];
+    return g_chain_last.status == MTLCommandBufferStatusCompleted ? 0 : -1;
+}
+
 static id<MTLBuffer> g_fx=nil, g_fxn=nil, g_fq=nil, g_fk=nil, g_fv=nil,
                      g_fattn=nil, g_ftmp=nil, g_fg=nil, g_fu=nil, g_fa=nil, g_flog=nil;
 static size_t g_fcap_h=0, g_fcap_ff=0, g_fcap_v=0, g_fcap_qh=0, g_fcap_kh=0;
@@ -854,9 +893,12 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                           const float* x_in, float* logits_out,
                           int H, int Hd, int Nq, int Nk, int Ff, int V,
                           int rope_dim, int position, float rope_theta,
-                          float rms_eps, int kv_len, int max_kv) {
+                          float rms_eps, int kv_len, int max_kv, int rope_neox,
+                          unsigned long long embd_off, unsigned long embd_tb,
+                          int chain_slot) {
     if (!g_device || !g_q4k_sgemv || !g_q6k_sgemv || !g_swiglu || !g_rmsnorm
         || !g_rope || !g_attn || !g_add || !g_copy) return -1;
+    if (chain_slot >= 0 && (!g_embd_gather || !g_tok_ring)) return -1;
     @autoreleasepool {
         size_t hb=(size_t)H*4, ffb=(size_t)Ff*4, vb=(size_t)V*4,
                qhb=(size_t)Nq*Hd*4, khb=(size_t)Nk*Hd*4;
@@ -894,7 +936,8 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             g_fkv_cap = kvb;
         }
         if (!g_fx||!g_fxn||!g_ftmp||!g_fq||!g_fattn||!g_fk||!g_fv||!g_fg||!g_fu||!g_fa||!g_flog||!g_fkv_k||!g_fkv_v) return -1;
-        memcpy([g_fx contents], x_in, hb);
+        if (chain_slot < 0)
+            memcpy([g_fx contents], x_in, hb);
 
         uint32_t Hu=(uint32_t)H, Ffu=(uint32_t)Ff, Vu=(uint32_t)V, Hdu=(uint32_t)Hd,
                  Nqu=(uint32_t)Nq, Nku=(uint32_t)Nk, rdu=(uint32_t)rope_dim;
@@ -908,101 +951,281 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
 
         id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
 
+        if (chain_slot >= 0) {
+            id<MTLComputeCommandEncoder> e0=[cmd computeCommandEncoder];
+            id<MTLBuffer> eb; uint64_t eo;
+            if (find_chunk(embd_off,embd_tb,&eb,&eo)!=0) return -1;
+            [e0 setComputePipelineState:g_embd_gather];
+            [e0 setBuffer:g_fx offset:0 atIndex:0];
+            [e0 setBuffer:eb offset:eo atIndex:1];
+            uint32_t rsl=(uint32_t)((chain_slot)&255)*4;
+            [e0 setBuffer:g_tok_ring offset:rsl atIndex:2];
+            [e0 setBytes:&Hu length:4 atIndex:3];
+            [e0 dispatchThreadgroups:MTLSizeMake(1,1,1)
+                threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            [e0 endEncoding];
+        }
+
         #define PSO_TY(ty) ((ty)==14 ? g_q6k_sgemv : (ty)==13 ? g_q5k_sgemv : g_q4k_sgemv)
-        #define MM(ty, woff, wtb, xbuf, ybuf, Nrows, Kdim) do { \
-            if (g_q4k_coalesced && (ty)==12 && getenv("STRATUM_COALESCE") && (Nrows) >= 8) { \
-                id<MTLBuffer> _wb; uint64_t _wo; \
-                if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
-                id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-                [_e setComputePipelineState:g_q4k_coalesced]; \
-                [_e setBuffer:_wb offset:_wo atIndex:0]; [_e setBuffer:(xbuf) offset:0 atIndex:1]; \
-                [_e setBuffer:(ybuf) offset:0 atIndex:2]; \
+        /* coalesced16 kernels: 16 rows/threadgroup, 16 threads/row —
+         * probe-measured 1.8x on Q6K (saturates the NoCopy read ceiling
+         * ~220 GB/s) and 1.0-1.6x on Q4K at N>=1024 vs the per-row kernels.
+         * Requires K%256==0. Same output modulo FP reassociation noise
+         * (max|d| ~3e-3 vs the per-row kernel — same magnitude as that
+         * kernel's own deviation vs the CPU reference). */
+        static int s_fwd_nocoal = -1;
+        if (s_fwd_nocoal < 0) s_fwd_nocoal = getenv("STRATUM_FWD_NOCOAL") ? 1 : 0;
+        #define COAL16_PSO(ty, Nrows, Kdim) ( \
+            s_fwd_nocoal || ((Kdim) % 256) != 0 ? (id<MTLComputePipelineState>)nil : \
+            (ty)==14 ? g_q6k_sgemv_coal16 : \
+            (ty)==12 && (Nrows) >= 1024 ? g_q4k_sgemv_coal16 : \
+            (id<MTLComputePipelineState>)nil)
+        /* One compute encoder per layer + memoryBarrier between dependent
+         * stages. Dispatches that share only a read-only input and write
+         * disjoint outputs (q/k/v, gate/up, the qk-norm pair, the rope
+         * pair) sit in the same barrier-free stretch so the GPU may
+         * overlap them — replaces ~15 encoder boundaries per layer. */
+        #define BAR [enc memoryBarrierWithScope:MTLBarrierScopeBuffers]
+        #define MM(ty, woff, wtb, xbuf, ybuf, yoff, Nrows, Kdim) do { \
+            id<MTLBuffer> _wb; uint64_t _wo; \
+            if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
+            id<MTLComputePipelineState> _p = COAL16_PSO(ty, Nrows, Kdim); \
+            if (_p) { \
+                [enc setComputePipelineState:_p]; \
+                [enc setBuffer:_wb offset:_wo atIndex:0]; [enc setBuffer:(xbuf) offset:0 atIndex:1]; \
+                [enc setBuffer:(ybuf) offset:(yoff) atIndex:2]; \
                 uint32_t _K=(uint32_t)(Kdim), _N=(uint32_t)(Nrows); \
-                [_e setBytes:&_K length:4 atIndex:3]; [_e setBytes:&_N length:4 atIndex:4]; \
-                [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(((Nrows)+7)/8),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; \
-                [_e endEncoding]; \
+                [enc setBytes:&_K length:4 atIndex:3]; [enc setBytes:&_N length:4 atIndex:4]; \
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(((Nrows)+15)/16),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; \
             } else { \
-            id<MTLBuffer> _wb; uint64_t _wo; \
-            if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-            [_e setComputePipelineState:PSO_TY(ty)]; \
-            [_e setBuffer:_wb offset:_wo atIndex:0]; [_e setBuffer:(xbuf) offset:0 atIndex:1]; \
-            [_e setBuffer:(ybuf) offset:0 atIndex:2]; uint32_t _K=(uint32_t)(Kdim); [_e setBytes:&_K length:4 atIndex:3]; \
-            [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
-            [_e endEncoding]; } } while(0)
-        #define MMO(ty, woff, wtb, xbuf, ybuf, yoff, Nrows, Kdim) do { \
-            id<MTLBuffer> _wb; uint64_t _wo; \
-            if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-            [_e setComputePipelineState:PSO_TY(ty)]; \
-            [_e setBuffer:_wb offset:_wo atIndex:0]; [_e setBuffer:(xbuf) offset:0 atIndex:1]; \
-            [_e setBuffer:(ybuf) offset:(yoff) atIndex:2]; uint32_t _K=(uint32_t)(Kdim); [_e setBytes:&_K length:4 atIndex:3]; \
-            [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
-            [_e endEncoding]; } while(0)
+            [enc setComputePipelineState:PSO_TY(ty)]; \
+            [enc setBuffer:_wb offset:_wo atIndex:0]; [enc setBuffer:(xbuf) offset:0 atIndex:1]; \
+            [enc setBuffer:(ybuf) offset:(yoff) atIndex:2]; uint32_t _K=(uint32_t)(Kdim); [enc setBytes:&_K length:4 atIndex:3]; \
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(s_tg_size,1,1)]; \
+            } } while(0)
         #define NORM(gain_off, xbuf, ybuf) do { \
             id<MTLBuffer> _gb; uint64_t _go; if (find_chunk((gain_off),(size_t)H*4,&_gb,&_go)!=0) return -1; \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
-            [_e setComputePipelineState:g_rmsnorm]; \
-            [_e setBuffer:(xbuf) offset:0 atIndex:0]; [_e setBuffer:_gb offset:_go atIndex:1]; \
-            [_e setBuffer:(ybuf) offset:0 atIndex:2]; [_e setBytes:&Hu length:4 atIndex:3]; [_e setBytes:&rms_eps length:4 atIndex:4]; \
-            [_e dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; [_e endEncoding]; } while(0)
+            [enc setComputePipelineState:g_rmsnorm]; \
+            [enc setBuffer:(xbuf) offset:0 atIndex:0]; [enc setBuffer:_gb offset:_go atIndex:1]; \
+            [enc setBuffer:(ybuf) offset:0 atIndex:2]; [enc setBytes:&Hu length:4 atIndex:3]; [enc setBytes:&rms_eps length:4 atIndex:4]; \
+            [enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } while(0)
+        uint32_t _rneox = (uint32_t)rope_neox;
         #define ROPE(buf, nheads) do { \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; [_e setComputePipelineState:g_rope]; \
-            [_e setBuffer:(buf) offset:0 atIndex:0]; [_e setBytes:&Hdu length:4 atIndex:1]; [_e setBytes:&rdu length:4 atIndex:2]; \
-            [_e setBytes:&posi length:4 atIndex:3]; [_e setBytes:&rope_theta length:4 atIndex:4]; \
-            [_e dispatchThreads:MTLSizeMake((NSUInteger)((nheads)*(rope_dim/2)),1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; [_e endEncoding]; } while(0)
+            [enc setComputePipelineState:g_rope]; \
+            [enc setBuffer:(buf) offset:0 atIndex:0]; [enc setBytes:&Hdu length:4 atIndex:1]; [enc setBytes:&rdu length:4 atIndex:2]; \
+            [enc setBytes:&posi length:4 atIndex:3]; [enc setBytes:&rope_theta length:4 atIndex:4]; \
+            [enc setBytes:&_rneox length:4 atIndex:5]; \
+            [enc dispatchThreads:MTLSizeMake((NSUInteger)((nheads)*(rope_dim/2)),1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; } while(0)
         #define ROPEO(buf, boff, nheads) do { \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; [_e setComputePipelineState:g_rope]; \
-            [_e setBuffer:(buf) offset:(boff) atIndex:0]; [_e setBytes:&Hdu length:4 atIndex:1]; [_e setBytes:&rdu length:4 atIndex:2]; \
-            [_e setBytes:&posi length:4 atIndex:3]; [_e setBytes:&rope_theta length:4 atIndex:4]; \
-            [_e dispatchThreads:MTLSizeMake((NSUInteger)((nheads)*(rope_dim/2)),1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; [_e endEncoding]; } while(0)
+            [enc setComputePipelineState:g_rope]; \
+            [enc setBuffer:(buf) offset:(boff) atIndex:0]; [enc setBytes:&Hdu length:4 atIndex:1]; [enc setBytes:&rdu length:4 atIndex:2]; \
+            [enc setBytes:&posi length:4 atIndex:3]; [enc setBytes:&rope_theta length:4 atIndex:4]; \
+            [enc setBytes:&_rneox length:4 atIndex:5]; \
+            [enc dispatchThreads:MTLSizeMake((NSUInteger)((nheads)*(rope_dim/2)),1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; } while(0)
         #define ELEM(pso, abuf, aoff, bbuf, boff, nn) do { \
-            id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; [_e setComputePipelineState:(pso)]; \
-            [_e setBuffer:(abuf) offset:(aoff) atIndex:0]; [_e setBuffer:(bbuf) offset:(boff) atIndex:1]; \
-            uint32_t _n=(uint32_t)(nn); [_e setBytes:&_n length:4 atIndex:2]; \
-            [_e dispatchThreads:MTLSizeMake((NSUInteger)(nn),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; [_e endEncoding]; } while(0)
+            [enc setComputePipelineState:(pso)]; \
+            [enc setBuffer:(abuf) offset:(aoff) atIndex:0]; [enc setBuffer:(bbuf) offset:(boff) atIndex:1]; \
+            uint32_t _n=(uint32_t)(nn); [enc setBytes:&_n length:4 atIndex:2]; \
+            [enc dispatchThreads:MTLSizeMake((NSUInteger)(nn),1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } while(0)
+        /* residual add + rmsnorm in one dispatch: x += add; xn = rms(x)*gain */
+        #define ADDNORM(add_buf, gain_off) do { \
+            id<MTLBuffer> _gb; uint64_t _go; \
+            if (find_chunk((gain_off),(size_t)H*4,&_gb,&_go)!=0) return -1; \
+            [enc setComputePipelineState:g_rmsnorm_resid]; \
+            [enc setBuffer:g_fx offset:0 atIndex:0]; \
+            [enc setBuffer:(add_buf) offset:0 atIndex:1]; \
+            [enc setBuffer:_gb offset:_go atIndex:2]; \
+            [enc setBuffer:g_fxn offset:0 atIndex:3]; \
+            [enc setBytes:&Hu length:4 atIndex:4]; [enc setBytes:&rms_eps length:4 atIndex:5]; \
+            [enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } while(0)
+        /* per-head qk-norm + rope in one dispatch (qwen3) */
+        #define QKROPE(buf, boff, gain_off, nheads) do { \
+            id<MTLBuffer> _gb; uint64_t _go; \
+            if (find_chunk((gain_off),(size_t)Hd*4,&_gb,&_go)!=0) return -1; \
+            [enc setComputePipelineState:g_qknorm_rope]; \
+            [enc setBuffer:(buf) offset:(boff) atIndex:0]; \
+            [enc setBuffer:_gb offset:_go atIndex:1]; \
+            [enc setBytes:&Hdu length:4 atIndex:2]; [enc setBytes:&rms_eps length:4 atIndex:3]; \
+            uint32_t _nh=(uint32_t)(nheads); [enc setBytes:&_nh length:4 atIndex:4]; \
+            [enc setBytes:&rdu length:4 atIndex:5]; [enc setBytes:&posi length:4 atIndex:6]; \
+            [enc setBytes:&rope_theta length:4 atIndex:7]; [enc setBytes:&_rneox length:4 atIndex:8]; \
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(nheads),1,1) threadsPerThreadgroup:MTLSizeMake(128,1,1)]; } while(0)
 
         { const char* e = getenv("STRATUM_FWD_NL"); if (e) { int v=atoi(e); if (v>=0 && v<n_layers) n_layers=v; } }
+        /* Fused layer path: 6 dispatches / 5 barriers per layer — the input
+         * norm folds into the qkv GEMV prologue, gate+up share one norm-fused
+         * dispatch, swiglu+residual fold into the down GEMV, and the residual
+         * lives entirely in g_fx. Requires the fused PSOs, coal16-compatible
+         * dims, and the per-layer type mix this variant was built for
+         * (q/k/o/gate/up=Q4_K, v/down in {Q4_K,Q6_K}, lm=Q6_K, qwen3-style
+         * qk-norm). Anything else falls back to the general path.
+         * STRATUM_FWD_NOFUSE forces off. */
+        static int s_fwd_nofuse = -1;
+        if (s_fwd_nofuse < 0) s_fwd_nofuse = getenv("STRATUM_FWD_NOFUSE") ? 1 : 0;
+        int fuse_all = !s_fwd_nofuse && !s_fwd_nocoal &&
+            g_qkv_norm && g_gu_norm && g_qkr_dual && g_q4k_accum &&
+            g_q6k_norm && g_q6k_swires && g_q4k_swires && g_attn_qkr && lm_is_q6 &&
+            (H % 256) == 0 && ((Nq*Hd) % 256) == 0 && (Ff % 256) == 0 &&
+            Ff <= 4096;
+        for (int i = 0; fuse_all && i < n_layers; i++) {
+            const StratumMetalLayer* ly = &layers[i];
+            if (ly->q_ty != 12 || ly->k_ty != 12 ||
+                (ly->v_ty != 12 && ly->v_ty != 14) ||
+                ly->o_ty != 12 || ly->gate_ty != 12 || ly->up_ty != 12 ||
+                (ly->down_ty != 12 && ly->down_ty != 14) ||
+                !ly->qnorm_off || !ly->knorm_off) {
+                fuse_all = 0;
+
+            }
+        }
+        static int s_fuse_logged = 0;
+        if (fuse_all && !s_fuse_logged) {
+            s_fuse_logged = 1;
+            fprintf(stderr, "  Metal GPU: fused layer path (6 dispatches/layer)\n");
+        }
         for (int L=0; L<n_layers; L++) {
             const StratumMetalLayer* ly=&layers[L];
-            NORM(ly->attn_norm_off, g_fx, g_fxn);
-            MM(ly->q_ty, ly->q_off, ly->q_tb, g_fxn, g_fq, Nq*Hd, H);
-            /* k,v written straight into the KV cache slot (no copy encoder) */
             size_t koff = ((size_t)L*kv_layer_stride + kv_slot)*4;
-            MMO(ly->k_ty, ly->k_off, ly->k_tb, g_fxn, g_fkv_k, koff, Nk*Hd, H);
-            MMO(ly->v_ty, ly->v_off, ly->v_tb, g_fxn, g_fkv_v, koff, Nk*Hd, H);
-            ROPE(g_fq, Nq); ROPEO(g_fkv_k, koff, Nk);
-            /* attention */
-            { id<MTLComputeCommandEncoder> e=[cmd computeCommandEncoder]; [e setComputePipelineState:g_attn];
-              [e setBuffer:g_fq offset:0 atIndex:0];
-              [e setBuffer:g_fkv_k offset:(size_t)L*kv_layer_stride*4 atIndex:1];
-              [e setBuffer:g_fkv_v offset:(size_t)L*kv_layer_stride*4 atIndex:2];
-              [e setBuffer:g_fattn offset:0 atIndex:3];
-              [e setBytes:&Hdu length:4 atIndex:4]; [e setBytes:&Nqu length:4 atIndex:5];
-              [e setBytes:&Nku length:4 atIndex:6]; [e setBytes:&kvn length:4 atIndex:7];
-              [e setBytes:&scale length:4 atIndex:8];
-              [e dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; [e endEncoding]; }
-            MM(ly->o_ty, ly->o_off, ly->o_tb, g_fattn, g_ftmp, H, Nq*Hd);
-            ELEM(g_add, g_fx, 0, g_ftmp, 0, H);
-            if (L==0 && getenv("STRATUM_FWDBG")) {
-                const float* a=(const float*)[g_fattn contents];
-                const float* t=(const float*)[g_ftmp contents];
-                const float* x=(const float*)[g_fx contents];
-                const float* kk=(const float*)[g_fk contents];
-                const float* vv=(const float*)[g_fv contents];
-                fprintf(stderr,"  [L0] kvn=%u k[0]=%.3f v[0]=%.3f attn[0]=%.4f o[0]=%.4f x[0]=%.4f\n",
-                        kvn, kk[0], vv[0], a[0],t[0],x[0]);
+            id<MTLComputeCommandEncoder> enc=[cmd computeCommandEncoder];
+            if (fuse_all) {
+                { id<MTLBuffer> wbq,wbk,wbv,gb; uint64_t woq,wok,wov,go;
+                  if (find_chunk(ly->q_off,ly->q_tb,&wbq,&woq)!=0) return -1;
+                  if (find_chunk(ly->k_off,ly->k_tb,&wbk,&wok)!=0) return -1;
+                  if (find_chunk(ly->v_off,ly->v_tb,&wbv,&wov)!=0) return -1;
+                  if (find_chunk(ly->attn_norm_off,(size_t)H*4,&gb,&go)!=0) return -1;
+                  [enc setComputePipelineState:g_qkv_norm];
+                  [enc setBuffer:wbq offset:woq atIndex:0];
+                  [enc setBuffer:wbk offset:wok atIndex:1];
+                  [enc setBuffer:wbv offset:wov atIndex:2];
+                  [enc setBuffer:g_fx offset:0 atIndex:3];
+                  [enc setBuffer:gb offset:go atIndex:4];
+                  [enc setBuffer:g_fq offset:0 atIndex:5];
+                  [enc setBuffer:g_fkv_k offset:koff atIndex:6];
+                  [enc setBuffer:g_fkv_v offset:koff atIndex:7];
+                  [enc setBytes:&Hu length:4 atIndex:8];
+                  [enc setBytes:&rms_eps length:4 atIndex:9];
+                  uint32_t _nq=(uint32_t)(Nq*Hd), _nk=(uint32_t)(Nk*Hd),
+                           _nt=(uint32_t)((Nq+2*Nk)*Hd);
+                  [enc setBytes:&_nq length:4 atIndex:10];
+                  [enc setBytes:&_nk length:4 atIndex:11];
+                  [enc setBytes:&_nt length:4 atIndex:12];
+                  uint32_t _vq6 = (uint32_t)(ly->v_ty == 14);
+                  [enc setBytes:&_vq6 length:4 atIndex:13];
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((_nt+15)/16),1,1)
+                      threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                BAR;
+                { id<MTLBuffer> gq,gk; uint64_t goq,gok;
+                if (find_chunk(ly->qnorm_off,(size_t)Hd*4,&gq,&goq)!=0) return -1;
+                if (find_chunk(ly->knorm_off,(size_t)Hd*4,&gk,&gok)!=0) return -1;
+                [enc setComputePipelineState:g_attn_qkr];
+                [enc setBuffer:g_fq offset:0 atIndex:0];
+                [enc setBuffer:g_fkv_k offset:(size_t)L*kv_layer_stride*4 atIndex:1];
+                [enc setBuffer:g_fkv_v offset:(size_t)L*kv_layer_stride*4 atIndex:2];
+                [enc setBuffer:g_fattn offset:0 atIndex:3];
+                [enc setBuffer:gq offset:goq atIndex:4];
+                [enc setBuffer:gk offset:gok atIndex:5];
+                [enc setBytes:&Hdu length:4 atIndex:6]; [enc setBytes:&Nqu length:4 atIndex:7];
+                [enc setBytes:&Nku length:4 atIndex:8]; [enc setBytes:&kvn length:4 atIndex:9];
+                [enc setBytes:&scale length:4 atIndex:10];
+                [enc setBytes:&rdu length:4 atIndex:11];
+                [enc setBytes:&posi length:4 atIndex:12];
+                [enc setBytes:&rope_theta length:4 atIndex:13];
+                [enc setBytes:&_rneox length:4 atIndex:14];
+                [enc setBytes:&rms_eps length:4 atIndex:15];
+                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                BAR;
+                { id<MTLBuffer> wb; uint64_t wo;
+                  if (find_chunk(ly->o_off,ly->o_tb,&wb,&wo)!=0) return -1;
+                  [enc setComputePipelineState:g_q4k_accum];
+                  [enc setBuffer:wb offset:wo atIndex:0];
+                  [enc setBuffer:g_fattn offset:0 atIndex:1];
+                  [enc setBuffer:g_fx offset:0 atIndex:2];
+                  uint32_t _K=(uint32_t)(Nq*Hd), _N=(uint32_t)H;
+                  [enc setBytes:&_K length:4 atIndex:3]; [enc setBytes:&_N length:4 atIndex:4];
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+15)/16),1,1)
+                      threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                BAR;
+                { id<MTLBuffer> wbg,wbu,gb; uint64_t wog,wou,go;
+                  if (find_chunk(ly->gate_off,ly->gate_tb,&wbg,&wog)!=0) return -1;
+                  if (find_chunk(ly->up_off,ly->up_tb,&wbu,&wou)!=0) return -1;
+                  if (find_chunk(ly->ffn_norm_off,(size_t)H*4,&gb,&go)!=0) return -1;
+                  [enc setComputePipelineState:g_gu_norm];
+                  [enc setBuffer:wbg offset:wog atIndex:0];
+                  [enc setBuffer:wbu offset:wou atIndex:1];
+                  [enc setBuffer:g_fx offset:0 atIndex:2];
+                  [enc setBuffer:gb offset:go atIndex:3];
+                  [enc setBuffer:g_fg offset:0 atIndex:4];
+                  [enc setBuffer:g_fu offset:0 atIndex:5];
+                  [enc setBytes:&Hu length:4 atIndex:6];
+                  [enc setBytes:&rms_eps length:4 atIndex:7];
+                  uint32_t _nf=(uint32_t)Ff;
+                  [enc setBytes:&_nf length:4 atIndex:8];
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((2*Ff+15)/16),1,1)
+                      threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                BAR;
+                { id<MTLBuffer> wb; uint64_t wo;
+                  if (find_chunk(ly->down_off,ly->down_tb,&wb,&wo)!=0) return -1;
+                  [enc setComputePipelineState:(ly->down_ty == 14 ? g_q6k_swires : g_q4k_swires)];
+                  [enc setBuffer:wb offset:wo atIndex:0];
+                  [enc setBuffer:g_fg offset:0 atIndex:1];
+                  [enc setBuffer:g_fu offset:0 atIndex:2];
+                  [enc setBuffer:g_fx offset:0 atIndex:3];
+                  uint32_t _K=(uint32_t)Ff, _N=(uint32_t)H;
+                  [enc setBytes:&_K length:4 atIndex:4]; [enc setBytes:&_N length:4 atIndex:5];
+                  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+15)/16),1,1)
+                      threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                [enc endEncoding];
+                continue;
             }
-            /* FFN */
-            NORM(ly->ffn_norm_off, g_fx, g_fxn);
-            MM(ly->gate_ty, ly->gate_off, ly->gate_tb, g_fxn, g_fg, Ff, H);
-            MM(ly->up_ty,   ly->up_off,   ly->up_tb,   g_fxn, g_fu, Ff, H);
-            { id<MTLComputeCommandEncoder> e=[cmd computeCommandEncoder]; [e setComputePipelineState:g_swiglu];
-              [e setBuffer:g_fg offset:0 atIndex:0]; [e setBuffer:g_fu offset:0 atIndex:1];
-              [e setBuffer:g_fa offset:0 atIndex:2]; [e setBytes:&Ffu length:4 atIndex:3];
-              [e dispatchThreads:MTLSizeMake((NSUInteger)Ff,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)]; [e endEncoding]; }
+            /* layer input norm: layer 0 only — later layers' xn comes from
+             * the previous layer's trailing ADDNORM (residual fused). */
+            if (L==0) { NORM(ly->attn_norm_off, g_fx, g_fxn); BAR; }
+            MM(ly->q_ty, ly->q_off, ly->q_tb, g_fxn, g_fq, 0, Nq*Hd, H);
+            MM(ly->k_ty, ly->k_off, ly->k_tb, g_fxn, g_fkv_k, koff, Nk*Hd, H);
+            MM(ly->v_ty, ly->v_off, ly->v_tb, g_fxn, g_fkv_v, koff, Nk*Hd, H);
+            BAR;
+            /* qk-norm fused with rope when the model has qk-norm gains
+             * (qwen3); otherwise plain rope. */
+            if (ly->qnorm_off) {
+                if (!g_qknorm_rope) return -1;
+                QKROPE(g_fq, 0, ly->qnorm_off, Nq);
+            } else {
+                ROPE(g_fq, Nq);
+            }
+            if (ly->knorm_off) {
+                if (!g_qknorm_rope) return -1;
+                QKROPE(g_fkv_k, koff, ly->knorm_off, Nk);
+            } else {
+                ROPEO(g_fkv_k, koff, Nk);
+            }
+            BAR;
+            [enc setComputePipelineState:g_attn];
+            [enc setBuffer:g_fq offset:0 atIndex:0];
+            [enc setBuffer:g_fkv_k offset:(size_t)L*kv_layer_stride*4 atIndex:1];
+            [enc setBuffer:g_fkv_v offset:(size_t)L*kv_layer_stride*4 atIndex:2];
+            [enc setBuffer:g_fattn offset:0 atIndex:3];
+            [enc setBytes:&Hdu length:4 atIndex:4]; [enc setBytes:&Nqu length:4 atIndex:5];
+            [enc setBytes:&Nku length:4 atIndex:6]; [enc setBytes:&kvn length:4 atIndex:7];
+            [enc setBytes:&scale length:4 atIndex:8];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+            BAR;
+            MM(ly->o_ty, ly->o_off, ly->o_tb, g_fattn, g_ftmp, 0, H, Nq*Hd);
+            BAR;
+            /* residual add + ffn norm in one dispatch */
+            ADDNORM(g_ftmp, ly->ffn_norm_off);
+            BAR;
+            MM(ly->gate_ty, ly->gate_off, ly->gate_tb, g_fxn, g_fg, 0, Ff, H);
+            MM(ly->up_ty,   ly->up_off,   ly->up_tb,   g_fxn, g_fu, 0, Ff, H);
+            BAR;
+            [enc setComputePipelineState:g_swiglu];
+            [enc setBuffer:g_fg offset:0 atIndex:0]; [enc setBuffer:g_fu offset:0 atIndex:1];
+            [enc setBuffer:g_fa offset:0 atIndex:2]; [enc setBytes:&Ffu length:4 atIndex:3];
+            [enc dispatchThreads:MTLSizeMake((NSUInteger)Ff,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            BAR;
 
-            /* V7: Sparse down_proj — skip blocks where |fa| < threshold */
+            /* V7: Sparse down_proj — opt-in debug path, keeps its own
+             * encoders (the shared enc is closed around it). */
             static id<MTLComputePipelineState> s_sparse_sgemv = nil;
             static id<MTLComputePipelineState> s_blockmax = nil;
             static id<MTLBuffer> s_blockmax_buf = nil;
@@ -1025,6 +1248,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             }
 
             if (s_sparse_sgemv && s_blockmax && ly->down_ty == 12) {
+                [enc endEncoding];
                 /* Compute block max of fa */
                 size_t bm_bytes = (size_t)(Ff / 32) * sizeof(float);
                 if (bm_bytes > s_blockmax_cap) {
@@ -1057,38 +1281,79 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                     [e dispatchThreadgroups:MTLSizeMake((NSUInteger)H,1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)];
                     [e endEncoding];
                 } else {
-                    MM(ly->down_ty, ly->down_off, ly->down_tb, g_fa, g_ftmp, H, Ff);
+                    enc=[cmd computeCommandEncoder];
+                    MM(ly->down_ty, ly->down_off, ly->down_tb, g_fa, g_ftmp, 0, H, Ff);
                 }
+                enc=[cmd computeCommandEncoder];
             } else {
-                MM(ly->down_ty, ly->down_off, ly->down_tb, g_fa, g_ftmp, H, Ff);
+                MM(ly->down_ty, ly->down_off, ly->down_tb, g_fa, g_ftmp, 0, H, Ff);
             }
-            ELEM(g_add, g_fx, 0, g_ftmp, 0, H);
+            BAR;
+            /* residual add + NEXT layer's input norm (or output norm for the
+             * last layer) in one dispatch — g_fxn is ready for the next
+             * layer's qkv / the final lm_head. */
+            uint64_t nxt_gain = (L + 1 < n_layers) ? layers[L+1].attn_norm_off
+                                                 : out_norm_off;
+            ADDNORM(g_ftmp, nxt_gain);
+            [enc endEncoding];
         }
-        NORM(out_norm_off, g_fx, g_fxn);
+        { id<MTLComputeCommandEncoder> enc=[cmd computeCommandEncoder];
 
         /* V-opt: fused argmax on GPU — skip 128KB logits transfer to CPU.
          * Only when caller passes logits_out=NULL (greedy decode). */
-        if (!logits_out && g_q4k_argmax_b) {
+        if (fuse_all) {
+            id<MTLBuffer> _wb,_gb; uint64_t _wo,_go;
+            if (find_chunk(lm_off, lm_tb, &_wb, &_wo)!=0) return -1;
+            if (find_chunk(out_norm_off,(size_t)H*4,&_gb,&_go)!=0) return -1;
+            [enc setComputePipelineState:g_q6k_norm];
+            [enc setBuffer:_wb offset:_wo atIndex:0];
+            [enc setBuffer:g_fx offset:0 atIndex:1];
+            [enc setBuffer:_gb offset:_go atIndex:2];
+            [enc setBuffer:g_flog offset:0 atIndex:3];
+            [enc setBytes:&Hu length:4 atIndex:4];
+            [enc setBytes:&Vu length:4 atIndex:5];
+            [enc setBytes:&rms_eps length:4 atIndex:6];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((V+15)/16),1,1)
+                threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            if ((!logits_out || chain_slot >= 0) && g_argmax_b) {
+                BAR;
+                [enc setComputePipelineState:g_argmax_b];
+                [enc setBuffer:g_flog offset:0 atIndex:0];
+                if (chain_slot >= 0) {
+                    uint32_t wsl=(uint32_t)((chain_slot+1)&255)*4;
+                    [enc setBuffer:g_tok_ring offset:wsl atIndex:1];
+                } else {
+                    [enc setBuffer:g_flog offset:0 atIndex:1];
+                }
+                [enc setBytes:&Vu length:4 atIndex:2];
+                [enc dispatchThreadgroups:MTLSizeMake(1,1,1)
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            }
+        } else if (!logits_out && g_q4k_argmax_b) {
             id<MTLBuffer> _wb; uint64_t _wo;
             if (find_chunk(lm_off, lm_tb, &_wb, &_wo) == 0) {
-                id<MTLComputeCommandEncoder> e=[cmd computeCommandEncoder];
-                [e setComputePipelineState:(lm_is_q6 ? g_q6k_argmax_b : g_q4k_argmax_b)];
-                [e setBuffer:_wb offset:_wo atIndex:0];
-                [e setBuffer:g_fxn offset:0 atIndex:1];
-                [e setBuffer:g_flog offset:0 atIndex:2]; /* reuse as token output */
+                [enc setComputePipelineState:(lm_is_q6 ? g_q6k_argmax_b : g_q4k_argmax_b)];
+                [enc setBuffer:_wb offset:_wo atIndex:0];
+                [enc setBuffer:g_fxn offset:0 atIndex:1];
+                [enc setBuffer:g_flog offset:0 atIndex:2]; /* reuse as token output */
                 uint32_t _K=(uint32_t)H, _V=(uint32_t)V, _B=1;
-                [e setBytes:&_K length:4 atIndex:3]; [e setBytes:&_V length:4 atIndex:4]; [e setBytes:&_B length:4 atIndex:5];
-                [e dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
-                [e endEncoding];
+                [enc setBytes:&_K length:4 atIndex:3]; [enc setBytes:&_V length:4 atIndex:4]; [enc setBytes:&_B length:4 atIndex:5];
+                [enc dispatchThreadgroups:MTLSizeMake(1,1,1) threadsPerThreadgroup:MTLSizeMake(256,1,1)];
             } else {
-                MM(lm_is_q6 ? 14 : 12, lm_off, lm_tb, g_fxn, g_flog, V, H);
+                MM(lm_is_q6 ? 14 : 12, lm_off, lm_tb, g_fxn, g_flog, 0, V, H);
             }
         } else {
-            MM(lm_is_q6 ? 14 : 12, lm_off, lm_tb, g_fxn, g_flog, V, H);
+            MM(lm_is_q6 ? 14 : 12, lm_off, lm_tb, g_fxn, g_flog, 0, V, H);
         }
+        [enc endEncoding]; }
 
         struct timespec _d0,_d1; clock_gettime(CLOCK_MONOTONIC,&_d0);
-        [cmd commit]; [cmd waitUntilCompleted];
+        [cmd commit];
+        if (chain_slot >= 0) {
+            g_chain_last = cmd;
+            return 0;
+        }
+        [cmd waitUntilCompleted];
         clock_gettime(CLOCK_MONOTONIC,&_d1);
         g_n_dispatch++; g_dispatch_secs += (_d1.tv_sec-_d0.tv_sec)+(_d1.tv_nsec-_d0.tv_nsec)/1e9;
         if (logits_out) {
@@ -1097,7 +1362,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             /* Fused argmax: g_flog[0] contains the token id (uint) */
             /* Caller reads it via stratum_metal_get_last_token() */
         }
-        if (getenv("STRATUM_FWDBG")) {
+        if (logits_out && getenv("STRATUM_FWDBG")) {
             const float* xx = (const float*)[g_fx contents];
             const float* lg = logits_out;
             float mx=lg[0]; int mi=0;

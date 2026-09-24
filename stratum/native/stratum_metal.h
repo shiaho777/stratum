@@ -30,6 +30,7 @@ int stratum_metal_ffn(uint64_t gate_off, size_t gate_tb,
 
 typedef struct {
     unsigned long long attn_norm_off, ffn_norm_off;
+    unsigned long long qnorm_off, knorm_off;
     unsigned long long q_off, k_off, v_off, o_off;
     unsigned long long gate_off, up_off, down_off;
     unsigned long      q_tb, k_tb, v_tb, o_tb, gate_tb, up_tb, down_tb;
@@ -42,7 +43,17 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                           const float* x_in, float* logits_out,
                           int H, int Hd, int Nq, int Nk, int Ff, int V,
                           int rope_dim, int position, float rope_theta,
-                          float rms_eps, int kv_len, int max_kv);
+                          float rms_eps, int kv_len, int max_kv, int rope_neox,
+                          unsigned long long embd_off, unsigned long embd_tb,
+                          int chain_slot);
+
+/* Chained decode: seed the GPU token ring, then submit forward() calls with
+ * chain_slot = step index. Each buffer gathers its embedding from the ring
+ * and writes its argmax into the next ring slot — no CPU round-trip between
+ * tokens. Wait once on the last command buffer, then read ring slots. */
+void stratum_metal_chain_seed(int slot, int tok);
+const uint32_t* stratum_metal_chain_ring(void);
+int stratum_metal_chain_wait(void);
 
 int stratum_metal_forward_batched(const StratumMetalLayer* layers, int n_layers,
                           unsigned long long out_norm_off,

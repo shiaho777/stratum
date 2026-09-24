@@ -1600,6 +1600,78 @@ kernel void rmsnorm_f32(
     for (uint i = tid; i < n; i += tg) y[i] = x[i]*scale*gain[i];
 }
 
+/* Fused residual-add + rmsnorm: x[i] += r[i], then y = rms(x)*gain.
+ * Replaces a separate add_inplace + rmsnorm pair (one dispatch). Same math
+ * order as the CPU path (residual update, then normalize). */
+kernel void rmsnorm_resid_f32(
+    device float*       x    [[buffer(0)]],   /* residual accumulator, updated */
+    device const float* r    [[buffer(1)]],   /* addend */
+    device const float* gain [[buffer(2)]],
+    device float*       y    [[buffer(3)]],   /* normalized output */
+    constant uint&      n    [[buffer(4)]],
+    constant float&     eps  [[buffer(5)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    threadgroup float sdata[256];
+    float local = 0.0f;
+    for (uint i = tid; i < n; i += tg) { float v = x[i] + r[i]; x[i] = v; local += v*v; }
+    sdata[tid] = local;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid+s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float scale = 1.0f / sqrt(sdata[0]/float(n) + eps);
+    for (uint i = tid; i < n; i += tg) y[i] = x[i]*scale*gain[i];
+}
+
+/* Fused per-head qk-norm + RoPE, in-place on a [nheads*hd] buffer.
+ * One threadgroup per head: rmsnorm(xh)*gain then rotate pairs.
+ * neox (qwen3): half-split pairs (k, k+pairs); else adjacent (2k, 2k+1).
+ * Elements past rope_dim get the norm only. */
+kernel void qknorm_rope_f32(
+    device float*       x    [[buffer(0)]],
+    device const float* gain [[buffer(1)]],
+    constant uint&      hd   [[buffer(2)]],
+    constant float&     eps  [[buffer(3)]],
+    constant uint&      nheads [[buffer(4)]],
+    constant uint&      rope_dim [[buffer(5)]],
+    constant int&       position [[buffer(6)]],
+    constant float&     theta    [[buffer(7)]],
+    constant uint&      neox     [[buffer(8)]],
+    uint h   [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    if (h >= nheads) return;
+    device float* xh = x + (size_t)h * hd;
+    threadgroup float sdata[256];
+    float local = 0.0f;
+    for (uint i = tid; i < hd; i += tg) { float v = xh[i]; local += v*v; }
+    sdata[tid] = local;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid+s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float scale = 1.0f / sqrt(sdata[0]/float(hd) + eps);
+    uint pairs = rope_dim/2;
+    for (uint kk = tid; kk < pairs; kk += tg) {
+        uint i0 = neox ? kk : 2*kk;
+        uint i1 = neox ? kk + pairs : 2*kk + 1;
+        float v0 = xh[i0]*scale*gain[i0];
+        float v1 = xh[i1]*scale*gain[i1];
+        float freq  = 1.0f / pow(theta, float(2*kk)/float(rope_dim));
+        float angle = float(position) * freq;
+        float c = cos(angle), s = sin(angle);
+        xh[i0] = v0*c - v1*s;
+        xh[i1] = v0*s + v1*c;
+    }
+    for (uint i = rope_dim + tid; i < hd; i += tg)
+        xh[i] = xh[i]*scale*gain[i];
+}
+
 /* RoPE (interleaved pairs), matching CPU la_rope. Applies to all heads of a
  * [n_heads * head_dim] buffer; rope_dim pairs per head. */
 kernel void rope_f32(
@@ -1608,6 +1680,7 @@ kernel void rope_f32(
     constant uint&  rope_dim [[buffer(2)]],
     constant int&   position [[buffer(3)]],
     constant float& theta    [[buffer(4)]],
+    constant uint&  neox     [[buffer(5)]],
     uint gid [[thread_position_in_grid]])
 {
     uint pairs = rope_dim/2;
@@ -1617,9 +1690,12 @@ kernel void rope_f32(
     float freq  = 1.0f / pow(theta, float(2*k)/float(rope_dim));
     float angle = float(position) * freq;
     float c = cos(angle), s = sin(angle);
-    float x0 = xh[2*k], x1 = xh[2*k+1];
-    xh[2*k]   = x0*c - x1*s;
-    xh[2*k+1] = x0*s + x1*c;
+    /* neox (qwen3): half-split pairs (k, k+pairs); else adjacent (2k, 2k+1) */
+    uint i0 = neox ? k : 2*k;
+    uint i1 = neox ? k + pairs : 2*k + 1;
+    float x0 = xh[i0], x1 = xh[i1];
+    xh[i0] = x0*c - x1*s;
+    xh[i1] = x0*s + x1*c;
 }
 
 /* Decode attention, one threadgroup per query head. GQA: kv_h = h*Nk/Nq.
@@ -2307,3 +2383,602 @@ kernel void q4k_tile_gemm(
     }
 }
 
+
+/* ===== Whole-layer fusion kernels (single-token decode) =====
+ * coal16 mapping (16 rows/tg, 16 thr/row) with a small-op stage folded
+ * into the GEMV prologue/epilogue, so a transformer layer runs in ~6
+ * dispatches instead of ~15. The norm scale is recomputed redundantly
+ * per threadgroup (a few hundred FLOPs on an L2-hot x) — cheaper than a
+ * dispatch boundary + pipeline drain. */
+
+struct block_q6_K_l {
+    uchar ql[128];
+    uchar qh[64];
+    char  scales[16];
+    half  d;
+};
+
+/* Fused QKV projection with rmsnorm prologue: y = W * rmsnorm(x)*gain.
+ * One dispatch covers q (Q4_K rows [0,nq)), k (Q4_K rows [nq,nq+nk)) and
+ * v (Q6_K rows [nq+nk,ntot)) — each 16-thread row-group picks its tensor
+ * independently, so no range alignment is required. */
+kernel void qkv_coal16_norm(
+    device const block_q4_K*   Wq   [[buffer(0)]],
+    device const block_q4_K*   Wk   [[buffer(1)]],
+    device const block_q6_K_l* Wv   [[buffer(2)]],
+    device const float*        x    [[buffer(3)]],
+    device const float*        gain [[buffer(4)]],
+    device float*              yq   [[buffer(5)]],
+    device float*              yk   [[buffer(6)]],
+    device float*              yv   [[buffer(7)]],
+    constant uint&             K    [[buffer(8)]],
+    constant float&            eps  [[buffer(9)]],
+    constant uint&             nq   [[buffer(10)]],
+    constant uint&             nk   [[buffer(11)]],
+    constant uint&             ntot [[buffer(12)]],
+    constant uint&             vq6  [[buffer(13)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    threadgroup float tg_red[8];
+    threadgroup float tg_scale;
+    {
+        float ss = 0.0f;
+        for (uint i = tid; i < K; i += 256u) { float v = x[i]; ss += v*v; }
+        ss += simd_shuffle_xor(ss, 16);
+        ss += simd_shuffle_xor(ss, 8);
+        ss += simd_shuffle_xor(ss, 4);
+        ss += simd_shuffle_xor(ss, 2);
+        ss += simd_shuffle_xor(ss, 1);
+        if ((tid & 31u) == 0u) tg_red[tid >> 5] = ss;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float t = 0.0f;
+            for (int i = 0; i < 8; i++) t += tg_red[i];
+            tg_scale = 1.0f / sqrt(t / float(K) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const float nrm = tg_scale;
+
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint grow      = tgid * 16u + local_row;
+    if (grow >= ntot) return;
+    const uint blocks_per_row = K / 256;
+
+    if (grow < nq + nk) {
+        device const block_q4_K* W; device float* y; uint r;
+        if (grow < nq) { W = Wq; y = yq; r = grow; }
+        else           { W = Wk; y = yk; r = grow - nq; }
+        device const block_q4_K* row_blocks = W + (uint)r * blocks_per_row;
+        const uint sub_block = lane >> 1;
+        const uint elem      = lane & 1;
+        const uint shift     = (sub_block & 1) ? 4u : 0u;
+        float partial = 0.0f;
+        for (uint blk = 0; blk < blocks_per_row; blk++) {
+            const device block_q4_K& b = row_blocks[blk];
+            const float d = float(b.d), dmin = float(b.dmin);
+            uchar sc, m;
+            unpack_scale_min(sub_block, b.scales, sc, m);
+            const float d_sc = d * float(sc), dmin_m = dmin * float(m);
+            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
+            const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+            float qx = 0.0f, xs = 0.0f;
+            #pragma unroll
+            for (int l4 = 0; l4 < 4; l4++) {
+                uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
+                uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
+                float4 xv  = *(device const float4*)(x    + xoff + 8u*l4);
+                float4 gv  = *(device const float4*)(gain + xoff + 8u*l4);
+                xv = (xv * nrm) * gv;
+                qx += dot(float4(nib), xv);
+                xs += xv.x + xv.y + xv.z + xv.w;
+            }
+            partial += d_sc * qx - dmin_m * xs;
+        }
+        float tot = partial;
+        tot += simd_shuffle_xor(tot, 8);
+        tot += simd_shuffle_xor(tot, 4);
+        tot += simd_shuffle_xor(tot, 2);
+        tot += simd_shuffle_xor(tot, 1);
+        if (lane == 0) y[r] = tot;
+    } else if (!vq6) {
+        /* v stored as Q4_K on some layers */
+        const uint r = grow - nq - nk;
+        device const block_q4_K* row_blocks =
+            (device const block_q4_K*)Wv + (uint)r * blocks_per_row;
+        const uint sub_block = lane >> 1;
+        const uint elem      = lane & 1;
+        const uint shift     = (sub_block & 1) ? 4u : 0u;
+        float partial = 0.0f;
+        for (uint blk = 0; blk < blocks_per_row; blk++) {
+            const device block_q4_K& b = row_blocks[blk];
+            const float d = float(b.d), dmin = float(b.dmin);
+            uchar sc, m;
+            unpack_scale_min(sub_block, b.scales, sc, m);
+            const float d_sc = d * float(sc), dmin_m = dmin * float(m);
+            const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
+            const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+            float qx = 0.0f, xs = 0.0f;
+            #pragma unroll
+            for (int l4 = 0; l4 < 4; l4++) {
+                uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
+                uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
+                float4 xv  = *(device const float4*)(x    + xoff + 8u*l4);
+                float4 gv  = *(device const float4*)(gain + xoff + 8u*l4);
+                xv = (xv * nrm) * gv;
+                qx += dot(float4(nib), xv);
+                xs += xv.x + xv.y + xv.z + xv.w;
+            }
+            partial += d_sc * qx - dmin_m * xs;
+        }
+        float tot = partial;
+        tot += simd_shuffle_xor(tot, 8);
+        tot += simd_shuffle_xor(tot, 4);
+        tot += simd_shuffle_xor(tot, 2);
+        tot += simd_shuffle_xor(tot, 1);
+        if (lane == 0) yv[r] = tot;
+    } else {
+        const uint r = grow - nq - nk;
+        device const block_q6_K_l* row_blocks = Wv + (uint)r * blocks_per_row;
+        const uint half_idx = lane >> 3;
+        const uint t8 = lane & 7;
+        const uint l0 = t8 * 4;
+        const uint is = t8 >> 2;
+        float partial = 0.0f;
+        for (uint blk = 0; blk < blocks_per_row; blk++) {
+            const device block_q6_K_l& b = row_blocks[blk];
+            const float d = float(b.d);
+            const uint n = half_idx * 128;
+            const device uchar* ql = b.ql + n / 2;
+            const device uchar* qh = b.qh + n / 4;
+            const device char*  s  = b.scales + n / 16;
+            const uint base = blk * 256 + n;
+            float a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f;
+            #pragma unroll
+            for (int dl = 0; dl < 4; dl++) {
+                const uint l = l0 + (uint)dl;
+                const uchar ql_lo = ql[l], ql_hi = ql[l + 32];
+                const uchar qh_b  = qh[l];
+                const int q1 = int((ql_lo & 0xF) | (((qh_b >> 0) & 3) << 4)) - 32;
+                const int q2 = int((ql_hi & 0xF) | (((qh_b >> 2) & 3) << 4)) - 32;
+                const int q3 = int((ql_lo >>  4) | (((qh_b >> 4) & 3) << 4)) - 32;
+                const int q4 = int((ql_hi >>  4) | (((qh_b >> 6) & 3) << 4)) - 32;
+                a1 += float(q1) * (x[base+l+ 0] * nrm * gain[base+l+ 0]);
+                a2 += float(q2) * (x[base+l+32] * nrm * gain[base+l+32]);
+                a3 += float(q3) * (x[base+l+64] * nrm * gain[base+l+64]);
+                a4 += float(q4) * (x[base+l+96] * nrm * gain[base+l+96]);
+            }
+            partial += d * float(s[is + 0]) * a1;
+            partial += d * float(s[is + 2]) * a2;
+            partial += d * float(s[is + 4]) * a3;
+            partial += d * float(s[is + 6]) * a4;
+        }
+        float tot = partial;
+        tot += simd_shuffle_xor(tot, 8);
+        tot += simd_shuffle_xor(tot, 4);
+        tot += simd_shuffle_xor(tot, 2);
+        tot += simd_shuffle_xor(tot, 1);
+        if (lane == 0) yv[r] = tot;
+    }
+}
+
+/* Fused gate+up projection with rmsnorm prologue (both Q4_K):
+ * rows [0,nf) -> yg = Wg*xn, rows [nf,2*nf) -> yu = Wu*xn. */
+kernel void gateup_coal16_norm(
+    device const block_q4_K*   Wg   [[buffer(0)]],
+    device const block_q4_K*   Wu   [[buffer(1)]],
+    device const float*        x    [[buffer(2)]],
+    device const float*        gain [[buffer(3)]],
+    device float*              yg   [[buffer(4)]],
+    device float*              yu   [[buffer(5)]],
+    constant uint&             K    [[buffer(6)]],
+    constant float&            eps  [[buffer(7)]],
+    constant uint&             nf   [[buffer(8)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    threadgroup float tg_red[8];
+    threadgroup float tg_scale;
+    {
+        float ss = 0.0f;
+        for (uint i = tid; i < K; i += 256u) { float v = x[i]; ss += v*v; }
+        ss += simd_shuffle_xor(ss, 16);
+        ss += simd_shuffle_xor(ss, 8);
+        ss += simd_shuffle_xor(ss, 4);
+        ss += simd_shuffle_xor(ss, 2);
+        ss += simd_shuffle_xor(ss, 1);
+        if ((tid & 31u) == 0u) tg_red[tid >> 5] = ss;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float t = 0.0f;
+            for (int i = 0; i < 8; i++) t += tg_red[i];
+            tg_scale = 1.0f / sqrt(t / float(K) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const float nrm = tg_scale;
+
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint grow      = tgid * 16u + local_row;
+    if (grow >= 2u * nf) return;
+    device const block_q4_K* W; device float* y; uint r;
+    if (grow < nf) { W = Wg; y = yg; r = grow; }
+    else           { W = Wu; y = yu; r = grow - nf; }
+    const uint blocks_per_row = K / 256;
+    device const block_q4_K* row_blocks = W + (uint)r * blocks_per_row;
+    const uint sub_block = lane >> 1;
+    const uint elem      = lane & 1;
+    const uint shift     = (sub_block & 1) ? 4u : 0u;
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q4_K& b = row_blocks[blk];
+        const float d = float(b.d), dmin = float(b.dmin);
+        uchar sc, m;
+        unpack_scale_min(sub_block, b.scales, sc, m);
+        const float d_sc = d * float(sc), dmin_m = dmin * float(m);
+        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 8;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 8;
+        float qx = 0.0f, xs = 0.0f;
+        #pragma unroll
+        for (int l2 = 0; l2 < 2; l2++) {
+            uint2  w2  = *(device const uint2*)(qp + 16u*l2);
+            uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
+            uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
+            float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
+            xa = (xa * nrm) * ga;
+            float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
+            float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
+            xb = (xb * nrm) * gb;
+            qx += dot(float4(na), xa) + dot(float4(nb), xb);
+            xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
+        }
+        partial += d_sc * qx - dmin_m * xs;
+    }
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0) y[r] = tot;
+}
+
+/* coal16 GEMV with residual-accumulate epilogue: y[row] += dot(W_row, x).
+ * The owning thread reads y[row] after its dot — safe in place. */
+kernel void q4k_sgemv_row_coal16_accum(
+    device const block_q4_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device float*            y           [[buffer(2)]],
+    constant uint&           K           [[buffer(3)]],
+    constant uint&           N_total     [[buffer(4)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint sub_block = lane >> 1;
+    const uint elem      = lane & 1;
+    const uint shift     = (sub_block & 1) ? 4u : 0u;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q4_K& b = row_blocks[blk];
+        const float d    = float(b.d);
+        const float dmin = float(b.dmin);
+        uchar sc, m;
+        unpack_scale_min(sub_block, b.scales, sc, m);
+        const float d_sc   = d    * float(sc);
+        const float dmin_m = dmin * float(m);
+
+        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+
+        float qx = 0.0f, xs = 0.0f;
+        #pragma unroll
+        for (int l4 = 0; l4 < 4; l4++) {
+            uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
+            uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xv  = *(device const float4*)(x + xoff + 8u*l4);
+            qx += dot(float4(nib), xv);
+            xs += xv.x + xv.y + xv.z + xv.w;
+        }
+        partial += d_sc * qx - dmin_m * xs;
+    }
+
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] += tot;
+}
+
+/* Per-head qk-norm + rope for q and k in ONE dispatch:
+ * threadgroup h<nq handles q head h, else k head h-nq. */
+kernel void qknorm_rope_dual_f32(
+    device float*       xq       [[buffer(0)]],
+    device float*       xk       [[buffer(1)]],
+    device const float* gq       [[buffer(2)]],
+    device const float* gk       [[buffer(3)]],
+    constant uint&      hd       [[buffer(4)]],
+    constant float&     eps      [[buffer(5)]],
+    constant uint&      nq       [[buffer(6)]],
+    constant uint&      nk       [[buffer(7)]],
+    constant uint&      rope_dim [[buffer(8)]],
+    constant int&       position [[buffer(9)]],
+    constant float&     theta    [[buffer(10)]],
+    constant uint&      neox     [[buffer(11)]],
+    uint h   [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    device float* xh; device const float* gain;
+    if (h < nq) { xh = xq + (size_t)h * hd; gain = gq; }
+    else {
+        uint hk = h - nq;
+        if (hk >= nk) return;
+        xh = xk + (size_t)hk * hd; gain = gk;
+    }
+    threadgroup float sdata[256];
+    float local = 0.0f;
+    for (uint i = tid; i < hd; i += tg) { float v = xh[i]; local += v*v; }
+    sdata[tid] = local;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid+s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float scale = 1.0f / sqrt(sdata[0]/float(hd) + eps);
+    uint pairs = rope_dim/2;
+    for (uint kk = tid; kk < pairs; kk += tg) {
+        uint i0 = neox ? kk : 2*kk;
+        uint i1 = neox ? kk + pairs : 2*kk + 1;
+        float v0 = xh[i0]*scale*gain[i0];
+        float v1 = xh[i1]*scale*gain[i1];
+        float freq  = 1.0f / pow(theta, float(2*kk)/float(rope_dim));
+        float angle = float(position) * freq;
+        float c = cos(angle), s = sin(angle);
+        xh[i0] = v0*c - v1*s;
+        xh[i1] = v0*s + v1*c;
+    }
+    for (uint i = rope_dim + tid; i < hd; i += tg)
+        xh[i] = xh[i]*scale*gain[i];
+}
+
+
+/* Q4_K coal16 GEMV with fused SwiGLU prologue and residual epilogue:
+ * fa[i] = silu(g[i]) * u[i] staged once per threadgroup (all 16 rows
+ * share it);  y[row] += dot(W_row, fa).  Companion to the Q6_K variant
+ * for layers whose down_proj is Q4_K. */
+kernel void q4k_sgemv_row_coal16_swires(
+    device const block_q4_K* W           [[buffer(0)]],
+    device const float*      g           [[buffer(1)]],
+    device const float*      u           [[buffer(2)]],
+    device float*            y           [[buffer(3)]],
+    constant uint&           K           [[buffer(4)]],
+    constant uint&           N_total     [[buffer(5)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256) return;
+    if (K > 4096u) return;
+    threadgroup float fa_s[4096];
+    for (uint i = tid; i < K; i += 256u) {
+        float gi = g[i];
+        fa_s[i] = gi / (1.0f + exp(-gi)) * u[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint row = tgid * 16u + local_row;
+    const uint rr  = min(row, N_total - 1u);
+    device const block_q4_K* row_blocks = W + (uint)rr * blocks_per_row;
+
+    const uint sub_block = lane >> 1;
+    const uint elem      = lane & 1;
+    const uint shift     = (sub_block & 1) ? 4u : 0u;
+
+    float partial = 0.0f;
+    for (uint blk = 0; blk < blocks_per_row; blk++) {
+        const device block_q4_K& b = row_blocks[blk];
+        const float d    = float(b.d);
+        const float dmin = float(b.dmin);
+        uchar sc, m;
+        unpack_scale_min(sub_block, b.scales, sc, m);
+        const float d_sc   = d    * float(sc);
+        const float dmin_m = dmin * float(m);
+
+        const device uchar* qp = b.qs + (sub_block / 2) * 32 + elem * 4;
+        const uint xoff = blk * 256 + sub_block * 32 + elem * 4;
+
+        float qx = 0.0f, xs = 0.0f;
+        #pragma unroll
+        for (int l4 = 0; l4 < 4; l4++) {
+            uchar4 raw = *(device const uchar4*)(qp + 8u*l4);
+            uchar4 nib = (raw >> uchar4((uchar)shift)) & uchar4(0xF);
+            float4 xv  = *(threadgroup const float4*)(fa_s + xoff + 8u*l4);
+            qx += dot(float4(nib), xv);
+            xs += xv.x + xv.y + xv.z + xv.w;
+        }
+        partial += d_sc * qx - dmin_m * xs;
+    }
+
+    float tot = partial;
+    tot += simd_shuffle_xor(tot, 8);
+    tot += simd_shuffle_xor(tot, 4);
+    tot += simd_shuffle_xor(tot, 2);
+    tot += simd_shuffle_xor(tot, 1);
+    if (lane == 0 && row < N_total) y[row] += tot;
+}
+
+/* Attention decode with fused per-head qk-norm + rope (qwen3-style).
+ * One threadgroup per q head; the prologue normalizes+rotates this head's
+ * q into shared memory and does the same for the current-position k row
+ * (written back to the KV slot by the first q head of each kv group, so
+ * later tokens read roped k). Replaces a separate qknorm+rope dispatch. */
+kernel void attn_decode_qkr_f32(
+    device const float* q       [[buffer(0)]],   // [Nq*Hd] raw (un-normed)
+    device float*       Kc      [[buffer(1)]],   // KV cache; current k slot updated in place
+    device const float* Vc      [[buffer(2)]],
+    device float*       out     [[buffer(3)]],   // [Nq*Hd]
+    device const float* qgain   [[buffer(4)]],   // [Hd]
+    device const float* kgain   [[buffer(5)]],   // [Hd]
+    constant uint&      Hd      [[buffer(6)]],
+    constant uint&      Nq      [[buffer(7)]],
+    constant uint&      Nk      [[buffer(8)]],
+    constant uint&      kvlen   [[buffer(9)]],
+    constant float&     scale   [[buffer(10)]],
+    constant uint&      rope_dim [[buffer(11)]],
+    constant int&       position [[buffer(12)]],
+    constant float&     theta    [[buffer(13)]],
+    constant uint&      neox     [[buffer(14)]],
+    constant float&     eps      [[buffer(15)]],
+    uint h   [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    if (Hd > 128u || tg > 256u) return;
+    const uint kv_h = h * Nk / Nq;
+    device const float* qh_raw = q + h*Hd;
+    device float* kslot = Kc + (size_t)(kvlen-1)*Nk*Hd + kv_h*Hd;
+    threadgroup float qh_s[128];
+    threadgroup float kh_s[128];
+    threadgroup float red[256];
+    threadgroup float ssum;
+
+    /* ---- q head: rmsnorm scale ---- */
+    float lq = 0.0f;
+    for (uint i = tid; i < Hd; i += tg) { float v = qh_raw[i]; lq += v*v; }
+    red[tid] = lq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s > 0; s >>= 1) {
+        if (tid < s) red[tid] += red[tid+s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) ssum = red[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float qscale = 1.0f / sqrt(ssum/float(Hd) + eps);
+
+    /* ---- current k row: rmsnorm scale ---- */
+    float lk = 0.0f;
+    for (uint i = tid; i < Hd; i += tg) { float v = kslot[i]; lk += v*v; }
+    red[tid] = lk;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s > 0; s >>= 1) {
+        if (tid < s) red[tid] += red[tid+s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) ssum = red[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float kscale = 1.0f / sqrt(ssum/float(Hd) + eps);
+
+    /* ---- apply norm gain + rope into shared ---- */
+    const uint pairs = rope_dim/2;
+    for (uint kk = tid; kk < pairs; kk += tg) {
+        uint i0 = neox ? kk : 2*kk;
+        uint i1 = neox ? kk + pairs : 2*kk + 1;
+        float freq  = 1.0f / pow(theta, float(2*kk)/float(rope_dim));
+        float angle = float(position) * freq;
+        float c = cos(angle), s = sin(angle);
+        { float v0 = qh_raw[i0]*qscale*qgain[i0];
+          float v1 = qh_raw[i1]*qscale*qgain[i1];
+          qh_s[i0] = v0*c - v1*s;
+          qh_s[i1] = v0*s + v1*c; }
+        { float v0 = kslot[i0]*kscale*kgain[i0];
+          float v1 = kslot[i1]*kscale*kgain[i1];
+          kh_s[i0] = v0*c - v1*s;
+          kh_s[i1] = v0*s + v1*c; }
+    }
+    for (uint i = rope_dim + tid; i < Hd; i += tg) {
+        qh_s[i] = qh_raw[i]*qscale*qgain[i];
+        kh_s[i] = kslot[i]*kscale*kgain[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    /* write roped+normed current k back so future tokens see it;
+     * only the first q head of each kv group writes (identical value). */
+    if ((h % (Nq/Nk)) == 0) {
+        for (uint i = tid; i < Hd; i += tg) kslot[i] = kh_s[i];
+    }
+    /* ---- standard attention with qh_s / kh_s for the current slot ---- */
+    threadgroup float sc[512];
+    for (uint t = tid; t < kvlen; t += tg) {
+        float dot = 0.0f;
+        if (t == kvlen - 1) {
+            for (uint d = 0; d < Hd; d++) dot += qh_s[d]*kh_s[d];
+        } else {
+            device const float* kt = Kc + (size_t)t*Nk*Hd + kv_h*Hd;
+            for (uint d = 0; d < Hd; d++) dot += qh_s[d]*kt[d];
+        }
+        sc[t] = dot*scale;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float m = -INFINITY;
+    for (uint t = tid; t < kvlen; t += tg) m = max(m, sc[t]);
+    red[tid] = m; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s>0; s>>=1){ if(tid<s) red[tid]=max(red[tid],red[tid+s]); threadgroup_barrier(mem_flags::mem_threadgroup);}
+    float maxv = red[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float lsum = 0.0f;
+    for (uint t = tid; t < kvlen; t += tg) { float e = exp(sc[t]-maxv); sc[t]=e; lsum+=e; }
+    red[tid]=lsum; threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint s = tg/2; s>0; s>>=1){ if(tid<s) red[tid]+=red[tid+s]; threadgroup_barrier(mem_flags::mem_threadgroup);}
+    float inv = 1.0f/red[0];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device float* oh = out + h*Hd;
+    if (tg == 256u) {
+        /* two threads per dim: halves the strided-load chain */
+        threadgroup float acc_s[128][2];
+        const uint d = tid & 127u, vseg = tid >> 7;
+        const uint t0 = vseg ? (kvlen + 1) / 2 : 0;
+        const uint t1 = vseg ? kvlen : (kvlen + 1) / 2;
+        float acc = 0.0f;
+        for (uint t = t0; t < t1; t++) {
+            device const float* vt = Vc + (size_t)t*Nk*Hd + kv_h*Hd;
+            acc += sc[t]*inv*vt[d];
+        }
+        acc_s[d][vseg] = acc;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid < 128u) oh[tid] = acc_s[tid][0] + acc_s[tid][1];
+    } else {
+        for (uint d = tid; d < Hd; d += tg) {
+            float acc = 0.0f;
+            for (uint t = 0; t < kvlen; t++) {
+                device const float* vt = Vc + (size_t)t*Nk*Hd + kv_h*Hd;
+                acc += sc[t]*inv*vt[d];
+            }
+            oh[d] = acc;
+        }
+    }
+}
+
+/* Chained-decode embedding gather: x[i] = embd[tok*H+i] where tok is read
+ * from the GPU token ring (written by the previous token's argmax). Lets
+ * the next token's command buffer run without a CPU round-trip. */
+kernel void embd_gather_f32(
+    device float*       x    [[buffer(0)]],
+    device const float* embd [[buffer(1)]],
+    device const uint*  tokp [[buffer(2)]],
+    constant uint&      H    [[buffer(3)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    device const float* src = embd + (size_t)(*tokp) * H;
+    for (uint i = tid; i < H; i += tg) x[i] = src[i];
+}
