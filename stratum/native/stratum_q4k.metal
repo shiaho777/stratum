@@ -2452,6 +2452,7 @@ kernel void qkv_coal16_norm(
     constant uint&             nk   [[buffer(11)]],
     constant uint&             ntot [[buffer(12)]],
     constant uint&             vq6  [[buffer(13)]],
+    device float*              kraw [[buffer(14)]],  /* raw current-k shadow for attn prologue */
     uint tgid    [[threadgroup_position_in_grid]],
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
@@ -2523,7 +2524,7 @@ kernel void qkv_coal16_norm(
         tot += simd_shuffle_xor(tot, 4);
         tot += simd_shuffle_xor(tot, 2);
         tot += simd_shuffle_xor(tot, 1);
-        if (lane == 0) y[r] = tot;
+        if (lane == 0) { y[r] = tot; if (grow >= nq) kraw[r] = tot; }
     } else if (!vq6) {
         /* v stored as Q4_K on some layers */
         const uint r = grow - nq - nk;
@@ -3019,6 +3020,7 @@ kernel void attn_decode_qkr_f32(
     constant uint&      neox     [[buffer(14)]],
     constant float&     eps      [[buffer(15)]],
     device const float* cs       [[buffer(16)]],
+    device const float* kraw     [[buffer(17)]],   /* raw current-k (unroped) shadow */
     uint h   [[threadgroup_position_in_grid]],
     uint tid [[thread_position_in_threadgroup]],
     uint tg  [[threads_per_threadgroup]])
@@ -3027,6 +3029,7 @@ kernel void attn_decode_qkr_f32(
     const uint kv_h = h * Nk / Nq;
     device const float* qh_raw = q + h*Hd;
     device float* kslot = Kc + (size_t)(kvlen-1)*Nk*Hd + kv_h*Hd;
+    device const float* kr = kraw + kv_h*Hd;
     threadgroup float qh_s[128];
     threadgroup float kh_s[128];
     threadgroup float red[256];
@@ -3038,7 +3041,7 @@ kernel void attn_decode_qkr_f32(
     float lq = 0.0f, lk = 0.0f;
     for (uint i = tid; i < Hd; i += tg) {
         float v = qh_raw[i]; lq += v*v;
-        float w = kslot[i];  lk += w*w;
+        float w = kr[i];     lk += w*w;
     }
     lq += simd_shuffle_xor(lq, 16); lk += simd_shuffle_xor(lk, 16);
     lq += simd_shuffle_xor(lq, 8);  lk += simd_shuffle_xor(lk, 8);
@@ -3068,14 +3071,14 @@ kernel void attn_decode_qkr_f32(
           float v1 = qh_raw[i1]*qscale*qgain[i1];
           qh_s[i0] = v0*c - v1*s;
           qh_s[i1] = v0*s + v1*c; }
-        { float v0 = kslot[i0]*kscale*kgain[i0];
-          float v1 = kslot[i1]*kscale*kgain[i1];
+        { float v0 = kr[i0]*kscale*kgain[i0];
+          float v1 = kr[i1]*kscale*kgain[i1];
           kh_s[i0] = v0*c - v1*s;
           kh_s[i1] = v0*s + v1*c; }
     }
     for (uint i = rope_dim + tid; i < Hd; i += tg) {
         qh_s[i] = qh_raw[i]*qscale*qgain[i];
-        kh_s[i] = kslot[i]*kscale*kgain[i];
+        kh_s[i] = kr[i]*kscale*kgain[i];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     /* write roped+normed current k back so future tokens see it;
@@ -3158,6 +3161,7 @@ kernel void attn_decode_qkr_split_f32(
     device const float* cs       [[buffer(17)]],
     device atomic_uint* cnt      [[buffer(18)]],  // [Nq] self-resetting tickets
     device float*       out      [[buffer(19)]],  // [Nq*Hd] combine target
+    device const float* kraw     [[buffer(20)]],   /* raw current-k (unroped) shadow */
     uint    tgid [[threadgroup_position_in_grid]],
     uint    tid  [[thread_position_in_threadgroup]],
     uint    tg   [[threads_per_threadgroup]])
@@ -3170,6 +3174,7 @@ kernel void attn_decode_qkr_split_f32(
     const uint kv_h  = h * Nk / Nq;
     device const float* qh_raw = q + h*Hd;
     device float* kslot = Kc + (size_t)(kvlen-1)*Nk*Hd + kv_h*Hd;
+    device const float* kr = kraw + kv_h*Hd;
     device float* pout  = part + (size_t)(h*nsplit + s)*(Hd + 2u);
     const uint nsimd0 = tg >> 5;
     threadgroup float qh_s[128];
@@ -3182,7 +3187,7 @@ kernel void attn_decode_qkr_split_f32(
     float lq = 0.0f, lk = 0.0f;
     for (uint i = tid; i < Hd; i += tg) {
         float v = qh_raw[i]; lq += v*v;
-        float w = kslot[i];  lk += w*w;
+        float w = kr[i];     lk += w*w;
     }
     lq += simd_shuffle_xor(lq, 16); lk += simd_shuffle_xor(lk, 16);
     lq += simd_shuffle_xor(lq, 8);  lk += simd_shuffle_xor(lk, 8);
@@ -3210,14 +3215,14 @@ kernel void attn_decode_qkr_split_f32(
           float v1 = qh_raw[i1]*qscale*qgain[i1];
           qh_s[i0] = v0*c - v1*sn;
           qh_s[i1] = v0*sn + v1*c; }
-        { float v0 = kslot[i0]*kscale*kgain[i0];
-          float v1 = kslot[i1]*kscale*kgain[i1];
+        { float v0 = kr[i0]*kscale*kgain[i0];
+          float v1 = kr[i1]*kscale*kgain[i1];
           kh_s[i0] = v0*c - v1*sn;
           kh_s[i1] = v0*sn + v1*c; }
     }
     for (uint i = rope_dim + tid; i < Hd; i += tg) {
         qh_s[i] = qh_raw[i]*qscale*qgain[i];
-        kh_s[i] = kslot[i]*kscale*kgain[i];
+        kh_s[i] = kr[i]*kscale*kgain[i];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     /* write roped current k back: only the split owning kvlen-1 (the last
@@ -3259,11 +3264,15 @@ kernel void attn_decode_qkr_split_f32(
         for (uint i = tid; i < Hd; i += tg) pout[2u + i] = 0.0f;
     }
 
+#if defined(__HAVE_ATOMIC_FENCE__)
     /* ---- last-arriving tg for head h merges all splits inline ----
      * Device-scope release fence + ticket: the tg that observes
      * ticket == nsplit-1 knows every sibling's partial writes are
      * visible and performs the softmax merge for this head. The
-     * counter self-resets so the next layer/token reuses it. */
+     * counter self-resets so the next layer/token reuses it.
+     * Requires MSL >= 3.2 device fences (__HAVE_ATOMIC_FENCE__); older
+     * toolchains compile this kernel without the merge and the host
+     * dispatches attn_combine_f32 instead (see atomic_fence_probe). */
     threadgroup_barrier(mem_flags::mem_device);
     atomic_thread_fence(mem_flags::mem_device, memory_order_seq_cst, thread_scope_device);
     if (tid == 0u)
@@ -3303,6 +3312,74 @@ kernel void attn_decode_qkr_split_f32(
     if (tid == 0u) {
         float sv = 0.0f;
         for (uint i = 0; i < nsimd0; i++) sv += red[16u + i];
+        red[33] = sv;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = 1.0f / red[33];
+    for (uint d4 = tid*4u; d4 < Hd; d4 += tg*4u) {
+        float4 a4 = 0.0f;
+        for (uint s2 = 0u; s2 < nsplit; s2++) {
+            device const float* pp = pb + s2*(Hd+2u);
+            a4 += exp(pp[0] - gm) * (*(device const float4*)(pp + 2u + d4));
+        }
+        *(device float4*)(out + (size_t)h*Hd + d4) = a4 * inv;
+    }
+#endif
+}
+
+#if defined(__HAVE_ATOMIC_FENCE__)
+/* Presence probe: this kernel exists only when the toolchain provides
+ * device-scope atomic fences (MSL >= 3.2). The host loads it to decide
+ * between the fused in-kernel combine and a separate attn_combine_f32
+ * dispatch. Never dispatched. */
+kernel void atomic_fence_probe() {}
+#endif
+
+/* Split-KV partial merge for toolchains without device atomic fences
+ * (MSL < 3.2): one threadgroup per head reduces the nsplit partials
+ * written by attn_decode_qkr_split_f32. A dispatch boundary supplies the
+ * device-scope ordering the fused path gets from atomic_thread_fence. */
+kernel void attn_combine_f32(
+    device const float* part   [[buffer(0)]],   // [Nq*nsplit*(Hd+2)]
+    device float*       out    [[buffer(1)]],   // [Nq*Hd]
+    constant uint&      Hd     [[buffer(2)]],
+    constant uint&      nsplit [[buffer(3)]],
+    uint h   [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    device const float* pb = part + (size_t)h * nsplit * (Hd + 2u);
+    threadgroup float red[64];
+    const uint nsimd = tg >> 5;
+    float m2 = -INFINITY;
+    for (uint s2 = tid; s2 < nsplit; s2 += tg) m2 = max(m2, pb[s2*(Hd+2u)]);
+    m2 = max(m2, simd_shuffle_xor(m2, 16));
+    m2 = max(m2, simd_shuffle_xor(m2, 8));
+    m2 = max(m2, simd_shuffle_xor(m2, 4));
+    m2 = max(m2, simd_shuffle_xor(m2, 2));
+    m2 = max(m2, simd_shuffle_xor(m2, 1));
+    if ((tid & 31u) == 0u) red[tid >> 5] = m2;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        float mm = -INFINITY;
+        for (uint i = 0; i < nsimd; i++) mm = max(mm, red[i]);
+        red[32] = mm;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float gm = red[32];
+    float l2 = 0.0f;
+    for (uint s2 = tid; s2 < nsplit; s2 += tg)
+        l2 += pb[s2*(Hd+2u) + 1u] * exp(pb[s2*(Hd+2u)] - gm);
+    l2 += simd_shuffle_xor(l2, 16);
+    l2 += simd_shuffle_xor(l2, 8);
+    l2 += simd_shuffle_xor(l2, 4);
+    l2 += simd_shuffle_xor(l2, 2);
+    l2 += simd_shuffle_xor(l2, 1);
+    if ((tid & 31u) == 0u) red[16u + (tid >> 5)] = l2;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid == 0u) {
+        float sv = 0.0f;
+        for (uint i = 0; i < nsimd; i++) sv += red[16u + i];
         red[33] = sv;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);

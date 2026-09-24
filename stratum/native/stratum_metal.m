@@ -72,6 +72,8 @@ static id<MTLComputePipelineState> g_q6k_swires = nil;  /* coal16 q6k swiglu+res
 static id<MTLComputePipelineState> g_q4k_swires = nil;  /* coal16 q4k swiglu+resid */
 static id<MTLComputePipelineState> g_attn_qkr = nil;    /* attn + fused qknorm/rope */
 static id<MTLComputePipelineState> g_attn_qkr_sp = nil; /* split-KV attn (long ctx) */
+static id<MTLComputePipelineState> g_attn_comb = nil;   /* split-KV merge (fallback) */
+static id<MTLComputePipelineState> g_fence_probe = nil; /* != nil iff MSL>=3.2 fences */
 static id<MTLComputePipelineState> g_sigmoid_gate = nil;
 static id<MTLComputePipelineState> g_split_qgate = nil;
 static id<MTLComputePipelineState> g_attn_gated = nil;
@@ -499,6 +501,8 @@ int stratum_metal_init(const char* metallib_path,
         LOAD_PSO_Q(g_q4k_swires,   "q4k_sgemv_row_coal16_swires");
         LOAD_PSO_Q(g_attn_qkr,     "attn_decode_qkr_f32");
         LOAD_PSO_Q(g_attn_qkr_sp,  "attn_decode_qkr_split_f32");
+        LOAD_PSO_Q(g_attn_comb,    "attn_combine_f32");
+        LOAD_PSO_Q(g_fence_probe,  "atomic_fence_probe");
 
         #undef LOAD_PSO_Q
 
@@ -1128,6 +1132,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&_nt length:4 atIndex:12];
                   uint32_t _vq6 = (uint32_t)(ly->v_ty == 14);
                   [enc setBytes:&_vq6 length:4 atIndex:13];
+                  [enc setBuffer:g_fk offset:0 atIndex:14];   /* raw current-k shadow */
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((_nt+15)/16),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
                 BAR;
@@ -1153,16 +1158,32 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 uint32_t nsplit = (kvn > 128u) ? ((kvn + 31u)/32u) : 1u;
                 uint32_t spcap = (kvn + 511u)/512u; if (spcap < 16u) spcap = 16u;
                 if (nsplit > spcap) nsplit = spcap;
-                if (nsplit > 1u && g_attn_qkr_sp && g_fattnp && g_fcnt && Nq <= 64) {
+                if (nsplit > 1u && g_attn_qkr_sp && g_fattnp && g_fcnt
+                        && (g_fence_probe || g_attn_comb) && Nq <= 64) {
                 [enc setComputePipelineState:g_attn_qkr_sp];
                 [enc setBuffer:g_fattnp offset:0 atIndex:3];
                 [enc setBytes:&nsplit length:4 atIndex:16];
                 [enc setBuffer:g_frope offset:0 atIndex:17];
                 [enc setBuffer:g_fcnt offset:0 atIndex:18];
                 [enc setBuffer:g_fattn offset:0 atIndex:19];
+                [enc setBuffer:g_fk offset:0 atIndex:20];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nq*nsplit),1,1)
-                    threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
+                    threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                if (!g_fence_probe) {
+                    /* MSL < 3.2: no device atomic fences, so the split kernel
+                     * only wrote partials. Merge them in a separate dispatch —
+                     * the barrier provides the device-scope ordering. */
+                    BAR;
+                    [enc setComputePipelineState:g_attn_comb];
+                    [enc setBuffer:g_fattnp offset:0 atIndex:0];
+                    [enc setBuffer:g_fattn offset:0 atIndex:1];
+                    [enc setBytes:&Hdu length:4 atIndex:2];
+                    [enc setBytes:&nsplit length:4 atIndex:3];
+                    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
+                        threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+                } }
                 else {
+                [enc setBuffer:g_fk offset:0 atIndex:17];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
                     threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } }
                 BAR;
