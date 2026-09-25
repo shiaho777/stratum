@@ -3183,11 +3183,14 @@ kernel void attn_decode_qkr_split_f32(
     threadgroup uint  tk;
 
     if (tbeg < kvlen) {
-    /* ---- q head + current k row: rmsnorm scales in ONE pass ---- */
+    /* ---- q head + current k row: rmsnorm scales in ONE pass ----
+     * Only the LAST split (owning tcur) needs kh_s — the k-side work is
+     * skipped entirely on other splits. */
+    const bool lasts = (s == nsplit - 1u);
     float lq = 0.0f, lk = 0.0f;
     for (uint i = tid; i < Hd; i += tg) {
         float v = qh_raw[i]; lq += v*v;
-        float w = kr[i];     lk += w*w;
+        if (lasts) { float w = kr[i]; lk += w*w; }
     }
     lq += simd_shuffle_xor(lq, 16); lk += simd_shuffle_xor(lk, 16);
     lq += simd_shuffle_xor(lq, 8);  lk += simd_shuffle_xor(lk, 8);
@@ -3215,14 +3218,15 @@ kernel void attn_decode_qkr_split_f32(
           float v1 = qh_raw[i1]*qscale*qgain[i1];
           qh_s[i0] = v0*c - v1*sn;
           qh_s[i1] = v0*sn + v1*c; }
-        { float v0 = kr[i0]*kscale*kgain[i0];
+        if (lasts) {
+          float v0 = kr[i0]*kscale*kgain[i0];
           float v1 = kr[i1]*kscale*kgain[i1];
           kh_s[i0] = v0*c - v1*sn;
           kh_s[i1] = v0*sn + v1*c; }
     }
     for (uint i = rope_dim + tid; i < Hd; i += tg) {
         qh_s[i] = qh_raw[i]*qscale*qgain[i];
-        kh_s[i] = kr[i]*kscale*kgain[i];
+        if (lasts) kh_s[i] = kr[i]*kscale*kgain[i];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     /* write roped current k back: only the split owning kvlen-1 (the last
