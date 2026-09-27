@@ -6,240 +6,241 @@ switch does, follow its call sites rather than the README table.
 
 | Variable | Status | reads | writes | Context | Call sites |
 |---|---|---|---|---|---|
-| `STRATUM_ACTIVE_PREFETCH` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12637, native/stratum_arch_qwen35.inc.c:13303 |
-| `STRATUM_ADAPTIVE` | sanctioned — startup bandwidth calibration probe (measurement only) | 1 | 0 | * V219: optional bandwidth calibration — measured machine context in | native/stratum_arch_qwen35.inc.c:14302 |
+| `STRATUM_ACTIVE_PREFETCH` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12691, native/stratum_arch_qwen35.inc.c:13357 |
+| `STRATUM_ADAPTIVE` | sanctioned — startup bandwidth calibration probe (measurement only) | 1 | 0 | * V219: optional bandwidth calibration — measured machine context in | native/stratum_arch_qwen35.inc.c:14356 |
 | `STRATUM_AMX_NOMW` | experimental | 2 | 0 |  | native/stratum_q4k_w16_amx.h:1128, native/stratum_q4k_w16_amx.h:1254 |
 | `STRATUM_AMX_NOSTAGE` | experimental | 1 | 0 | * When per-seq rows are 4KB-strided (N multiple of 1024), 32 interleaved | native/stratum_q4k_w16_amx.h:224 |
 | `STRATUM_AMX_PROF` | experimental | 2 | 0 |  | native/stratum_q4k_w16_amx.h:1104, native/stratum_q4k_w16_amx.h:1228 |
 | `STRATUM_AMX_Q4K` | experimental | 1 | 1 |  | native/bench_q4k_amx.c:44, native/stratum_linear.h:599 |
 | `STRATUM_AMX_SOLO` | experimental | 4 | 0 |  | native/stratum_q4k_w16_amx.h:1128, native/stratum_q4k_w16_amx.h:1160, native/stratum_q4k_w16_amx.h:1254, native/stratum_q4k_w16_amx.h:1280 |
 | `STRATUM_AMX_W16_OFF` | experimental | 1 | 0 |  | native/stratum_linear.h:114 |
-| `STRATUM_ASYNC_PREFETCH` | sanctioned — background pread prefetch | 11 | 3 | * V11: background prefetch 2 layers ahead (overlaps SSD with compute) */ | native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:11547 (+10 more) |
-| `STRATUM_BATCH_PREFILL` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1322, native/stratum_arch_qwen35.inc.c:17012 |
-| `STRATUM_BATCH_PROFILE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:13434 |
-| `STRATUM_BLAS_BATCH` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1139, native/stratum_arch_llama.inc.c:1139 |
-| `STRATUM_BLOCK_DBG` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:291 |
+| `STRATUM_ASYNC_PREFETCH` | sanctioned — background pread prefetch | 11 | 3 | * V11: background prefetch 2 layers ahead (overlaps SSD with compute) */ | native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:3324, native/stratum_arch_qwen35.inc.c:11601 (+10 more) |
+| `STRATUM_ATTN_GRP_MIN` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:181 |
+| `STRATUM_BATCH_PREFILL` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1464, native/stratum_arch_qwen35.inc.c:17066 |
+| `STRATUM_BATCH_PROFILE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:13488 |
+| `STRATUM_BLAS_BATCH` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1251, native/stratum_arch_llama.inc.c:1251 |
+| `STRATUM_BLOCK_DBG` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:307 |
 | `STRATUM_B_MAX` | experimental | 1 | 0 |  | native/stratum_engine.h:113 |
-| `STRATUM_DEBUG` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1364 |
-| `STRATUM_DEBUG_IDS` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1377 |
-| `STRATUM_DRAFT_FULL` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:5259, native/stratum_arch_qwen35.inc.c:23597 |
-| `STRATUM_DRAFT_TEMP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:16910 |
+| `STRATUM_DEBUG` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1506 |
+| `STRATUM_DEBUG_IDS` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1519 |
+| `STRATUM_DRAFT_FULL` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:5259, native/stratum_arch_qwen35.inc.c:23651 |
+| `STRATUM_DRAFT_TEMP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:16964 |
 | `STRATUM_DRAFT_VOCAB` | experimental | 5 | 2 |  | native/stratum_arch_qwen35.inc.c:3289, native/stratum_arch_qwen35.inc.c:3289, native/stratum_arch_qwen35.inc.c:3289, native/stratum_arch_qwen35.inc.c:3303 (+3 more) |
-| `STRATUM_DYN_K` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:24097 |
-| `STRATUM_ECHO_DEPTH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15011 |
-| `STRATUM_ECHO_FC` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15692 |
+| `STRATUM_DYN_K` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:24151 |
+| `STRATUM_ECHO_DEPTH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15065 |
+| `STRATUM_ECHO_FC` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15746 |
 | `STRATUM_EXPF_SCALAR` | experimental | 2 | 0 |  | native/stratum_engine.h:313, native/stratum_engine.h:340 |
-| `STRATUM_EXTEND_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:21280 |
+| `STRATUM_EXTEND_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:21334 |
 | `STRATUM_FORCE_WSTAGE` | experimental | 8 | 0 | * V56: if whole tensor is hot, skip tile pread and use mmap multix (zero copy). */ | native/stratum_arch_qwen35.inc.c:1416, native/stratum_arch_qwen35.inc.c:2033, native/stratum_arch_qwen35.inc.c:2039, native/stratum_arch_qwen35.inc.c:2044 (+4 more) |
-| `STRATUM_FWDBG` | experimental | 1 | 0 | * Caller reads it via stratum_metal_get_last_token() */ | native/stratum_metal.m:1365 |
-| `STRATUM_FWD_NL` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:566, native/stratum_arch_llama.inc.c:569, native/stratum_metal.m:1054, native/stratum_metal.m:1835 |
-| `STRATUM_FWD_NOCOAL` | experimental | 1 | 0 |  | native/stratum_metal.m:977 |
-| `STRATUM_FWD_NOFUSE` | experimental | 1 | 0 |  | native/stratum_metal.m:1064 |
-| `STRATUM_GPU` | sanctioned — legacy GPU paths (small models only) | 5 | 0 | * GPU */ | native/stratum_arch_llama.inc.c:1145, native/stratum_arch_qwen35.inc.c:14585, native/stratum_arch_qwen35.inc.c:14750, native/stratum_engine.h:124 (+1 more) |
-| `STRATUM_GPU2` | sanctioned — cold-weight staging pipeline | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14490, native/stratum_arch_qwen35.inc.c:14620 |
+| `STRATUM_FWDBG` | experimental | 1 | 0 | * Caller reads it via stratum_metal_get_last_token() */ | native/stratum_metal.m:1442 |
+| `STRATUM_FWD_NL` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:632, native/stratum_arch_llama.inc.c:635, native/stratum_metal.m:1075, native/stratum_metal.m:1912 |
+| `STRATUM_FWD_NOCOAL` | experimental | 1 | 0 |  | native/stratum_metal.m:998 |
+| `STRATUM_FWD_NOFUSE` | experimental | 1 | 0 |  | native/stratum_metal.m:1085 |
+| `STRATUM_GPU` | sanctioned — legacy GPU paths (small models only) | 5 | 0 | * GPU */ | native/stratum_arch_llama.inc.c:1257, native/stratum_arch_qwen35.inc.c:14639, native/stratum_arch_qwen35.inc.c:14804, native/stratum_engine.h:124 (+1 more) |
+| `STRATUM_GPU2` | sanctioned — cold-weight staging pipeline | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14544, native/stratum_arch_qwen35.inc.c:14674 |
 | `STRATUM_GPU2_ALWAYS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:1415 |
 | `STRATUM_GPU2_HOT_Q2K` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:1437 |
-| `STRATUM_GPU2_MB` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:11162 |
-| `STRATUM_GPU2_MINROWS` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14644, native/stratum_arch_qwen35.inc.c:14683 |
+| `STRATUM_GPU2_MB` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:11216 |
+| `STRATUM_GPU2_MINROWS` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14698, native/stratum_arch_qwen35.inc.c:14737 |
 | `STRATUM_GPU2_TREE_OFF` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:1425 |
-| `STRATUM_GPU3` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14693 |
-| `STRATUM_GPU3_FORCE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14694 |
-| `STRATUM_GPU_AUTO` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14622 |
-| `STRATUM_GPU_BATCH` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1157 |
-| `STRATUM_GPU_BATCH_DOWN_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1931 |
-| `STRATUM_GPU_BATCH_DOWN_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:1934 |
-| `STRATUM_GPU_BATCH_DOWN_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:1927 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_OLD` | experimental | 2 | 0 |  | native/stratum_metal.m:1963, native/stratum_metal.m:1968 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED` | experimental | 1 | 0 |  | native/stratum_metal.m:1957 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED_S8` | experimental | 1 | 0 |  | native/stratum_metal.m:1943 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED_S8_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1942 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_TG` | experimental | 2 | 0 |  | native/stratum_metal.m:1511, native/stratum_metal.m:1747 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1510 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V4` | experimental | 2 | 0 |  | native/stratum_metal.m:1964, native/stratum_metal.m:1969 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V5` | experimental | 1 | 0 |  | native/stratum_metal.m:1965 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:1950 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2_ADD` | experimental | 1 | 0 |  | native/stratum_metal.m:1951 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1948 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G4` | experimental | 1 | 0 |  | native/stratum_metal.m:1938 |
-| `STRATUM_GPU_BATCH_DOWN_Q6_V6` | experimental | 2 | 0 |  | native/stratum_metal.m:1966, native/stratum_metal.m:1970 |
-| `STRATUM_GPU_BATCH_DOWN_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:1926 |
-| `STRATUM_GPU_BATCH_DOWN_V5_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1928 |
-| `STRATUM_GPU_BATCH_FFN_FUSED_G4` | experimental | 1 | 0 |  | native/stratum_metal.m:1896 |
-| `STRATUM_GPU_BATCH_FFN_FUSED_V1` | experimental | 1 | 0 |  | native/stratum_metal.m:1894 |
-| `STRATUM_GPU_BATCH_FFN_FUSED_V2` | experimental | 2 | 0 |  | native/stratum_metal.m:1573, native/stratum_metal.m:1895 |
-| `STRATUM_GPU_BATCH_FFN_NO_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1890 |
-| `STRATUM_GPU_BATCH_FFN_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:1888 |
-| `STRATUM_GPU_BATCH_FFN_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:1887 |
-| `STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1898 |
-| `STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1899 |
-| `STRATUM_GPU_BATCH_FFN_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1498 |
-| `STRATUM_GPU_BATCH_FFN_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1497 |
-| `STRATUM_GPU_BATCH_FULL` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1166 |
-| `STRATUM_GPU_BATCH_KV_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1844 |
-| `STRATUM_GPU_BATCH_KV_FUSED_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1843 |
-| `STRATUM_GPU_BATCH_KV_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1505 |
-| `STRATUM_GPU_BATCH_NORM_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1789 |
-| `STRATUM_GPU_BATCH_O_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1877 |
-| `STRATUM_GPU_BATCH_O_FUSED_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:1874 |
-| `STRATUM_GPU_BATCH_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:1484 |
-| `STRATUM_GPU_BATCH_PROFILE` | experimental | 1 | 0 |  | native/stratum_metal.m:1493 |
-| `STRATUM_GPU_BATCH_Q4_G2` | experimental | 1 | 0 | * batched matmul: x[B][Kdim] -> y[B][Nrows], weight read once per row, | native/stratum_metal.m:1550 |
-| `STRATUM_GPU_BATCH_Q4_G2_DISABLE` | experimental | 1 | 0 | * batched matmul: x[B][Kdim] -> y[B][Nrows], weight read once per row, | native/stratum_metal.m:1550 |
-| `STRATUM_GPU_BATCH_Q4_G2_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1523 |
-| `STRATUM_GPU_BATCH_Q4_G2_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1522 |
-| `STRATUM_GPU_BATCH_Q6_OLD` | experimental | 1 | 0 |  | native/stratum_metal.m:1545 |
-| `STRATUM_GPU_BATCH_Q6_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1517 |
-| `STRATUM_GPU_BATCH_Q6_V4` | experimental | 1 | 0 |  | native/stratum_metal.m:1545 |
-| `STRATUM_GPU_BATCH_Q6_V5` | experimental | 1 | 0 |  | native/stratum_metal.m:1545 |
-| `STRATUM_GPU_BATCH_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:1486 |
-| `STRATUM_GPU_BATCH_SIMDB` | experimental | 1 | 0 |  | native/stratum_metal.m:1480 |
-| `STRATUM_GPU_CHAIN` | experimental | 1 | 0 | * Chained GPU decode: the token ring + embd gather live on GPU — all | native/stratum_arch_llama.inc.c:1732 |
-| `STRATUM_GPU_DEBUG` | experimental | 12 | 0 | * V15: NaN check after all layers */ | native/stratum_arch_qwen35.inc.c:9121, native/stratum_arch_qwen35.inc.c:9130, native/stratum_arch_qwen35.inc.c:9950, native/stratum_arch_qwen35.inc.c:9964 (+8 more) |
-| `STRATUM_GPU_FULL` | sanctioned — legacy GPU full paths (small models only) | 3 | 0 | * V1: GPU full-attn — entire full-attention layer on GPU, zero CPU ops */ | native/stratum_arch_llama.inc.c:1162, native/stratum_arch_qwen35.inc.c:14611, native/stratum_linear.h:119 |
-| `STRATUM_GPU_FUSED_ARGMAX` | experimental | 6 | 0 | * V-opt: fused argmax on GPU when STRATUM_GPU_FUSED_ARGMAX is set. | native/stratum_arch_llama.inc.c:621, native/stratum_arch_llama.inc.c:1351, native/stratum_arch_llama.inc.c:1585, native/stratum_arch_llama.inc.c:1626 (+2 more) |
-| `STRATUM_GPU_FUSED_KV` | experimental | 1 | 0 |  | native/stratum_metal.m:1834 |
-| `STRATUM_GPU_NC` | sanctioned — per-tensor NoCopy direct-read | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14670 |
-| `STRATUM_GPU_TG` | experimental | 2 | 0 |  | native/stratum_metal.m:948, native/stratum_metal.m:2865 |
-| `STRATUM_GPU_TOP1_TILED` | experimental | 1 | 0 |  | native/stratum_metal.m:1983 |
-| `STRATUM_GPU_TOP1_TILE_ROWS` | experimental | 1 | 0 |  | native/stratum_metal.m:1452 |
+| `STRATUM_GPU3` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14747 |
+| `STRATUM_GPU3_FORCE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14748 |
+| `STRATUM_GPU_AUTO` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14676 |
+| `STRATUM_GPU_BATCH` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1269 |
+| `STRATUM_GPU_BATCH_DOWN_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:2008 |
+| `STRATUM_GPU_BATCH_DOWN_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:2011 |
+| `STRATUM_GPU_BATCH_DOWN_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:2004 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_OLD` | experimental | 2 | 0 |  | native/stratum_metal.m:2040, native/stratum_metal.m:2045 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED` | experimental | 1 | 0 |  | native/stratum_metal.m:2034 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED_S8` | experimental | 1 | 0 |  | native/stratum_metal.m:2020 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_ROWTILED_S8_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:2019 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_TG` | experimental | 2 | 0 |  | native/stratum_metal.m:1588, native/stratum_metal.m:1824 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1587 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V4` | experimental | 2 | 0 |  | native/stratum_metal.m:2041, native/stratum_metal.m:2046 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V5` | experimental | 1 | 0 |  | native/stratum_metal.m:2042 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:2027 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2_ADD` | experimental | 1 | 0 |  | native/stratum_metal.m:2028 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G2_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:2025 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V5_G4` | experimental | 1 | 0 |  | native/stratum_metal.m:2015 |
+| `STRATUM_GPU_BATCH_DOWN_Q6_V6` | experimental | 2 | 0 |  | native/stratum_metal.m:2043, native/stratum_metal.m:2047 |
+| `STRATUM_GPU_BATCH_DOWN_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:2003 |
+| `STRATUM_GPU_BATCH_DOWN_V5_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:2005 |
+| `STRATUM_GPU_BATCH_FFN_FUSED_G4` | experimental | 1 | 0 |  | native/stratum_metal.m:1973 |
+| `STRATUM_GPU_BATCH_FFN_FUSED_V1` | experimental | 1 | 0 |  | native/stratum_metal.m:1971 |
+| `STRATUM_GPU_BATCH_FFN_FUSED_V2` | experimental | 2 | 0 |  | native/stratum_metal.m:1650, native/stratum_metal.m:1972 |
+| `STRATUM_GPU_BATCH_FFN_NO_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1967 |
+| `STRATUM_GPU_BATCH_FFN_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:1965 |
+| `STRATUM_GPU_BATCH_FFN_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:1964 |
+| `STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1975 |
+| `STRATUM_GPU_BATCH_FFN_SWIGLU_FUSED_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1976 |
+| `STRATUM_GPU_BATCH_FFN_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1575 |
+| `STRATUM_GPU_BATCH_FFN_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1574 |
+| `STRATUM_GPU_BATCH_FULL` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1286 |
+| `STRATUM_GPU_BATCH_KV_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1921 |
+| `STRATUM_GPU_BATCH_KV_FUSED_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1920 |
+| `STRATUM_GPU_BATCH_KV_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1582 |
+| `STRATUM_GPU_BATCH_NORM_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1866 |
+| `STRATUM_GPU_BATCH_O_FUSED` | experimental | 1 | 0 |  | native/stratum_metal.m:1954 |
+| `STRATUM_GPU_BATCH_O_FUSED_G2` | experimental | 1 | 0 |  | native/stratum_metal.m:1951 |
+| `STRATUM_GPU_BATCH_PAR` | experimental | 1 | 0 |  | native/stratum_metal.m:1561 |
+| `STRATUM_GPU_BATCH_PROFILE` | experimental | 1 | 0 |  | native/stratum_metal.m:1570 |
+| `STRATUM_GPU_BATCH_Q4_G2` | experimental | 1 | 0 | * batched matmul: x[B][Kdim] -> y[B][Nrows], weight read once per row, | native/stratum_metal.m:1627 |
+| `STRATUM_GPU_BATCH_Q4_G2_DISABLE` | experimental | 1 | 0 | * batched matmul: x[B][Kdim] -> y[B][Nrows], weight read once per row, | native/stratum_metal.m:1627 |
+| `STRATUM_GPU_BATCH_Q4_G2_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1600 |
+| `STRATUM_GPU_BATCH_Q4_G2_TG32_DISABLE` | experimental | 1 | 0 |  | native/stratum_metal.m:1599 |
+| `STRATUM_GPU_BATCH_Q6_OLD` | experimental | 1 | 0 |  | native/stratum_metal.m:1622 |
+| `STRATUM_GPU_BATCH_Q6_TG` | experimental | 1 | 0 |  | native/stratum_metal.m:1594 |
+| `STRATUM_GPU_BATCH_Q6_V4` | experimental | 1 | 0 |  | native/stratum_metal.m:1622 |
+| `STRATUM_GPU_BATCH_Q6_V5` | experimental | 1 | 0 |  | native/stratum_metal.m:1622 |
+| `STRATUM_GPU_BATCH_SERIAL` | experimental | 1 | 0 |  | native/stratum_metal.m:1563 |
+| `STRATUM_GPU_BATCH_SIMDB` | experimental | 1 | 0 |  | native/stratum_metal.m:1557 |
+| `STRATUM_GPU_CHAIN` | experimental | 1 | 0 | * Chained GPU decode: the token ring + embd gather live on GPU — all | native/stratum_arch_llama.inc.c:1874 |
+| `STRATUM_GPU_DEBUG` | experimental | 12 | 0 | * V15: NaN check after all layers */ | native/stratum_arch_qwen35.inc.c:9121, native/stratum_arch_qwen35.inc.c:9130, native/stratum_arch_qwen35.inc.c:10004, native/stratum_arch_qwen35.inc.c:10018 (+8 more) |
+| `STRATUM_GPU_FULL` | sanctioned — legacy GPU full paths (small models only) | 3 | 0 | * V1: GPU full-attn — entire full-attention layer on GPU, zero CPU ops */ | native/stratum_arch_llama.inc.c:1274, native/stratum_arch_qwen35.inc.c:14665, native/stratum_linear.h:119 |
+| `STRATUM_GPU_FUSED_ARGMAX` | experimental | 6 | 0 | * V-opt: fused argmax on GPU when STRATUM_GPU_FUSED_ARGMAX is set. | native/stratum_arch_llama.inc.c:687, native/stratum_arch_llama.inc.c:1493, native/stratum_arch_llama.inc.c:1727, native/stratum_arch_llama.inc.c:1768 (+2 more) |
+| `STRATUM_GPU_FUSED_KV` | experimental | 1 | 0 |  | native/stratum_metal.m:1911 |
+| `STRATUM_GPU_NC` | sanctioned — per-tensor NoCopy direct-read | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14724 |
+| `STRATUM_GPU_TG` | experimental | 2 | 0 |  | native/stratum_metal.m:969, native/stratum_metal.m:2942 |
+| `STRATUM_GPU_TOP1_TILED` | experimental | 1 | 0 |  | native/stratum_metal.m:2060 |
+| `STRATUM_GPU_TOP1_TILE_ROWS` | experimental | 1 | 0 |  | native/stratum_metal.m:1529 |
 | `STRATUM_H3_ATTNLIB` | experimental | 2 | 0 |  | native/h3_forward.c:660, native/h3_forward.c:1663 |
 | `STRATUM_H3_NC` | experimental | 4 | 0 |  | native/h3_forward.c:430, native/h3_forward.c:467, native/h3_forward.c:655, native/h3_forward.c:1658 |
 | `STRATUM_H3_SDOT` | experimental | 2 | 0 |  | native/h3_forward.c:432, native/h3_forward.c:469 |
 | `STRATUM_HARD_TOUCH` | experimental | 4 | 2 |  | native/stratum_arch_qwen35.inc.c:3295, native/stratum_arch_qwen35.inc.c:3296, native/stratum_arch_qwen35.inc.c:3296, native/stratum_arch_qwen35.inc.c:3307 (+2 more) |
-| `STRATUM_HIDDEN_DUMP` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1092 |
-| `STRATUM_HOT` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14489 |
-| `STRATUM_HOT_DEBUG` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:11619, native/stratum_arch_qwen35.inc.c:11678, native/stratum_arch_qwen35.inc.c:12135 |
-| `STRATUM_HOT_FAST` | sanctioned — hot-cache pure-compute mode (no page-cache lock) | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14501 |
-| `STRATUM_HOT_FAST_IOSKIP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14527 |
-| `STRATUM_HOT_GB` | forbidden — hot-set budget tied to pinning path | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:11591, native/stratum_arch_qwen35.inc.c:14489 |
-| `STRATUM_HOT_PREADWARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:11646 |
-| `STRATUM_IOSKIP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14540 |
+| `STRATUM_HIDDEN_DUMP` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1204 |
+| `STRATUM_HOT` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14543 |
+| `STRATUM_HOT_DEBUG` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:11673, native/stratum_arch_qwen35.inc.c:11732, native/stratum_arch_qwen35.inc.c:12189 |
+| `STRATUM_HOT_FAST` | sanctioned — hot-cache pure-compute mode (no page-cache lock) | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14555 |
+| `STRATUM_HOT_FAST_IOSKIP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14581 |
+| `STRATUM_HOT_GB` | forbidden — hot-set budget tied to pinning path | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:11645, native/stratum_arch_qwen35.inc.c:14543 |
+| `STRATUM_HOT_PREADWARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:11700 |
+| `STRATUM_IOSKIP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14594 |
 | `STRATUM_IO_FDS` | experimental | 2 | 1 |  | native/stratum_arch_qwen35.inc.c:3357, native/stratum_arch_qwen35.inc.c:3357, native/stratum_arch_qwen35.inc.c:8561 |
 | `STRATUM_KV_SINK` | experimental | 1 | 0 | * Override from env */ | native/stratum_engine.h:111 |
 | `STRATUM_LM_STAGE_MB` | experimental | 3 | 2 |  | native/stratum_arch_qwen35.inc.c:3285, native/stratum_arch_qwen35.inc.c:3286, native/stratum_arch_qwen35.inc.c:3288, native/stratum_arch_qwen35.inc.c:3355 (+1 more) |
 | `STRATUM_LOGITS_DUMP` | experimental | 1 | 0 |  | native/stratum_engine.h:483 |
-| `STRATUM_MAX_KV` | experimental | 1 | 0 | * Override from env */ | native/stratum_engine.h:110 |
+| `STRATUM_MAX_KV` | experimental | 2 | 0 | * Override from env */ | native/stratum_arch_llama.inc.c:591, native/stratum_engine.h:110 |
 | `STRATUM_MEMX` | experimental | 1 | 0 |  | native/stratum_memx.h:45 |
-| `STRATUM_MEMX_DONATE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:17080, native/stratum_arch_qwen35.inc.c:17080 |
-| `STRATUM_MEMX_KV` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:12404 |
+| `STRATUM_MEMX_DONATE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:17134, native/stratum_arch_qwen35.inc.c:17134 |
+| `STRATUM_MEMX_KV` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:12458 |
 | `STRATUM_MEMX_STAGE_WS` | experimental | 1 | 0 |  | native/stratum_memx.h:191 |
-| `STRATUM_METALLIB` | experimental | 9 | 0 |  | native/h3_forward.c:363, native/stratum_arch_llama.inc.c:1146, native/stratum_arch_qwen35.inc.c:9048, native/stratum_arch_qwen35.inc.c:14586 (+5 more) |
-| `STRATUM_MLOCK` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14779 |
-| `STRATUM_MLOCK_ALL` | forbidden — mlock whole model | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14323 |
+| `STRATUM_METALLIB` | experimental | 9 | 0 |  | native/h3_forward.c:363, native/stratum_arch_llama.inc.c:1258, native/stratum_arch_qwen35.inc.c:9048, native/stratum_arch_qwen35.inc.c:14640 (+5 more) |
+| `STRATUM_MLOCK` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14833 |
+| `STRATUM_MLOCK_ALL` | forbidden — mlock whole model | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14377 |
 | `STRATUM_MOE_PROF` | experimental | 1 | 0 | * section profiling (STRATUM_MOE_PROF): cumulative µs per section */ | native/stratum_arch_moe.inc.c:531 |
 | `STRATUM_MOE_STATS` | experimental | 1 | 0 |  | native/stratum_arch_moe.inc.c:133 |
-| `STRATUM_MSTIME` | experimental | 5 | 0 |  | native/stratum_arch_llama.inc.c:890, native/stratum_arch_llama.inc.c:893, native/stratum_arch_llama.inc.c:986, native/stratum_arch_llama.inc.c:997 (+1 more) |
-| `STRATUM_MS_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15000 |
-| `STRATUM_MS_DUMP0` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1235, native/stratum_arch_llama.inc.c:1236, native/stratum_arch_llama.inc.c:1356, native/stratum_arch_llama.inc.c:1357 |
-| `STRATUM_MS_DUMPXN` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:579, native/stratum_arch_llama.inc.c:580, native/stratum_arch_llama.inc.c:991, native/stratum_arch_llama.inc.c:992 |
-| `STRATUM_MS_ISC` | experimental | 4 | 0 |  | native/stratum_arch_qwen35.inc.c:14881, native/stratum_arch_qwen35.inc.c:14910, native/stratum_arch_qwen35.inc.c:15096, native/stratum_arch_qwen35.inc.c:15166 |
-| `STRATUM_MS_MTP_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15219 |
-| `STRATUM_MS_PHYS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14931 |
-| `STRATUM_MS_SEAL` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15174 |
-| `STRATUM_MS_SPARSE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14882, native/stratum_arch_qwen35.inc.c:14918 |
-| `STRATUM_MS_VERIFY` | experimental | 3 | 0 |  | native/stratum_arch_llama.inc.c:1036, native/stratum_arch_llama.inc.c:1253, native/stratum_arch_moe.inc.c:1063 |
-| `STRATUM_MTP` | sanctioned — MTP tree speculative decoding | 7 | 0 |  | native/stratum_arch_qwen35.inc.c:12284, native/stratum_arch_qwen35.inc.c:12552, native/stratum_arch_qwen35.inc.c:12556, native/stratum_arch_qwen35.inc.c:14219 (+3 more) |
+| `STRATUM_MSTIME` | experimental | 5 | 0 |  | native/stratum_arch_llama.inc.c:991, native/stratum_arch_llama.inc.c:994, native/stratum_arch_llama.inc.c:1098, native/stratum_arch_llama.inc.c:1109 (+1 more) |
+| `STRATUM_MS_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15054 |
+| `STRATUM_MS_DUMP0` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1377, native/stratum_arch_llama.inc.c:1378, native/stratum_arch_llama.inc.c:1498, native/stratum_arch_llama.inc.c:1499 |
+| `STRATUM_MS_DUMPXN` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:645, native/stratum_arch_llama.inc.c:646, native/stratum_arch_llama.inc.c:1103, native/stratum_arch_llama.inc.c:1104 |
+| `STRATUM_MS_ISC` | experimental | 4 | 0 |  | native/stratum_arch_qwen35.inc.c:14935, native/stratum_arch_qwen35.inc.c:14964, native/stratum_arch_qwen35.inc.c:15150, native/stratum_arch_qwen35.inc.c:15220 |
+| `STRATUM_MS_MTP_CHAIN` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15273 |
+| `STRATUM_MS_PHYS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14985 |
+| `STRATUM_MS_SEAL` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15228 |
+| `STRATUM_MS_SPARSE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14936, native/stratum_arch_qwen35.inc.c:14972 |
+| `STRATUM_MS_VERIFY` | experimental | 3 | 0 |  | native/stratum_arch_llama.inc.c:1148, native/stratum_arch_llama.inc.c:1395, native/stratum_arch_moe.inc.c:1063 |
+| `STRATUM_MTP` | sanctioned — MTP tree speculative decoding | 7 | 0 |  | native/stratum_arch_qwen35.inc.c:12338, native/stratum_arch_qwen35.inc.c:12606, native/stratum_arch_qwen35.inc.c:12610, native/stratum_arch_qwen35.inc.c:14273 (+3 more) |
 | `STRATUM_MTP_BF16` | experimental | 1 | 0 |  | native/stratum_p35.c:2166 |
 | `STRATUM_MTP_BF16_FC` | experimental | 1 | 0 |  | native/stratum_p35.c:1479 |
 | `STRATUM_MTP_DEBUG` | experimental | 3 | 0 |  | native/stratum_p35.c:447, native/stratum_p35.c:2188, native/stratum_p35.c:2210 |
 | `STRATUM_MTP_DUMP_HIDDEN` | experimental | 1 | 0 |  | native/stratum_p35.c:2170 |
 | `STRATUM_MTP_PROBE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:4543, native/stratum_arch_qwen35.inc.c:4578 |
-| `STRATUM_MTP_PROFILE` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:9669, native/stratum_arch_qwen35.inc.c:24313, native/stratum_arch_qwen35.inc.c:24319 |
-| `STRATUM_MTP_TRACE` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:24873, native/stratum_p35.c:1457, native/stratum_p35.c:1492 |
-| `STRATUM_MULTISEQ` | sanctioned — N sequences share one weight scan | 5 | 0 |  | native/stratum_arch_llama.inc.c:1207, native/stratum_arch_moe.inc.c:1026, native/stratum_arch_qwen35.inc.c:14221, native/stratum_arch_qwen35.inc.c:14833 (+1 more) |
-| `STRATUM_NCHUNKS` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1120, native/stratum_arch_moe.inc.c:1003, native/stratum_arch_qwen35.inc.c:14260, native/stratum_linear.h:96 |
-| `STRATUM_NC_ASYNC` | experimental | 1 | 0 |  | native/stratum_metal.m:3731 |
+| `STRATUM_MTP_PROFILE` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:9705, native/stratum_arch_qwen35.inc.c:24367, native/stratum_arch_qwen35.inc.c:24373 |
+| `STRATUM_MTP_TRACE` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:24927, native/stratum_p35.c:1457, native/stratum_p35.c:1492 |
+| `STRATUM_MULTISEQ` | sanctioned — N sequences share one weight scan | 5 | 0 |  | native/stratum_arch_llama.inc.c:1349, native/stratum_arch_moe.inc.c:1026, native/stratum_arch_qwen35.inc.c:14275, native/stratum_arch_qwen35.inc.c:14887 (+1 more) |
+| `STRATUM_NCHUNKS` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1232, native/stratum_arch_moe.inc.c:1003, native/stratum_arch_qwen35.inc.c:14314, native/stratum_linear.h:96 |
+| `STRATUM_NC_ASYNC` | experimental | 1 | 0 |  | native/stratum_metal.m:3808 |
 | `STRATUM_NC_B1_GROUP` | experimental | 2 | 0 | * rollback switch: STRATUM_NC_B1_GROUP=0 restores per-tensor sync */ | native/stratum_arch_qwen35.inc.c:1483, native/stratum_arch_qwen35.inc.c:1575 |
 | `STRATUM_NC_B1_MIN_MB` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:1485 |
-| `STRATUM_NC_BPTG` | experimental | 2 | 0 | * stage 1: grid (N, ceil(B/2)), tg 64 (STRATUM_NC_BPTG-consistent) */ | native/stratum_metal.m:3473, native/stratum_metal.m:4147 |
-| `STRATUM_NC_DEBUG` | experimental | 2 | 0 |  | native/stratum_metal.m:3331, native/stratum_metal.m:3729 |
-| `STRATUM_NC_FREESTAGING` | experimental | 2 | 1 | * FREESTAGING release deferred from flush() happens here */ | native/h3_forward.c:1677, native/stratum_metal.m:3802, native/stratum_metal.m:3822 |
+| `STRATUM_NC_BPTG` | experimental | 2 | 0 | * stage 1: grid (N, ceil(B/2)), tg 64 (STRATUM_NC_BPTG-consistent) */ | native/stratum_metal.m:3550, native/stratum_metal.m:4224 |
+| `STRATUM_NC_DEBUG` | experimental | 2 | 0 |  | native/stratum_metal.m:3408, native/stratum_metal.m:3806 |
+| `STRATUM_NC_FREESTAGING` | experimental | 2 | 1 | * FREESTAGING release deferred from flush() happens here */ | native/h3_forward.c:1677, native/stratum_metal.m:3879, native/stratum_metal.m:3899 |
 | `STRATUM_NC_TIME` | experimental | 1 | 0 |  | native/h3_forward.c:1269 |
-| `STRATUM_NC_WCACHE` | experimental | 1 | 0 |  | native/stratum_metal.m:3133 |
-| `STRATUM_NC_YDEBUG` | experimental | 1 | 0 |  | native/stratum_metal.m:3759 |
-| `STRATUM_NGRAM_SPEC` | sanctioned — n-gram speculative decoding | 9 | 0 |  | native/stratum_arch_llama.inc.c:1394, native/stratum_arch_moe.inc.c:1022, native/stratum_arch_qwen35.inc.c:12284, native/stratum_arch_qwen35.inc.c:12552 (+5 more) |
-| `STRATUM_NGRAM_TREE` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1397 |
+| `STRATUM_NC_WCACHE` | experimental | 1 | 0 |  | native/stratum_metal.m:3210 |
+| `STRATUM_NC_YDEBUG` | experimental | 1 | 0 |  | native/stratum_metal.m:3836 |
+| `STRATUM_NGRAM_SPEC` | sanctioned — n-gram speculative decoding | 9 | 0 |  | native/stratum_arch_llama.inc.c:1536, native/stratum_arch_moe.inc.c:1022, native/stratum_arch_qwen35.inc.c:12338, native/stratum_arch_qwen35.inc.c:12606 (+5 more) |
+| `STRATUM_NGRAM_TREE` | experimental | 1 | 0 |  | native/stratum_arch_llama.inc.c:1539 |
 | `STRATUM_NOCACHE` | experimental | 2 | 0 |  | native/stratum_p35.c:1937, native/stratum_p35.c:1937 |
-| `STRATUM_NOSPEC` | experimental | 4 | 0 | * Early usable-speed policy: must run BEFORE allocate_state so tree | native/stratum_arch_qwen35.inc.c:12282, native/stratum_arch_qwen35.inc.c:12550, native/stratum_arch_qwen35.inc.c:14217, native/stratum_arch_qwen35.inc.c:17324 |
-| `STRATUM_NO_BATCH_PREFILL` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:17013 |
-| `STRATUM_NO_GPU` | sanctioned — force CPU-only | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14621, native/stratum_arch_qwen35.inc.c:14670 |
-| `STRATUM_NO_MADV` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12623, native/stratum_arch_qwen35.inc.c:13291 |
+| `STRATUM_NOSPEC` | experimental | 4 | 0 | * Early usable-speed policy: must run BEFORE allocate_state so tree | native/stratum_arch_qwen35.inc.c:12336, native/stratum_arch_qwen35.inc.c:12604, native/stratum_arch_qwen35.inc.c:14271, native/stratum_arch_qwen35.inc.c:17378 |
+| `STRATUM_NO_BATCH_PREFILL` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:17067 |
+| `STRATUM_NO_GPU` | sanctioned — force CPU-only | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14675, native/stratum_arch_qwen35.inc.c:14724 |
+| `STRATUM_NO_MADV` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12677, native/stratum_arch_qwen35.inc.c:13345 |
 | `STRATUM_NO_MEMX_DONATE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:6070, native/stratum_arch_qwen35.inc.c:6070 |
-| `STRATUM_NO_PARTIAL_WARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:12050 |
+| `STRATUM_NO_PARTIAL_WARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:12104 |
 | `STRATUM_NO_POLICY` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:3445 |
 | `STRATUM_NO_SDOT` | experimental | 1 | 0 | * SDOT default ON (V25+). STRATUM_NO_SDOT (any set value) or | native/stratum_linear.h:111 |
 | `STRATUM_NO_WSTAGE` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:5680, native/stratum_arch_qwen35.inc.c:8730 |
-| `STRATUM_PARPREF` | experimental | 4 | 1 | * Late I/O helper init: auto-spec may set PARPREF after startup. */ | native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:14309 (+1 more) |
+| `STRATUM_PARPREF` | experimental | 4 | 1 | * Late I/O helper init: auto-spec may set PARPREF after startup. */ | native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:3325, native/stratum_arch_qwen35.inc.c:14363 (+1 more) |
 | `STRATUM_PARPREF_AHEAD` | experimental | 6 | 4 |  | native/stratum_arch_qwen35.inc.c:3293, native/stratum_arch_qwen35.inc.c:3294, native/stratum_arch_qwen35.inc.c:3294, native/stratum_arch_qwen35.inc.c:3306 (+6 more) |
 | `STRATUM_PARPREF_THREADS` | experimental | 6 | 4 |  | native/stratum_arch_qwen35.inc.c:3291, native/stratum_arch_qwen35.inc.c:3292, native/stratum_arch_qwen35.inc.c:3292, native/stratum_arch_qwen35.inc.c:3305 (+6 more) |
 | `STRATUM_PAR_OFF` | experimental | 1 | 0 |  | native/stratum_linear.h:262 |
-| `STRATUM_PATH_HOP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:20123 |
-| `STRATUM_PF_NEXT` | experimental | 1 | 0 | * optional advisory prefetch of the NEXT layer's weights — measures | native/stratum_arch_llama.inc.c:274 |
+| `STRATUM_PATH_HOP` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:20177 |
+| `STRATUM_PF_NEXT` | experimental | 1 | 0 | * optional advisory prefetch of the NEXT layer's weights — measures | native/stratum_arch_llama.inc.c:290 |
 | `STRATUM_PIPELINES` | experimental | 2 | 0 |  | native/stratum_p35.c:2055, native/stratum_p35.c:2056 |
 | `STRATUM_POLICY` | experimental | 3 | 1 |  | native/stratum_arch_qwen35.inc.c:3326, native/stratum_arch_qwen35.inc.c:3326, native/stratum_arch_qwen35.inc.c:3326, native/stratum_arch_qwen35.inc.c:3443 |
-| `STRATUM_PPL` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1283, native/stratum_arch_qwen35.inc.c:16883 |
-| `STRATUM_PREFAULT` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14762 |
+| `STRATUM_PPL` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1425, native/stratum_arch_qwen35.inc.c:16937 |
+| `STRATUM_PREFAULT` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14816 |
 | `STRATUM_PREFETCH` | experimental | 1 | 0 |  | native/stratum_engine.h:114 |
-| `STRATUM_PREFETCH_AHEAD` | experimental | 4 | 1 |  | native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:12608 (+1 more) |
+| `STRATUM_PREFETCH_AHEAD` | experimental | 4 | 1 |  | native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:3323, native/stratum_arch_qwen35.inc.c:12662 (+1 more) |
 | `STRATUM_PREFILL_B` | experimental | 1 | 0 |  | native/stratum_arch_moe.inc.c:1093 |
-| `STRATUM_PRESERVE_KV` | experimental | 5 | 0 | * Phase 3b / V220: allocate prefix-preservation snapshots (one per | native/stratum_arch_qwen35.inc.c:12459, native/stratum_arch_qwen35.inc.c:14803, native/stratum_arch_qwen35.inc.c:16943, native/stratum_arch_qwen35.inc.c:17282 (+1 more) |
-| `STRATUM_PRETOUCH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14767 |
-| `STRATUM_PROBE_COH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14739 |
-| `STRATUM_PROBE_SPARSITY` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14742 |
+| `STRATUM_PRESERVE_KV` | experimental | 5 | 0 | * Phase 3b / V220: allocate prefix-preservation snapshots (one per | native/stratum_arch_qwen35.inc.c:12513, native/stratum_arch_qwen35.inc.c:14857, native/stratum_arch_qwen35.inc.c:16997, native/stratum_arch_qwen35.inc.c:17336 (+1 more) |
+| `STRATUM_PRETOUCH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14821 |
+| `STRATUM_PROBE_COH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14793 |
+| `STRATUM_PROBE_SPARSITY` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14796 |
 | `STRATUM_PTM_PATH` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:4160 |
-| `STRATUM_Q2K_COAL` | experimental | 10 | 0 | * opt-in multi-stream coalesced16 Q2K (STRATUM_Q2K_COAL=1, B=2..8): | native/stratum_metal.m:358, native/stratum_metal.m:358, native/stratum_metal.m:404, native/stratum_metal.m:404 (+6 more) |
-| `STRATUM_Q2K_NIB` | sanctioned — Q2K nibble-layout model path | 1 | 0 | * V55: Q2K nibble-layout (offline converter, bit-exact). | native/stratum_arch_qwen35.inc.c:14560 |
-| `STRATUM_Q2K_NIB_DEBUG` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:1205, native/stratum_arch_qwen35.inc.c:1234, native/stratum_arch_qwen35.inc.c:14567 |
+| `STRATUM_Q2K_COAL` | experimental | 10 | 0 | * opt-in multi-stream coalesced16 Q2K (STRATUM_Q2K_COAL=1, B=2..8): | native/stratum_metal.m:362, native/stratum_metal.m:362, native/stratum_metal.m:408, native/stratum_metal.m:408 (+6 more) |
+| `STRATUM_Q2K_NIB` | sanctioned — Q2K nibble-layout model path | 1 | 0 | * V55: Q2K nibble-layout (offline converter, bit-exact). | native/stratum_arch_qwen35.inc.c:14614 |
+| `STRATUM_Q2K_NIB_DEBUG` | experimental | 3 | 0 |  | native/stratum_arch_qwen35.inc.c:1205, native/stratum_arch_qwen35.inc.c:1234, native/stratum_arch_qwen35.inc.c:14621 |
 | `STRATUM_Q2K_NIB_OFF` | sanctioned — disable nibble path | 4 | 0 | * V55: nibble-layout sidecar fast path (bit-exact, values unchanged). | native/stratum_arch_qwen35.inc.c:1200, native/stratum_arch_qwen35.inc.c:1231, native/stratum_arch_qwen35.inc.c:2026, native/stratum_arch_qwen35.inc.c:2126 |
 | `STRATUM_Q2K_SDOT` | sanctioned — int8 SDOT for Q2K (opt-in) | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:1262 |
 | `STRATUM_Q4K_COAL` | experimental | 12 | 0 | * same V54.6 update as q35_gpu2_matmul_multix_nc: Q4K/Q6K join the | native/stratum_arch_qwen35.inc.c:1518, native/stratum_arch_qwen35.inc.c:1518, native/stratum_arch_qwen35.inc.c:1629, native/stratum_arch_qwen35.inc.c:1629 (+8 more) |
-| `STRATUM_Q4K_COAL_NMIN` | experimental | 2 | 0 |  | native/stratum_metal.m:2488, native/stratum_metal.m:3602 |
+| `STRATUM_Q4K_COAL_NMIN` | experimental | 2 | 0 |  | native/stratum_metal.m:2565, native/stratum_metal.m:3679 |
 | `STRATUM_Q6K_COAL` | experimental | 10 | 0 |  | native/stratum_arch_qwen35.inc.c:1519, native/stratum_arch_qwen35.inc.c:1519, native/stratum_arch_qwen35.inc.c:1630, native/stratum_arch_qwen35.inc.c:1630 (+6 more) |
 | `STRATUM_RELEASE` | experimental | 1 | 0 |  | native/stratum_engine.h:115 |
-| `STRATUM_RELEASE_BEHIND` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12609, native/stratum_arch_qwen35.inc.c:13283 |
+| `STRATUM_RELEASE_BEHIND` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:12663, native/stratum_arch_qwen35.inc.c:13337 |
 | `STRATUM_SDOT` | experimental | 1 | 0 | * SDOT default ON (V25+). STRATUM_NO_SDOT (any set value) or | native/stratum_linear.h:112 |
-| `STRATUM_SEAL_ECHO` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15287 |
-| `STRATUM_SEED` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14848, native/stratum_arch_qwen35.inc.c:16915 |
-| `STRATUM_SELFSPEC` | experimental | 5 | 0 |  | native/stratum_arch_qwen35.inc.c:12285, native/stratum_arch_qwen35.inc.c:12553, native/stratum_arch_qwen35.inc.c:12557, native/stratum_arch_qwen35.inc.c:14220 (+1 more) |
-| `STRATUM_SELFSPEC_LAYERS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:23858 |
-| `STRATUM_SELFTEST_Q2K` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14057 |
-| `STRATUM_SELF_SPEC` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:24108 |
-| `STRATUM_SERVER` | experimental | 1 | 0 | * ── STRATUM_SERVER mode: loop on stdin, reuse loaded weights ── */ | native/stratum_arch_qwen35.inc.c:14784 |
-| `STRATUM_SOFT_WARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14332 |
-| `STRATUM_SPARSE` | experimental | 2 | 0 |  | native/stratum_metal.m:1238, native/stratum_metal.m:1240 |
-| `STRATUM_SPEC` | experimental | 7 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12283, native/stratum_arch_qwen35.inc.c:12288, native/stratum_arch_qwen35.inc.c:12551, native/stratum_arch_qwen35.inc.c:12555 (+3 more) |
-| `STRATUM_SPEC_CHAIN` | experimental | 3 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12288, native/stratum_arch_qwen35.inc.c:12563, native/stratum_arch_qwen35.inc.c:17344 |
-| `STRATUM_SPEC_DBG` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1622, native/stratum_arch_llama.inc.c:1624, native/stratum_arch_llama.inc.c:1631, native/stratum_arch_llama.inc.c:1633 |
-| `STRATUM_SPEC_K` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:23861, native/stratum_arch_qwen35.inc.c:24073 |
-| `STRATUM_SPEC_STATS` | experimental | 3 | 0 |  | native/stratum_arch_llama.inc.c:1718, native/stratum_arch_qwen35.inc.c:24295, native/stratum_arch_qwen35.inc.c:24601 |
-| `STRATUM_SPINE_DEBUG` | experimental | 14 | 0 |  | native/stratum_arch_qwen35.inc.c:4543, native/stratum_arch_qwen35.inc.c:4578, native/stratum_arch_qwen35.inc.c:19850, native/stratum_arch_qwen35.inc.c:20107 (+10 more) |
+| `STRATUM_SEAL_ECHO` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:15341 |
+| `STRATUM_SEED` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14902, native/stratum_arch_qwen35.inc.c:16969 |
+| `STRATUM_SELFSPEC` | experimental | 5 | 0 |  | native/stratum_arch_qwen35.inc.c:12339, native/stratum_arch_qwen35.inc.c:12607, native/stratum_arch_qwen35.inc.c:12611, native/stratum_arch_qwen35.inc.c:14274 (+1 more) |
+| `STRATUM_SELFSPEC_LAYERS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:23912 |
+| `STRATUM_SELFTEST_Q2K` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14111 |
+| `STRATUM_SELF_SPEC` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:24162 |
+| `STRATUM_SERVER` | experimental | 1 | 0 | * ── STRATUM_SERVER mode: loop on stdin, reuse loaded weights ── */ | native/stratum_arch_qwen35.inc.c:14838 |
+| `STRATUM_SOFT_WARM` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14386 |
+| `STRATUM_SPARSE` | experimental | 2 | 0 |  | native/stratum_metal.m:1290, native/stratum_metal.m:1292 |
+| `STRATUM_SPEC` | experimental | 7 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12337, native/stratum_arch_qwen35.inc.c:12342, native/stratum_arch_qwen35.inc.c:12605, native/stratum_arch_qwen35.inc.c:12609 (+3 more) |
+| `STRATUM_SPEC_CHAIN` | experimental | 3 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12342, native/stratum_arch_qwen35.inc.c:12617, native/stratum_arch_qwen35.inc.c:17398 |
+| `STRATUM_SPEC_DBG` | experimental | 4 | 0 |  | native/stratum_arch_llama.inc.c:1764, native/stratum_arch_llama.inc.c:1766, native/stratum_arch_llama.inc.c:1773, native/stratum_arch_llama.inc.c:1775 |
+| `STRATUM_SPEC_K` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:23915, native/stratum_arch_qwen35.inc.c:24127 |
+| `STRATUM_SPEC_STATS` | experimental | 3 | 0 |  | native/stratum_arch_llama.inc.c:1860, native/stratum_arch_qwen35.inc.c:24349, native/stratum_arch_qwen35.inc.c:24655 |
+| `STRATUM_SPINE_DEBUG` | experimental | 14 | 0 |  | native/stratum_arch_qwen35.inc.c:4543, native/stratum_arch_qwen35.inc.c:4578, native/stratum_arch_qwen35.inc.c:19904, native/stratum_arch_qwen35.inc.c:20161 (+10 more) |
 | `STRATUM_STAGE_GPU` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:8374 |
-| `STRATUM_STREAM` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14600, native/stratum_arch_qwen35.inc.c:14723 |
-| `STRATUM_STREAM_DET` | sanctioned — deterministic streaming (skip mincore) | 1 | 0 | * V56.1: 确定性流式 —— 跳过 mincore 热冷检测税(每 forward 数百-上千次系统调用), | native/stratum_arch_qwen35.inc.c:14550 |
-| `STRATUM_TEMP` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14844, native/stratum_arch_qwen35.inc.c:16909 |
-| `STRATUM_TIMING` | experimental | 12 | 0 |  | native/stratum.c:100, native/stratum_arch_llama.inc.c:1307, native/stratum_arch_llama.inc.c:1718, native/stratum_arch_qwen35.inc.c:1980 (+8 more) |
-| `STRATUM_TOP_K` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14846, native/stratum_arch_qwen35.inc.c:16913 |
-| `STRATUM_TOP_P` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14845, native/stratum_arch_qwen35.inc.c:16912 |
-| `STRATUM_TREE` | experimental | 8 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12283, native/stratum_arch_qwen35.inc.c:12287, native/stratum_arch_qwen35.inc.c:12551, native/stratum_arch_qwen35.inc.c:12555 (+4 more) |
+| `STRATUM_STREAM` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14654, native/stratum_arch_qwen35.inc.c:14777 |
+| `STRATUM_STREAM_DET` | sanctioned — deterministic streaming (skip mincore) | 1 | 0 | * V56.1: 确定性流式 —— 跳过 mincore 热冷检测税(每 forward 数百-上千次系统调用), | native/stratum_arch_qwen35.inc.c:14604 |
+| `STRATUM_TEMP` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14898, native/stratum_arch_qwen35.inc.c:16963 |
+| `STRATUM_TIMING` | experimental | 12 | 0 |  | native/stratum.c:100, native/stratum_arch_llama.inc.c:1449, native/stratum_arch_llama.inc.c:1860, native/stratum_arch_qwen35.inc.c:1980 (+8 more) |
+| `STRATUM_TOP_K` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14900, native/stratum_arch_qwen35.inc.c:16967 |
+| `STRATUM_TOP_P` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:14899, native/stratum_arch_qwen35.inc.c:16966 |
+| `STRATUM_TREE` | experimental | 8 | 0 | * Tree resources needed for auto usable-speed (tree is default over chain). */ | native/stratum_arch_qwen35.inc.c:12337, native/stratum_arch_qwen35.inc.c:12341, native/stratum_arch_qwen35.inc.c:12605, native/stratum_arch_qwen35.inc.c:12609 (+4 more) |
 | `STRATUM_TREE_B` | experimental | 17 | 9 | * env already seeded early; ensure tree flag. */ | native/stratum_arch_qwen35.inc.c:3270, native/stratum_arch_qwen35.inc.c:3270, native/stratum_arch_qwen35.inc.c:3270, native/stratum_arch_qwen35.inc.c:3298 (+22 more) |
 | `STRATUM_TREE_BRANCH` | experimental | 8 | 4 |  | native/stratum_arch_qwen35.inc.c:3271, native/stratum_arch_qwen35.inc.c:3272, native/stratum_arch_qwen35.inc.c:3272, native/stratum_arch_qwen35.inc.c:3299 (+8 more) |
 | `STRATUM_TREE_CHAIN_D2` | experimental | 4 | 2 |  | native/stratum_arch_qwen35.inc.c:3276, native/stratum_arch_qwen35.inc.c:3276, native/stratum_arch_qwen35.inc.c:3276, native/stratum_arch_qwen35.inc.c:3350 (+2 more) |
 | `STRATUM_TREE_COVER` | experimental | 3 | 1 |  | native/stratum_arch_qwen35.inc.c:3322, native/stratum_arch_qwen35.inc.c:3322, native/stratum_arch_qwen35.inc.c:3322, native/stratum_arch_qwen35.inc.c:3432 |
-| `STRATUM_TREE_DEBUG` | experimental | 4 | 0 |  | native/stratum_arch_qwen35.inc.c:20979, native/stratum_arch_qwen35.inc.c:21131, native/stratum_arch_qwen35.inc.c:21133, native/stratum_arch_qwen35.inc.c:21135 |
+| `STRATUM_TREE_DEBUG` | experimental | 4 | 0 |  | native/stratum_arch_qwen35.inc.c:21033, native/stratum_arch_qwen35.inc.c:21185, native/stratum_arch_qwen35.inc.c:21187, native/stratum_arch_qwen35.inc.c:21189 |
 | `STRATUM_TREE_EXTEND` | experimental | 8 | 4 |  | native/stratum_arch_qwen35.inc.c:3277, native/stratum_arch_qwen35.inc.c:3278, native/stratum_arch_qwen35.inc.c:3301, native/stratum_arch_qwen35.inc.c:3301 (+8 more) |
 | `STRATUM_TREE_EXTEND_K` | sanctioned — tree chain depth (cap 12) | 9 | 4 |  | native/stratum_arch_qwen35.inc.c:3279, native/stratum_arch_qwen35.inc.c:3280, native/stratum_arch_qwen35.inc.c:3280, native/stratum_arch_qwen35.inc.c:3302 (+9 more) |
 | `STRATUM_TREE_MAXW` | experimental | 13 | 5 | * env already seeded early; ensure tree flag. */ | native/stratum_arch_qwen35.inc.c:3273, native/stratum_arch_qwen35.inc.c:3274, native/stratum_arch_qwen35.inc.c:3274, native/stratum_arch_qwen35.inc.c:3300 (+14 more) |
 | `STRATUM_TREE_MTP_D2` | experimental | 3 | 2 |  | native/stratum_arch_qwen35.inc.c:3290, native/stratum_arch_qwen35.inc.c:3290, native/stratum_arch_qwen35.inc.c:3304, native/stratum_arch_qwen35.inc.c:3304 (+1 more) |
-| `STRATUM_TREE_NGRAM` | experimental | 4 | 1 | * env already seeded early; ensure tree flag. */ | native/stratum_arch_qwen35.inc.c:17334, native/stratum_arch_qwen35.inc.c:17334, native/stratum_arch_qwen35.inc.c:17341, native/stratum_arch_qwen35.inc.c:17341 (+1 more) |
-| `STRATUM_TREE_STATS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:17365 |
-| `STRATUM_TYPETIME` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1808, native/stratum_linear.h:460 |
+| `STRATUM_TREE_NGRAM` | experimental | 4 | 1 | * env already seeded early; ensure tree flag. */ | native/stratum_arch_qwen35.inc.c:17388, native/stratum_arch_qwen35.inc.c:17388, native/stratum_arch_qwen35.inc.c:17395, native/stratum_arch_qwen35.inc.c:17395 (+1 more) |
+| `STRATUM_TREE_STATS` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:17419 |
+| `STRATUM_TYPETIME` | experimental | 2 | 0 |  | native/stratum_arch_llama.inc.c:1950, native/stratum_linear.h:460 |
 | `STRATUM_UPK_SCALAR` | experimental | 1 | 0 |  | native/stratum_q4k_w16_amx.h:885 |
 | `STRATUM_USER_STAGE_MB` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:3353 |
 | `STRATUM_USER_TREE_B` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:3360, native/stratum_arch_qwen35.inc.c:3369 |
-| `STRATUM_USER_TREE_EXTEND` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:21347, native/stratum_arch_qwen35.inc.c:21366 |
+| `STRATUM_USER_TREE_EXTEND` | experimental | 2 | 0 |  | native/stratum_arch_qwen35.inc.c:21401, native/stratum_arch_qwen35.inc.c:21420 |
 | `STRATUM_USER_TREE_MAXW` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:3351 |
 | `STRATUM_VAE_THREADS` | experimental | 1 | 0 |  | native/h3_vae_decode.c:483 |
-| `STRATUM_WIRE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14719 |
+| `STRATUM_WIRE` | experimental | 1 | 0 |  | native/stratum_arch_qwen35.inc.c:14773 |
 | `STRATUM_WSTAGE` | experimental | 1 | 1 |  | native/stratum_arch_qwen35.inc.c:3365, native/stratum_arch_qwen35.inc.c:5678 |
 | `STRATUM_WT_STAGE_MB` | experimental | 3 | 2 |  | native/stratum_arch_qwen35.inc.c:3281, native/stratum_arch_qwen35.inc.c:3282, native/stratum_arch_qwen35.inc.c:3284, native/stratum_arch_qwen35.inc.c:3354 (+1 more) |
 | `STRATUM_KEEP_RESIDENT` | forbidden — page-cache lock (implicit mlock) | 0 | 0 | string-literal in stratum_enforce_boundaries() | native/stratum_engine.h |

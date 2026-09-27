@@ -43,6 +43,9 @@ typedef struct {
     bool has_output_weight; /* output.weight separate from token_embd */
     bool has_qk_norm;       /* attn_q_norm / attn_k_norm present */
 
+    /* Context */
+    int  context_length;    /* context_length (trained max positions; 0 = unknown) */
+
     /* Attention type pattern (for hybrid architectures) */
     /* If full_attn_stride > 0: layer N is full-attention when (N+1)%stride==0
      * If full_attn_stride == 0: all layers are full-attention (standard Transformer)
@@ -238,6 +241,7 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
     OPT_U32("rope.dimension_count", &c->rope_dim, c->head_dim);
     OPT_F32("attention.layer_norm_rms_epsilon", &c->rms_eps, 1e-5f);
     OPT_F32("rope.freq_base", &c->rope_theta, 10000.0f);
+    OPT_U32("context_length", &c->context_length, 0);
 
     /* Vocabulary size from token_embd tensor */
     const GgufTensor* te = gguf_find_tensor(g, "token_embd.weight");
@@ -330,6 +334,8 @@ static inline void stratum_print_config(const StratumConfig* c) {
     fprintf(stderr, "  rms_eps           : %g\n", c->rms_eps);
     fprintf(stderr, "  rope_theta        : %g\n", c->rope_theta);
     fprintf(stderr, "  vocab_size        : %d\n", c->vocab_size);
+    if (c->context_length > 0)
+        fprintf(stderr, "  context_length    : %d\n", c->context_length);
     fprintf(stderr, "  has_output_w      : %s\n", c->has_output_weight ? "yes" : "no");
     fprintf(stderr, "  has_qk_norm       : %s\n", c->has_qk_norm ? "yes" : "no");
     if (stratum_has_ssm(c)) {
