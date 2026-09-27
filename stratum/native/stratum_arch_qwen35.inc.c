@@ -9241,37 +9241,54 @@ static void q35_forward_full_attn(int li, int position) {
         n_attn = n;
     }
 
-    for (int h = 0; h < Nq; h++) {
-        int kv_h = h * Nk / Nq;
-        const float* qh = q35_g_q_only + h * Hd;
-
-        float logits[q35_MAX_KV];
-        for (int ti = 0; ti < n_attn; ti++) {
-            int t = attn_idx[ti];
-            const float* kt = K_layer + (size_t)t * Nk * Hd + kv_h * Hd;
-            float dot = q35_dot_f32(qh, kt, Hd);
-            logits[ti] = dot * scale;
+    /* GQA-grouped scan: the gs = Nq/Nk sibling q-heads of a kv head used to
+     * stream the same K/V rows gs times. Grouped, each row is read once —
+     * per-head dot/PV accumulation order is identical (bit-exact). */
+    int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
+    static float* q35_lgs = NULL; static size_t q35_lgs_cap = 0;
+    {
+        size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+        if (need > q35_lgs_cap) {
+            free(q35_lgs);
+            q35_lgs = (float*)malloc(need * sizeof(float));
+            q35_lgs_cap = q35_lgs ? need : 0;
         }
-        q35_softmax_inplace(logits, n_attn);
-
-        float* head_out = q35_g_attn_out + h * Hd;
-        memset(head_out, 0, sizeof(float) * Hd);
+        if (!q35_lgs) { fprintf(stderr, "q35 attn scratch alloc failed\n"); return; }
+    }
+    for (int kv = 0; kv < Nk; kv++) {
+        int h0 = kv * qgs, h1 = h0 + qgs; if (h1 > Nq) h1 = Nq;
         for (int ti = 0; ti < n_attn; ti++) {
             int t = attn_idx[ti];
-            const float* vt = V_layer + (size_t)t * Nk * Hd + kv_h * Hd;
-            float p = logits[ti];
-#if defined(__ARM_NEON) || defined(__aarch64__)
-            float32x4_t pv = vdupq_n_f32(p);
-            int d = 0;
-            for (; d + 4 <= Hd; d += 4) {
-                float32x4_t acc = vld1q_f32(head_out + d);
-                acc = vfmaq_f32(acc, pv, vld1q_f32(vt + d));
-                vst1q_f32(head_out + d, acc);
+            const float* kt = K_layer + (size_t)t * Nk * Hd + kv * Hd;
+            for (int h = h0; h < h1; h++) {
+                const float* qh = q35_g_q_only + h * Hd;
+                float dot = q35_dot_f32(qh, kt, Hd);
+                q35_lgs[(size_t)h * q35_MAX_KV + ti] = dot * scale;
             }
-            for (; d < Hd; d++) head_out[d] += p * vt[d];
+        }
+        for (int h = h0; h < h1; h++)
+            q35_softmax_inplace(q35_lgs + (size_t)h * q35_MAX_KV, n_attn);
+        for (int h = h0; h < h1; h++)
+            memset(q35_g_attn_out + h * Hd, 0, sizeof(float) * Hd);
+        for (int ti = 0; ti < n_attn; ti++) {
+            int t = attn_idx[ti];
+            const float* vt = V_layer + (size_t)t * Nk * Hd + kv * Hd;
+            for (int h = h0; h < h1; h++) {
+                float* head_out = q35_g_attn_out + h * Hd;
+                float p = q35_lgs[(size_t)h * q35_MAX_KV + ti];
+#if defined(__ARM_NEON) || defined(__aarch64__)
+                float32x4_t pv = vdupq_n_f32(p);
+                int d = 0;
+                for (; d + 4 <= Hd; d += 4) {
+                    float32x4_t acc = vld1q_f32(head_out + d);
+                    acc = vfmaq_f32(acc, pv, vld1q_f32(vt + d));
+                    vst1q_f32(head_out + d, acc);
+                }
+                for (; d < Hd; d++) head_out[d] += p * vt[d];
 #else
-            for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
+                for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
 #endif
+            }
         }
     }
 
@@ -9533,29 +9550,48 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
                 for (int a = 0; a <= s; a++) att[natt++] = q35_g_kv_len + a;
             }
         }
-        for (int h = 0; h < Nq; h++) {
-            int kv_h = h * Nk / Nq;
-            const float* qh = q35_g_q_only_b[s] + h * Hd;
-            float logits[q35_MAX_KV];
-            for (int ti = 0; ti < natt; ti++) {
-                int t = att[ti];
-                const float* kt = Ks + (size_t)t * Nk * Hd + kv_h * Hd;
-                float32x4_t acc = vdupq_n_f32(0.0f);
-                for (int d = 0; d < Hd; d += 4)
-                    acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
-                logits[ti] = vaddvq_f32(acc) * scale;
+        /* GQA-grouped: one K/V row stream per group serves all siblings;
+         * per-head FP order identical → bit-exact. Heap scratch (Nq × cap)
+         * since gs × q35_MAX_KV no longer fits the stack. */
+        int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
+        static float* q35_blgs = NULL; static size_t q35_blgs_cap = 0;
+        {
+            size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+            if (need > q35_blgs_cap) {
+                free(q35_blgs);
+                q35_blgs = (float*)malloc(need * sizeof(float));
+                q35_blgs_cap = q35_blgs ? need : 0;
             }
-            q35_softmax_inplace(logits, natt);
-            float* head_out = q35_g_attn_out_b[s] + h * Hd;
-            memset(head_out, 0, sizeof(float) * Hd);
+            if (!q35_blgs) { fprintf(stderr, "q35 batched attn scratch alloc failed\n"); return; }
+        }
+        for (int kv = 0; kv < Nk; kv++) {
+            int h0 = kv * qgs, h1 = h0 + qgs; if (h1 > Nq) h1 = Nq;
             for (int ti = 0; ti < natt; ti++) {
                 int t = att[ti];
-                const float* vt = Vs + (size_t)t * Nk * Hd + kv_h * Hd;
-                float32x4_t vp = vdupq_n_f32(logits[ti]);
-                for (int d = 0; d < Hd; d += 4) {
-                    float32x4_t ho = vld1q_f32(head_out + d);
-                    ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
-                    vst1q_f32(head_out + d, ho);
+                const float* kt = Ks + (size_t)t * Nk * Hd + kv * Hd;
+                for (int h = h0; h < h1; h++) {
+                    const float* qh = q35_g_q_only_b[s] + h * Hd;
+                    float32x4_t acc = vdupq_n_f32(0.0f);
+                    for (int d = 0; d < Hd; d += 4)
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
+                    q35_blgs[(size_t)h * q35_MAX_KV + ti] = vaddvq_f32(acc) * scale;
+                }
+            }
+            for (int h = h0; h < h1; h++)
+                q35_softmax_inplace(q35_blgs + (size_t)h * q35_MAX_KV, natt);
+            for (int h = h0; h < h1; h++)
+                memset(q35_g_attn_out_b[s] + h * Hd, 0, sizeof(float) * Hd);
+            for (int ti = 0; ti < natt; ti++) {
+                int t = att[ti];
+                const float* vt = Vs + (size_t)t * Nk * Hd + kv * Hd;
+                for (int h = h0; h < h1; h++) {
+                    float* head_out = q35_g_attn_out_b[s] + h * Hd;
+                    float32x4_t vp = vdupq_n_f32(q35_blgs[(size_t)h * q35_MAX_KV + ti]);
+                    for (int d = 0; d < Hd; d += 4) {
+                        float32x4_t ho = vld1q_f32(head_out + d);
+                        ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
+                        vst1q_f32(head_out + d, ho);
+                    }
                 }
             }
         }
@@ -9755,27 +9791,45 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
     }
 
     float scale = 1.0f / sqrtf((float)Hd);
-    for (int h = 0; h < Nq; h++) {
-        int kv_h = h * Nk / Nq;
-        const float* qh = q35_g_q_only + h * Hd;
-        float logits[q35_MAX_KV];
-        for (int t = 0; t < kv_len_now; t++) {
-            const float* kt = q35_g_mtp_K_cache + (size_t)t * Nk * Hd + kv_h * Hd;
-            float32x4_t acc = vdupq_n_f32(0.0f);
-            for (int d = 0; d < Hd; d += 4)
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
-            logits[t] = vaddvq_f32(acc) * scale;
+    /* GQA-grouped: siblings share each K/V row stream; per-head FP order
+     * identical → bit-exact. Scratch is heap (gs × q35_MAX_KV). */
+    {
+        int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
+        static float* q35_mlgs = NULL; static size_t q35_mlgs_cap = 0;
+        size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+        if (need > q35_mlgs_cap) {
+            free(q35_mlgs);
+            q35_mlgs = (float*)malloc(need * sizeof(float));
+            q35_mlgs_cap = q35_mlgs ? need : 0;
         }
-        q35_softmax_inplace(logits, kv_len_now);
-        float* head_out = q35_g_attn_out + h * Hd;
-        memset(head_out, 0, sizeof(float) * Hd);
-        for (int t = 0; t < kv_len_now; t++) {
-            const float* vt = q35_g_mtp_V_cache + (size_t)t * Nk * Hd + kv_h * Hd;
-            float32x4_t vp = vdupq_n_f32(logits[t]);
-            for (int d = 0; d < Hd; d += 4) {
-                float32x4_t ho = vld1q_f32(head_out + d);
-                ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
-                vst1q_f32(head_out + d, ho);
+        if (!q35_mlgs) { fprintf(stderr, "q35 mtp attn scratch alloc failed\n"); return -1; }
+        for (int kv = 0; kv < Nk; kv++) {
+            int h0 = kv * qgs, h1 = h0 + qgs; if (h1 > Nq) h1 = Nq;
+            for (int t = 0; t < kv_len_now; t++) {
+                const float* kt = q35_g_mtp_K_cache + (size_t)t * Nk * Hd + kv * Hd;
+                for (int h = h0; h < h1; h++) {
+                    const float* qh = q35_g_q_only + h * Hd;
+                    float32x4_t acc = vdupq_n_f32(0.0f);
+                    for (int d = 0; d < Hd; d += 4)
+                        acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
+                    q35_mlgs[(size_t)h * q35_MAX_KV + t] = vaddvq_f32(acc) * scale;
+                }
+            }
+            for (int h = h0; h < h1; h++)
+                q35_softmax_inplace(q35_mlgs + (size_t)h * q35_MAX_KV, kv_len_now);
+            for (int h = h0; h < h1; h++)
+                memset(q35_g_attn_out + h * Hd, 0, sizeof(float) * Hd);
+            for (int t = 0; t < kv_len_now; t++) {
+                const float* vt = q35_g_mtp_V_cache + (size_t)t * Nk * Hd + kv * Hd;
+                for (int h = h0; h < h1; h++) {
+                    float* head_out = q35_g_attn_out + h * Hd;
+                    float32x4_t vp = vdupq_n_f32(q35_mlgs[(size_t)h * q35_MAX_KV + t]);
+                    for (int d = 0; d < Hd; d += 4) {
+                        float32x4_t ho = vld1q_f32(head_out + d);
+                        ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
+                        vst1q_f32(head_out + d, ho);
+                    }
+                }
             }
         }
     }

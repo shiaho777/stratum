@@ -165,8 +165,24 @@ static float* la_g_ff_a    = NULL;
 
 static float* la_g_K_cache = NULL;
 static float* la_g_V_cache = NULL;
-#define la_MAX_KV 1024
+static int    la_g_maxkv   = 4096;  /* KV capacity in positions — GGUF
+                                     * context_length or STRATUM_MAX_KV.
+                                     * calloc is lazy-commit: only pages the
+                                     * context actually touches become wired. */
+static int    la_g_kvbound = 0;     /* enforced bound (GPU path may cap lower) */
 static int    la_g_kv_len  = 0;
+
+/* Decode-attention GQA grouping threshold (positions). Sibling q-heads share
+ * a K/V row stream only past this ctx — measured crossover ~4k. Env override
+ * exists to exercise the grouped path at small ctx for bit-exact checks. */
+static int la_attn_grp_min(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("STRATUM_ATTN_GRP_MIN");
+        v = (e && atoi(e) >= 0) ? atoi(e) : 4096;
+    }
+    return v;
+}
 
 /* Multi-sequence KV: B independent streams, layout [L][B][MAX_KV][Nk*Hd].
  * Allocated lazily by the multi-seq generator. This is the unbounded
@@ -327,77 +343,112 @@ static void la_forward_block(int li, int position) {
                 la_g_q_buf[0], la_g_q_buf[1], la_g_k_buf[0], la_g_k_buf[1]);
 
     int kv_len_now = la_g_kv_len + 1;
+    size_t per_layer = (size_t)la_g_maxkv * Nk * Hd;
     {
-        size_t per_layer = (size_t)la_MAX_KV * Nk * Hd;
         size_t off = (size_t)li * per_layer + (size_t)la_g_kv_len * Nk * Hd;
         memcpy(la_g_K_cache + off, la_g_k_buf, sizeof(float) * Nk * Hd);
         memcpy(la_g_V_cache + off, la_g_v_buf, sizeof(float) * Nk * Hd);
     }
 
     float scale = 1.0f / sqrtf((float)Hd);
-    /* heads are independent: parallelize when the serial loop is long
-     * enough to matter (kv_len grows with context). Same math, same
-     * output — only the head iteration order across threads changes. */
+    /* GQA-grouped decode attention: the gs = Nq/Nk q-heads sharing one kv
+     * head used to re-read the same K/V rows gs times (once per sibling).
+     * Grouping siblings into one work item reads each K/V row once — the
+     * row stays hot in L1 across the siblings' dots. Per-head FP order is
+     * untouched (same d-order dot, same t-order PV accumulate), so the
+     * output is bit-identical; only DRAM traffic drops ~gs-fold.
+     * Groups with few kv heads split their siblings into chunks of <=4 so
+     * the work-item count stays ~= ST_PAR_MAXW+1. */
+    int gs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
+    /* measured (bench_attn microbench, min-of-14): below ~4k ctx the
+     * head-parallel width wins; past it K/V DRAM traffic dominates and
+     * sharing each row across siblings wins (up to -45% at 8k, gs>=4).
+     * csize=1 degenerates the group loop to the per-head order — same
+     * FP ops, bit-identical either way. */
+    int csize = (kv_len_now >= la_attn_grp_min() && gs > 1) ? gs : 1;
+    int nchunk = gs / csize;
+    int nwork = Nk * nchunk;
+
+    /* per-head logits scratch [h][t] — heap, grown on demand (kvlen is
+     * no longer compile-time bounded) */
+    static float* la_lgbuf = NULL; static size_t la_lgcap = 0;
+    size_t lgneed = (size_t)Nq * (size_t)kv_len_now;
+    if (lgneed > la_lgcap) {
+        free(la_lgbuf);
+        la_lgbuf = (float*)malloc(lgneed * sizeof(float));
+        la_lgcap = la_lgbuf ? lgneed : 0;
+    }
+    if (!la_lgbuf) { fprintf(stderr, "attn logits scratch alloc failed\n"); return; }
+
     int attn_par = (kv_len_now >= 32 && Nq >= 4);
-    void (^attn_head)(int) = ^(int h) {
-        int kv_h = h * Nk / Nq;
-        const float* qh = la_g_q_buf + h * Hd;
-        size_t per_layer = (size_t)la_MAX_KV * Nk * Hd;
+    void (^attn_grp)(int) = ^(int w) {
+        int kv_h = w / nchunk;
+        int h0 = kv_h * gs + (w % nchunk) * csize;
+        int h1 = h0 + csize; int glim = kv_h * gs + gs;
+        if (h1 > glim) h1 = glim;
         const float* K_layer = la_g_K_cache + (size_t)li * per_layer;
         const float* V_layer = la_g_V_cache + (size_t)li * per_layer;
 
-        float logits[la_MAX_KV];
+        /* pass 1: one K-row stream serves all sibling heads' QK dots */
         for (int t = 0; t < kv_len_now; t++) {
             const float* kt = K_layer + (size_t)t * Nk * Hd + kv_h * Hd;
-            float dot = 0.0f;
+            for (int h = h0; h < h1; h++) {
+                const float* qh = la_g_q_buf + h * Hd;
+                float dot = 0.0f;
 #if defined(__ARM_NEON) || defined(__aarch64__)
-            /* P2b: QK dot was the last scalar hot loop — 16 q-heads x
-             * kv_len x head_dim MACs per layer. f32x4 FMA accumulation
-             * reorders the reduction; greedy pins are gate-verified. */
-            float32x4_t acc = vdupq_n_f32(0.0f);
-            int d = 0;
-            for (; d + 16 <= Hd; d += 16) {
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d),      vld1q_f32(kt + d));
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 4),  vld1q_f32(kt + d + 4));
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 8),  vld1q_f32(kt + d + 8));
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d + 12), vld1q_f32(kt + d + 12));
-            }
-            for (; d + 4 <= Hd; d += 4)
-                acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
-            dot = vaddvq_f32(acc);
-            for (; d < Hd; d++) dot += qh[d] * kt[d];
+                /* P2b: identical f32x4 FMA reduction as the per-head loop —
+                 * accumulation order unchanged, only the K load is shared. */
+                float32x4_t acc = vdupq_n_f32(0.0f);
+                int d = 0;
+                for (; d + 16 <= Hd; d += 16) {
+                    acc = vfmaq_f32(acc, vld1q_f32(qh + d),      vld1q_f32(kt + d));
+                    acc = vfmaq_f32(acc, vld1q_f32(qh + d + 4),  vld1q_f32(kt + d + 4));
+                    acc = vfmaq_f32(acc, vld1q_f32(qh + d + 8),  vld1q_f32(kt + d + 8));
+                    acc = vfmaq_f32(acc, vld1q_f32(qh + d + 12), vld1q_f32(kt + d + 12));
+                }
+                for (; d + 4 <= Hd; d += 4)
+                    acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
+                dot = vaddvq_f32(acc);
+                for (; d < Hd; d++) dot += qh[d] * kt[d];
 #else
-            for (int d = 0; d < Hd; d++) dot += qh[d] * kt[d];
+                for (int d = 0; d < Hd; d++) dot += qh[d] * kt[d];
 #endif
-            logits[t] = dot * scale;
+                la_lgbuf[(size_t)h * kv_len_now + t] = dot * scale;
+            }
         }
-        la_softmax_inplace(logits, kv_len_now);
+        for (int h = h0; h < h1; h++)
+            la_softmax_inplace(la_lgbuf + (size_t)h * kv_len_now, kv_len_now);
+        for (int h = h0; h < h1; h++)
+            memset(la_g_attn_out + h * Hd, 0, sizeof(float) * Hd);
 
-        float* head_out = la_g_attn_out + h * Hd;
-        memset(head_out, 0, sizeof(float) * Hd);
+        /* pass 2: one V-row stream serves all siblings' weighted sums */
         for (int t = 0; t < kv_len_now; t++) {
             const float* vt = V_layer + (size_t)t * Nk * Hd + kv_h * Hd;
-            float p = logits[t];
+            for (int h = h0; h < h1; h++) {
+                float* head_out = la_g_attn_out + h * Hd;
+                float p = la_lgbuf[(size_t)h * kv_len_now + t];
 #if defined(__ARM_NEON) || defined(__aarch64__)
-            /* element-wise accumulate, same t order — bit-exact vs scalar */
-            float32x4_t vp = vdupq_n_f32(p);
-            int d = 0;
-            for (; d + 16 <= Hd; d += 16) {
-                vst1q_f32(head_out + d, vfmaq_f32(vld1q_f32(head_out + d),      vp, vld1q_f32(vt + d)));
-                vst1q_f32(head_out + d + 4, vfmaq_f32(vld1q_f32(head_out + d + 4),  vp, vld1q_f32(vt + d + 4)));
-                vst1q_f32(head_out + d + 8, vfmaq_f32(vld1q_f32(head_out + d + 8),  vp, vld1q_f32(vt + d + 8)));
-                vst1q_f32(head_out + d + 12, vfmaq_f32(vld1q_f32(head_out + d + 12), vp, vld1q_f32(vt + d + 12)));
-            }
-            for (; d < Hd; d++) head_out[d] += p * vt[d];
+                /* element-wise accumulate, same t order — bit-exact vs scalar */
+                float32x4_t vp = vdupq_n_f32(p);
+                int d = 0;
+                for (; d + 16 <= Hd; d += 16) {
+                    vst1q_f32(head_out + d, vfmaq_f32(vld1q_f32(head_out + d),      vp, vld1q_f32(vt + d)));
+                    vst1q_f32(head_out + d + 4, vfmaq_f32(vld1q_f32(head_out + d + 4),  vp, vld1q_f32(vt + d + 4)));
+                    vst1q_f32(head_out + d + 8, vfmaq_f32(vld1q_f32(head_out + d + 8),  vp, vld1q_f32(vt + d + 8)));
+                    vst1q_f32(head_out + d + 12, vfmaq_f32(vld1q_f32(head_out + d + 12), vp, vld1q_f32(vt + d + 12)));
+                }
+                for (; d + 4 <= Hd; d += 4) head_out[d] += p * vt[d];
+                for (; d < Hd; d++) head_out[d] += p * vt[d];
 #else
-            for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
+                for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
 #endif
+            }
         }
     };
     if (attn_par)
-        st_par_run(Nq, attn_head);
+        st_par_run(nwork, attn_grp);
     else
-        for (int h = 0; h < Nq; h++) attn_head(h);
+        for (int w = 0; w < nwork; w++) attn_grp(w);
 
     static float attn_proj[8192];
     if (H > 8192) { fprintf(stderr, "H exceeds buffer\n"); exit(2); }
@@ -536,14 +587,22 @@ static int la_allocate_state(void) {
     la_g_ff_a     = (float*)calloc(Ff, sizeof(float));
     la_g_logits   = (float*)calloc(V, sizeof(float));
 
-    size_t kv_floats = (size_t)L * la_MAX_KV * Nk * Hd;
+    int mk = la_g_cfg.context_length > 0 ? la_g_cfg.context_length : 4096;
+    const char* mke = getenv("STRATUM_MAX_KV");
+    if (mke) mk = atoi(mke);
+    if (mk < 256) mk = 256;
+    if (mk > (1 << 20)) mk = 1 << 20;   /* VA-only reservation until touched */
+    la_g_maxkv = mk;
+    la_g_kvbound = mk;
+
+    size_t kv_floats = (size_t)L * la_g_maxkv * Nk * Hd;
     la_g_K_cache = (float*)calloc(kv_floats, sizeof(float));
     la_g_V_cache = (float*)calloc(kv_floats, sizeof(float));
 
     if (!la_g_x || !la_g_K_cache || !la_g_logits) return -1;
 
-    fprintf(stderr, "  KV cache: %.1f MB (anonymous)\n",
-            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0));
+    fprintf(stderr, "  KV cache: %.1f MB virtual (lazy-commit, %d positions)\n",
+            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0), la_g_maxkv);
     fprintf(stderr, "  activations: %.1f KB anon\n",
             (double)(H * 3 + Nq * Hd * 2 + Nk * Hd * 2 + Ff * 3 + V) * 4 / 1024.0);
     return 0;
@@ -554,6 +613,13 @@ static int la_g_gpu_full;
 static int la_forward_one_token_gpu(int token_id, int position);
 #endif
 static int la_forward_one_token(int token_id, int position) {
+    /* capacity bound — previously an unguarded heap overflow past the cap */
+    if (la_g_kv_len >= la_g_kvbound) {
+        fprintf(stderr, "llama: context %d exceeds KV capacity %d "
+                "(model context_length / STRATUM_MAX_KV)\n",
+                la_g_kv_len + 1, la_g_kvbound);
+        return -1;
+    }
 #ifdef STRATUM_USE_METAL
     if (la_g_gpu_full) return la_forward_one_token_gpu(token_id, position);
 #endif
@@ -624,7 +690,7 @@ static int la_forward_one_token_gpu(int token_id, int position) {
                                    la_g_x, logits_ptr,
                                    H, la_g_cfg.head_dim, la_g_cfg.n_q_heads, la_g_cfg.n_kv_heads,
                                    la_g_cfg.n_ff, V, la_g_cfg.rope_dim, position,
-                                   la_g_cfg.rope_theta, la_g_cfg.rms_eps, la_g_kv_len, la_MAX_KV,
+                                   la_g_cfg.rope_theta, la_g_cfg.rms_eps, la_g_kv_len, la_g_kvbound,
                                    la_g_rope_neox, 0, 0, -1);
     if (rc != 0) return -1;
     /* V-opt: if fused argmax, get token from GPU.
@@ -637,6 +703,11 @@ static int la_forward_one_token_gpu(int token_id, int position) {
 
 static int la_forward_batch_ex(const int* tokens, const int* positions,
                                const int* parents, int B) {
+    if (la_g_kv_len + B > la_g_kvbound) {
+        fprintf(stderr, "llama: batched forward needs %d > KV capacity %d\n",
+                la_g_kv_len + B, la_g_kvbound);
+        return -1;
+    }
     int H  = la_g_cfg.n_embed;
     int Hd = la_g_cfg.head_dim;
     int Nq = la_g_cfg.n_q_heads;
@@ -673,7 +744,7 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
     }
 
     float scale = 1.0f / sqrtf((float)Hd);
-    size_t per_layer = (size_t)la_MAX_KV * Nk * Hd;
+    size_t per_layer = (size_t)la_g_maxkv * Nk * Hd;
 
     for (int li = 0; li < la_g_cfg.n_layers; li++) {
         la_BlockTensors* b = &la_g_blocks[li];
@@ -738,6 +809,21 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
         const float* K_layer = la_g_K_cache + (size_t)li*per_layer;
         const float* V_layer = la_g_V_cache + (size_t)li*per_layer;
         for (int s = 0; s < B; s++) {
+            /* GQA-grouped: siblings of one kv head share each K/V row —
+             * identical per-head math/order, ~gs-fold less cache traffic.
+             * lg scratch is [h][ti], sized kv_len+B (heap: unbounded ctx). */
+            static float* la_blgs = NULL; static size_t la_blgs_cap = 0;
+            size_t blg_row = (size_t)la_g_kv_len + B;
+            size_t blg_need = (size_t)Nq * blg_row;
+            if (blg_need > la_blgs_cap) {
+                free(la_blgs);
+                la_blgs = (float*)malloc(blg_need * sizeof(float));
+                la_blgs_cap = la_blgs ? blg_need : 0;
+            }
+            if (!la_blgs) { fprintf(stderr, "attn batch scratch alloc failed\n"); return -1; }
+            int bgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
+            for (int kv = 0; kv < Nk; kv++) {
+                int h0 = kv * bgs, h1 = h0 + bgs; if (h1 > Nq) h1 = Nq;
             if (parents) {
                 /* tree-verify: slot s attends the committed prefix plus its
                  * ancestor draft slots in path order plus itself. The visited
@@ -745,54 +831,69 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
                  * for whichever path gets accepted (bit-exact). */
                 int path[la_B_MAX]; int pn = 0;
                 for (int a = s; a >= 0; a = parents[a]) { path[pn++] = a; }
-                for (int h = 0; h < Nq; h++) {
-                    int kv_h = h * Nk / Nq;
-                    const float* qh = qb[s] + h*Hd;
-                    float lg[la_MAX_KV];
-                    int nl = 0;
-                    for (int t = 0; t < la_g_kv_len; t++) {
-                        const float* kt = K_layer + (size_t)t*Nk*Hd + kv_h*Hd;
+                int nl = la_g_kv_len + pn;
+                for (int t = 0; t < la_g_kv_len; t++) {
+                    const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
+                    for (int h = h0; h < h1; h++) {
+                        const float* qh = qb[s] + h*Hd;
                         float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                        lg[nl++]=dot*scale;
+                        la_blgs[(size_t)h*blg_row + t]=dot*scale;
                     }
-                    for (int a = pn - 1; a >= 0; a--) {
-                        const float* kt = K_layer
-                            + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv_h*Hd;
+                }
+                for (int a = pn - 1; a >= 0; a--) {
+                    const float* kt = K_layer
+                        + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv*Hd;
+                    int ti = la_g_kv_len + (pn - 1 - a);
+                    for (int h = h0; h < h1; h++) {
+                        const float* qh = qb[s] + h*Hd;
                         float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                        lg[nl++]=dot*scale;
+                        la_blgs[(size_t)h*blg_row + ti]=dot*scale;
                     }
-                    la_softmax_inplace(lg, nl);
-                    float* hd = ao[s] + h*Hd;
-                    memset(hd,0,sizeof(float)*Hd);
-                    nl = 0;
-                    for (int t = 0; t < la_g_kv_len; t++) {
-                        const float* vt=V_layer+(size_t)t*Nk*Hd+kv_h*Hd;
-                        float p=lg[nl++]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
+                }
+                for (int h = h0; h < h1; h++)
+                    la_softmax_inplace(la_blgs + (size_t)h*blg_row, nl);
+                for (int h = h0; h < h1; h++)
+                    memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
+                for (int t = 0; t < la_g_kv_len; t++) {
+                    const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
+                    for (int h = h0; h < h1; h++) {
+                        float* hd = ao[s] + h*Hd;
+                        float p = la_blgs[(size_t)h*blg_row + t];
+                        for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
                     }
-                    for (int a = pn - 1; a >= 0; a--) {
-                        const float* vt = V_layer
-                            + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv_h*Hd;
-                        float p=lg[nl++]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
+                }
+                for (int a = pn - 1; a >= 0; a--) {
+                    const float* vt = V_layer
+                        + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv*Hd;
+                    int ti = la_g_kv_len + (pn - 1 - a);
+                    for (int h = h0; h < h1; h++) {
+                        float* hd = ao[s] + h*Hd;
+                        float p = la_blgs[(size_t)h*blg_row + ti];
+                        for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
                     }
                 }
             } else {
             int klen = la_g_kv_len + s + 1;
-            for (int h = 0; h < Nq; h++) {
-                int kv_h = h * Nk / Nq;
-                const float* qh = qb[s] + h*Hd;
-                float lg[la_MAX_KV];
-                for (int t = 0; t < klen; t++) {
-                    const float* kt = K_layer + (size_t)t*Nk*Hd + kv_h*Hd;
+            for (int t = 0; t < klen; t++) {
+                const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
+                for (int h = h0; h < h1; h++) {
+                    const float* qh = qb[s] + h*Hd;
                     float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                    lg[t]=dot*scale;
+                    la_blgs[(size_t)h*blg_row + t]=dot*scale;
                 }
-                la_softmax_inplace(lg, klen);
-                float* hd = ao[s] + h*Hd;
-                memset(hd,0,sizeof(float)*Hd);
-                for (int t=0;t<klen;t++) {
-                    const float* vt=V_layer+(size_t)t*Nk*Hd+kv_h*Hd;
-                    float p=lg[t]; for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
+            }
+            for (int h = h0; h < h1; h++)
+                la_softmax_inplace(la_blgs + (size_t)h*blg_row, klen);
+            for (int h = h0; h < h1; h++)
+                memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
+            for (int t = 0; t < klen; t++) {
+                const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
+                for (int h = h0; h < h1; h++) {
+                    float* hd = ao[s] + h*Hd;
+                    float p = la_blgs[(size_t)h*blg_row + t];
+                    for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
                 }
+            }
             }
             }
         }
@@ -920,14 +1021,21 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
             memcpy(Vbase+(size_t)kvlen[s]*Nk*Hd,vb[s],sizeof(float)*Nk*Hd);
             int klen=kvlen[s]+1;
             const float* Kb2=Kbase; const float* Vb2=Vbase; (void)Kb2;(void)Vb2;
-            for(int h=0;h<Nq;h++){
-                int kv_h=h*Nk/Nq; const float* qh=qb[s]+h*Hd;
-                float lg[la_MAX_KV];
-                for(int t=0;t<klen;t++){const float* kt=Kbase+(size_t)t*Nk*Hd+kv_h*Hd;
+            int mgs=(Nk>0&&Nq%Nk==0)?Nq/Nk:1;
+            /* per-slot logits scratch [h][t] (parallel streams → per-slot buf) */
+            static float* ms_lg[la_B_MAX]; static size_t ms_lgcap[la_B_MAX];
+            size_t lgneed=(size_t)Nq*(size_t)klen;
+            if(lgneed>ms_lgcap[s]){free(ms_lg[s]);ms_lg[s]=(float*)malloc(lgneed*4);
+                ms_lgcap[s]=ms_lg[s]?lgneed:0;}
+            if(!ms_lg[s]) return;
+            for(int kv=0;kv<Nk;kv++){ int h0=kv*mgs, h1=h0+mgs; if(h1>Nq)h1=Nq;
+                /* pass1: one K-row stream serves all sibling heads */
+                for(int t=0;t<klen;t++){const float* kt=Kbase+(size_t)t*Nk*Hd+kv*Hd;
+                    for(int h=h0;h<h1;h++){ const float* qh=qb[s]+h*Hd;
                     float dot=0;
 #if defined(__ARM_NEON) || defined(__aarch64__)
-                    /* same f32x4 reduction as the single-stream attn_head —
-                     * MS stream logits stay bit-identical to single-stream */
+                    /* same f32x4 reduction as the per-head loop —
+                     * accumulation order unchanged, only the K load shared */
                     float32x4_t acc = vdupq_n_f32(0.0f);
                     int d = 0;
                     for (; d + 16 <= Hd; d += 16) {
@@ -943,12 +1051,15 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
 #else
                     for(int d=0;d<Hd;d++)dot+=qh[d]*kt[d];
 #endif
-                    lg[t]=dot*scale;}
-                la_softmax_inplace(lg,klen);
-                float* hd=ao[s]+h*Hd;
-                for (int d=0;d<Hd;d++) hd[d]=0.0f;
-                for(int t=0;t<klen;t++){const float* vt=Vbase+(size_t)t*Nk*Hd+kv_h*Hd;
-                    float p=lg[t];
+                    ms_lg[s][(size_t)h*klen+t]=dot*scale;}
+                }
+                for(int h=h0;h<h1;h++) la_softmax_inplace(ms_lg[s]+(size_t)h*klen,klen);
+                for(int h=h0;h<h1;h++){float* hd=ao[s]+h*Hd;
+                    for (int d=0;d<Hd;d++) hd[d]=0.0f;}
+                /* pass2: one V-row stream serves all siblings */
+                for(int t=0;t<klen;t++){const float* vt=Vbase+(size_t)t*Nk*Hd+kv*Hd;
+                    for(int h=h0;h<h1;h++){ float* hd=ao[s]+h*Hd;
+                    float p=ms_lg[s][(size_t)h*klen+t];
 #if defined(__ARM_NEON) || defined(__aarch64__)
                     /* NOTE: f32x4 lanewise accumulation changes fp add order vs
                      * scalar; identical across all streams/runs (deterministic) */
@@ -959,6 +1070,7 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
 #else
                     for(int d=0;d<Hd;d++)hd[d]+=p*vt[d];
 #endif
+                    }
                 }
             }
         });
@@ -1161,6 +1273,14 @@ int run_llama_arch(int argc, char** argv) {
             fprintf(stderr, "  Metal GPU acceleration: ENABLED for Q4_K matmul\n\n");
             if (getenv("STRATUM_GPU_FULL")) {
                 la_g_gpu_full = 1;
+                /* GPU KV buffer is allocated eagerly (n_layers*max_kv*Nk*Hd),
+                 * unlike the lazy-committed calloc CPU cache — cap the bound
+                 * passed to Metal so a large context_length can't blow it. */
+                if (la_g_kvbound > 8192) {
+                    fprintf(stderr, "  GPU-full KV cap: 8192 positions "
+                            "(CPU capacity %d)\n", la_g_kvbound);
+                    la_g_kvbound = 8192;
+                }
                 fprintf(stderr, "  Metal GPU: FULL forward on-GPU (1 sync/token, KV cache on GPU)\n\n");
             }
             if (getenv("STRATUM_GPU_BATCH_FULL")) {
@@ -1179,11 +1299,33 @@ int run_llama_arch(int argc, char** argv) {
      * 正常前向读取自然填充 page cache。不主动 touch 避免瞬间占用物理 RAM。 */
 
     int n_gen = (argc > 2) ? atoi(argv[2]) : 4;
-    int prompt[2048];
+    /* prompt on the heap, sized to KV capacity (was a fixed 2048-slot stack
+     * array — silently truncated long prompts). "@path" reads whitespace-
+     * separated token ids from a file, bypassing argv limits entirely. */
+    int* prompt = (int*)malloc((size_t)(la_g_kvbound + 2) * sizeof(int));
+    if (!prompt) { fprintf(stderr, "prompt alloc failed\n"); return 1; }
     int n_prompt = 0;
     if (argc > 3) {
-        for (int i = 3; i < argc && n_prompt < 2048; i++) {
-            prompt[n_prompt++] = atoi(argv[i]);
+        if (argv[3][0] == '@') {
+            FILE* pf = fopen(argv[3] + 1, "r");
+            if (!pf) { fprintf(stderr, "  prompt file %s: %s\n",
+                               argv[3] + 1, strerror(errno)); return 1; }
+            int id;
+            while (fscanf(pf, "%d", &id) == 1) {
+                if (n_prompt >= la_g_kvbound) {
+                    fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                            la_g_kvbound);
+                    break;
+                }
+                prompt[n_prompt++] = id;
+            }
+            fclose(pf);
+        } else {
+            for (int i = 3; i < argc && n_prompt < la_g_kvbound; i++)
+                prompt[n_prompt++] = atoi(argv[i]);
+            if (n_prompt == la_g_kvbound)
+                fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                        la_g_kvbound);
         }
     } else {
         prompt[n_prompt++] = 1;
@@ -1523,9 +1665,9 @@ int run_llama_arch(int argc, char** argv) {
                     }
                     for (int li = 0; li < la_g_cfg.n_layers; li++) {
                         float* Kl = la_g_K_cache
-                            + (size_t)li * la_MAX_KV * kvblk;
+                            + (size_t)li * (size_t)la_g_maxkv * kvblk;
                         float* Vl = la_g_V_cache
-                            + (size_t)li * la_MAX_KV * kvblk;
+                            + (size_t)li * (size_t)la_g_maxkv * kvblk;
                         for (int i = 1; i < plen; i++) {
                             if (path[i] == i) continue;
                             size_t so = (size_t)(la_g_kv_len + path[i]) * kvblk;
@@ -1741,7 +1883,7 @@ int run_llama_arch(int argc, char** argv) {
                 la_g_cfg.n_embed, la_g_cfg.head_dim, la_g_cfg.n_q_heads,
                 la_g_cfg.n_kv_heads, la_g_cfg.n_ff, la_g_cfg.vocab_size,
                 la_g_cfg.rope_dim, position + s, la_g_cfg.rope_theta,
-                la_g_cfg.rms_eps, la_g_kv_len + s, la_MAX_KV,
+                la_g_cfg.rms_eps, la_g_kv_len + s, la_g_kvbound,
                 la_g_rope_neox,
                 la_g_token_embd->offset, la_g_token_embd->nbytes, s);
             if (rc != 0) ok = 0;
