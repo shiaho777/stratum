@@ -212,7 +212,7 @@ static inline const float* st_f32_tensor_ptr(const GgufTensor* t) {
 /*  pool job, or a second thread) runs serially — the pool is          */
 /*  single-issue by design (one engine = one caller).                  */
 /* ------------------------------------------------------------------ */
-#define ST_PAR_MAXW 7
+#define ST_PAR_MAXW 15
 static pthread_t        st_par_th[ST_PAR_MAXW];
 static pthread_mutex_t  st_par_mu  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t   st_par_cv  = PTHREAD_COND_INITIALIZER;
@@ -263,10 +263,18 @@ static inline void st_par_run(int B, void (^blk)(int)) {
         for (int s = 0; s < B; s++) blk(s);
         return;
     }
-    if (!st_par_nw) {
-        for (int i = 0; i < ST_PAR_MAXW; i++) {
-            if (pthread_create(&st_par_th[i], NULL, st_par_worker,
-                               (void*)(intptr_t)i) != 0) { st_par_dead = 1; break; }
+    /* Grow-on-demand: keep nchunks-1 workers (+caller = nchunks executors)
+     * up to ST_PAR_MAXW. nchunks is finalized at model init but the first
+     * st_par_run may happen earlier, so re-check every dispatch. */
+    {
+        int want = g_st.nchunks - 1;
+        if (want > ST_PAR_MAXW) want = ST_PAR_MAXW;
+        while (st_par_nw < want) {
+            if (pthread_create(&st_par_th[st_par_nw], NULL, st_par_worker,
+                               (void*)(intptr_t)st_par_nw) != 0) {
+                if (!st_par_nw) st_par_dead = 1;
+                break;
+            }
             st_par_nw++;
         }
         if (!st_par_nw) {
@@ -340,8 +348,10 @@ static inline void st_linear_q6k(const GgufTensor* w, const float* x, float* y, 
         int ng = K / 16;
         int8_t* xq = (int8_t*)alloca((size_t)K);
         float*  xs = (float*)alloca((size_t)ng * sizeof(float));
+        int32_t* xs16 = (int32_t*)alloca((size_t)ng * sizeof(int32_t));
         q6k_quantize_x_q8_g16(x, K, xq, xs);
-        ST_PAR_ROWS(N, y[r] = q6k_dot_row_sdot_f(st_q6k_row_ptr(w, K, r), K, xq, xs));
+        q6k_xsum16_i8(xq, ng, xs16);
+        ST_PAR_ROWS(N, y[r] = q6k_dot_row_sdot_f(st_q6k_row_ptr(w, K, r), K, xq, xs, xs16));
         return;
     }
 #endif
@@ -540,17 +550,20 @@ static inline void st_linear_q6k_multix(const GgufTensor* w,
         int ng = K / 16;
         int8_t** xqs = (int8_t**)alloca((size_t)B * sizeof(int8_t*));
         float**  xss = (float**)alloca((size_t)B * sizeof(float*));
+        int32_t** xs16s = (int32_t**)alloca((size_t)B * sizeof(int32_t*));
         for (int b = 0; b < B; b++) {
             xqs[b] = (int8_t*)malloc((size_t)K);
             xss[b] = (float*)malloc((size_t)ng * sizeof(float));
+            xs16s[b] = (int32_t*)malloc((size_t)ng * sizeof(int32_t));
             q6k_quantize_x_q8_g16(xs[b], K, xqs[b], xss[b]);
+            q6k_xsum16_i8(xqs[b], ng, xs16s[b]);
         }
         ST_PAR_ROWS(N, {
             const block_q6_K* row = st_q6k_row_ptr(w, K, r);
             for (int b = 0; b < B; b++)
-                ys[b][r] = q6k_dot_row_sdot_f(row, K, xqs[b], xss[b]);
+                ys[b][r] = q6k_dot_row_sdot_f(row, K, xqs[b], xss[b], xs16s[b]);
         });
-        for (int b = 0; b < B; b++) { free(xqs[b]); free(xss[b]); }
+        for (int b = 0; b < B; b++) { free(xqs[b]); free(xss[b]); free(xs16s[b]); }
         return;
     }
 #endif
@@ -793,11 +806,13 @@ static inline void st_mixed_fused_sdot(const float* x, int K,
         q4k_quantize_x_q8(x, K, xq4, xs4);
         for (int g = 0; g < nb32; g++) xsum4[g] = q4k_sum_i8_32(xq4 + (size_t)g * 32);
     }
-    int8_t* xq6 = NULL; float* xs6 = NULL;
+    int8_t* xq6 = NULL; float* xs6 = NULL; int32_t* xs6sum = NULL;
     if (need6) {
         xq6 = (int8_t*)alloca((size_t)K);
         xs6 = (float*)alloca((size_t)ng16 * sizeof(float));
+        xs6sum = (int32_t*)alloca((size_t)ng16 * sizeof(int32_t));
         q6k_quantize_x_q8_g16(x, K, xq6, xs6);
+        q6k_xsum16_i8(xq6, ng16, xs6sum);
     }
     int R = 0;
     int* pref = (int*)alloca((size_t)nw * sizeof(int));
@@ -811,7 +826,7 @@ static inline void st_mixed_fused_sdot(const float* x, int K,
                                             xq4, xs4, xsum4);
         else
             ys[wi][lr] = q6k_dot_row_sdot_f(st_q6k_row_ptr(ws[wi], K, lr), K,
-                                            xq6, xs6);
+                                            xq6, xs6, xs6sum);
     });
 }
 #endif

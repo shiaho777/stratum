@@ -252,16 +252,22 @@ static inline float q6k_dot_row_sdot_fused(const block_q6_K* row_blocks, int K,
     return (float)dot;
 }
 
-/* f32-vector accumulate variant of the fused kernel: the four per-group
- * scale terms pack into one vfmaq — same numerics class as the scalar
- * double chain (measured equal argmax on real tensors). */
+/* f32-vector accumulate variant of the fused kernel, vsli-unpack form:
+ * u6 weights unpack unsigned ([0,63] fits s8) and the -32 bias is folded
+ * into an exact per-16 xsum correction, so the unpack is 2-3 ops/vector
+ * (vsli inserts qh<<4 over ql's in-place low nibble) and the 4 group
+ * sums come from 3x vpaddq instead of 4x vaddvq. Integer-identical terms
+ * to q6k_dot_row_sdot_fused — bit-exact, measured +12% GB/s (bench_q6k_sdot). */
+static inline void q6k_xsum16_i8(const int8_t* xq, int ng, int32_t* out) {
+    for (int g = 0; g < ng; g++)
+        out[g] = vaddlvq_s8(vld1q_s8(xq + (size_t)g * 16));
+}
 static inline float q6k_dot_row_sdot_f(const block_q6_K* row_blocks, int K,
-                                       const int8_t* xq, const float* xscale)
+                                       const int8_t* xq, const float* xscale,
+                                       const int32_t* xsum16)
 {
     int n_blocks = K / 256;
     float32x4_t facc = vdupq_n_f32(0.0f);
-    uint8x16_t mask4 = vdupq_n_u8(0x0F);
-    int8x16_t  bias  = vdupq_n_s8(-32);
     int goff = 0;
     for (int i = 0; i < n_blocks; i++) {
         if (i + 1 < n_blocks) __builtin_prefetch(row_blocks + i + 1, 0, 3);
@@ -280,36 +286,36 @@ static inline float q6k_dot_row_sdot_f(const block_q6_K* row_blocks, int K,
                 uint8x16_t ql_b_v = vld1q_u8(ql_half + loff + 32);
                 uint8x16_t qh_v   = vld1q_u8(qh_half + loff);
                 int8x16_t qv[4] = {
-                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
-                        vandq_u8(ql_a_v, mask4),
-                        vshlq_n_u8(vandq_u8(qh_v, vdupq_n_u8(0x03)), 4))), bias),
-                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
-                        vandq_u8(ql_b_v, mask4),
-                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 2), vdupq_n_u8(0x03)), 4))), bias),
-                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
-                        vshrq_n_u8(ql_a_v, 4),
-                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 4), vdupq_n_u8(0x03)), 4))), bias),
-                    vaddq_s8(vreinterpretq_s8_u8(vorrq_u8(
-                        vshrq_n_u8(ql_b_v, 4),
-                        vshlq_n_u8(vandq_u8(vshrq_n_u8(qh_v, 6), vdupq_n_u8(0x03)), 4))), bias),
+                    vreinterpretq_s8_u8(vsliq_n_u8(ql_a_v,
+                        vandq_u8(qh_v, vdupq_n_u8(0x03)), 4)),
+                    vreinterpretq_s8_u8(vsliq_n_u8(ql_b_v,
+                        vandq_u8(vshrq_n_u8(qh_v, 2), vdupq_n_u8(0x03)), 4)),
+                    vreinterpretq_s8_u8(vsliq_n_u8(vshrq_n_u8(ql_a_v, 4),
+                        vandq_u8(vshrq_n_u8(qh_v, 4), vdupq_n_u8(0x03)), 4)),
+                    vreinterpretq_s8_u8(vsliq_n_u8(vshrq_n_u8(ql_b_v, 4),
+                        vandq_u8(vshrq_n_u8(qh_v, 6), vdupq_n_u8(0x03)), 4)),
                 };
                 /* groups: g, g+2, g+4, g+6 — the ggml q6_K layout */
                 const int gg[4] = { gbase + is, gbase + is + 2,
                                     gbase + is + 4, gbase + is + 6 };
-                int32_t tv[4];
+                int32x4_t accv[4];
                 for (int t = 0; t < 4; t++) {
-                    int g = gg[t];
-                    const int8_t* xv = xq + (size_t)(goff + g) * 16;
-                    int32x4_t acc = vdotq_s32(vdupq_n_s32(0), qv[t], vld1q_s8(xv));
-                    tv[t] = vaddvq_s32(acc);
+                    const int8_t* xv = xq + (size_t)(goff + gg[t]) * 16;
+                    accv[t] = vdotq_s32(vdupq_n_s32(0), qv[t], vld1q_s8(xv));
                 }
+                int32x4_t g4 = vpaddq_s32(vpaddq_s32(accv[0], accv[1]),
+                                          vpaddq_s32(accv[2], accv[3]));
+                /* unsigned u6 -> signed: term = u6dot - 32*sum16(x_g) */
+                const int32x4_t corr = {
+                    32 * xsum16[goff + gg[0]], 32 * xsum16[goff + gg[1]],
+                    32 * xsum16[goff + gg[2]], 32 * xsum16[goff + gg[3]] };
+                g4 = vsubq_s32(g4, corr);
                 float32x4_t coeff = {
                     d * (float)sc[gg[0]] * xscale[goff + gg[0]],
                     d * (float)sc[gg[1]] * xscale[goff + gg[1]],
                     d * (float)sc[gg[2]] * xscale[goff + gg[2]],
                     d * (float)sc[gg[3]] * xscale[goff + gg[3]] };
-                int32x4_t terms = { tv[0], tv[1], tv[2], tv[3] };
-                facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
+                facc = vfmaq_f32(facc, vcvtq_f32_s32(g4), coeff);
             }
         }
         goff += 16;

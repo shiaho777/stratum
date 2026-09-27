@@ -395,8 +395,10 @@ static inline float q4k_dot_row_sdot_f(const block_q4_K* row, int K,
                                   -dmin * (float)m1 * xscale[blk32],
                                   d * (float)sc2 * xscale[blk32 + 1],
                                   -dmin * (float)m2 * xscale[blk32 + 1] };
-            int32x4_t terms = { vaddvq_s32(aq_lo), xsum[blk32],
-                                vaddvq_s32(aq_hi), xsum[blk32 + 1] };
+            int32x4_t pq = vpaddq_s32(aq_lo, aq_hi);  /* [l01,l23,h01,h23] */
+            int32x4_t sm = vpaddq_s32(pq, pq);       /* [L,H,L,H] */
+            int32x2_t xp2 = { xsum[blk32], xsum[blk32 + 1] };
+            int32x4_t terms = vzip1q_s32(sm, vcombine_s32(xp2, xp2));
             facc = vfmaq_f32(facc, vcvtq_f32_s32(terms), coeff);
             q += 32; is += 2; blk32 += 2;
         }

@@ -316,28 +316,24 @@ static void la_forward_block(int li, int position) {
                  b->attn_k, la_g_k_buf, Nk * Hd,
                  b->attn_v, la_g_v_buf, Nk * Hd);
 
-    /* Qwen3-style per-head q/k RMSNorm — optional tensors; applied
-     * pre-rope with the same eps as the block norms. NULL for plain
-     * Llama-family files, which skip this entirely. */
-    if (b->attn_q_norm) {
-        const float* gain = st_f32_tensor_ptr(b->attn_q_norm);
-        for (int h = 0; h < Nq; h++)
-            la_rmsnorm(la_g_q_buf + h * Hd, gain, Hd, la_g_cfg.rms_eps,
-                       la_g_q_buf + h * Hd);
-    }
-    if (b->attn_k_norm) {
-        const float* gain = st_f32_tensor_ptr(b->attn_k_norm);
-        for (int h = 0; h < Nk; h++)
-            la_rmsnorm(la_g_k_buf + h * Hd, gain, Hd, la_g_cfg.rms_eps,
-                       la_g_k_buf + h * Hd);
-    }
-
-    for (int h = 0; h < Nq; h++) {
-        la_rope(la_g_q_buf + h * Hd, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
-    }
-    for (int h = 0; h < Nk; h++) {
-        la_rope(la_g_k_buf + h * Hd, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
-    }
+    /* Qwen3-style per-head q/k RMSNorm + RoPE: one pool dispatch covers all
+     * heads instead of Nq+Nk serial passes. Each head still runs norm-then-
+     * rope with the identical math, so the result is bit-exact; only the
+     * serial tail between matmul dispatches shrinks. Norm tensors are
+     * optional — NULL for plain Llama-family files, which skip it. */
+    const float* qng = b->attn_q_norm ? st_f32_tensor_ptr(b->attn_q_norm) : NULL;
+    const float* kng = b->attn_k_norm ? st_f32_tensor_ptr(b->attn_k_norm) : NULL;
+    st_par_run(Nq + Nk, ^(int h) {
+        if (h < Nq) {
+            float* qb = la_g_q_buf + (size_t)h * Hd;
+            if (qng) la_rmsnorm(qb, qng, Hd, la_g_cfg.rms_eps, qb);
+            la_rope(qb, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
+        } else {
+            float* kb = la_g_k_buf + (size_t)(h - Nq) * Hd;
+            if (kng) la_rmsnorm(kb, kng, Hd, la_g_cfg.rms_eps, kb);
+            la_rope(kb, Hd, la_g_cfg.rope_dim, position, la_g_cfg.rope_theta);
+        }
+    });
     if (dbg && li == 0)
         fprintf(stderr, "  [cL0] q0=%.5f q1=%.5f k0=%.5f k1=%.5f\n",
                 la_g_q_buf[0], la_g_q_buf[1], la_g_k_buf[0], la_g_k_buf[1]);

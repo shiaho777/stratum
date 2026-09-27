@@ -9174,25 +9174,27 @@ static void q35_forward_full_attn(int li, int position) {
 #endif
     }
 
-    if (b->attn_q_norm) {
-        const float* qn = q35_f32_tensor_ptr(b->attn_q_norm);
-        for (int h = 0; h < Nq; h++) {
-            float buf[1024];
-            q35_rmsnorm(q35_g_q_only + h * Hd, qn, Hd, q35_g_cfg.rms_eps, buf);
-            memcpy(q35_g_q_only + h * Hd, buf, sizeof(float) * Hd);
+    /* Per-head q/k RMSNorm + RoPE: one pool dispatch covers all heads —
+     * same per-head math and order, bit-exact; drops the serial tail
+     * between matmul dispatches. Norm tensors optional (NULL skips). */
+    const float* qn = b->attn_q_norm ? q35_f32_tensor_ptr(b->attn_q_norm) : NULL;
+    const float* kn = b->attn_k_norm ? q35_f32_tensor_ptr(b->attn_k_norm) : NULL;
+    st_par_dispatch(Nq + Nk, ^(size_t hh) {
+        int h = (int)hh;
+        if (h < Nq) {
+            float* qb = q35_g_q_only + (size_t)h * Hd;
+            if (qn) { float buf[1024];
+                      q35_rmsnorm(qb, qn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(qb, buf, sizeof(float) * Hd); }
+            q35_rope_half(qb, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
+        } else {
+            float* kb = q35_g_k_buf + (size_t)(h - Nq) * Hd;
+            if (kn) { float buf[1024];
+                      q35_rmsnorm(kb, kn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(kb, buf, sizeof(float) * Hd); }
+            q35_rope_half(kb, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
         }
-    }
-    if (b->attn_k_norm) {
-        const float* kn = q35_f32_tensor_ptr(b->attn_k_norm);
-        for (int h = 0; h < Nk; h++) {
-            float buf[1024];
-            q35_rmsnorm(q35_g_k_buf + h * Hd, kn, Hd, q35_g_cfg.rms_eps, buf);
-            memcpy(q35_g_k_buf + h * Hd, buf, sizeof(float) * Hd);
-        }
-    }
-
-    for (int h = 0; h < Nq; h++) q35_rope_half(q35_g_q_only + h * Hd, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
-    for (int h = 0; h < Nk; h++) q35_rope_half(q35_g_k_buf  + h * Hd, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
+    });
 
     int kv_slot = q35_g_full_attn_slot[li];
     int kv_len_now = q35_g_kv_len + 1;
@@ -9422,37 +9424,28 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
 #endif
     }
 
-    if (b->attn_q_norm) {
-        const float* qn = q35_f32_tensor_ptr(b->attn_q_norm);
-        for (int s = 0; s < B; s++) {
-            for (int h = 0; h < Nq; h++) {
-                float buf[1024];
-                q35_rmsnorm(q35_g_q_only_b[s] + h * Hd, qn, Hd,
-                            q35_g_cfg.rms_eps, buf);
-                memcpy(q35_g_q_only_b[s] + h * Hd, buf, sizeof(float) * Hd);
-            }
+    /* Per-head q/k RMSNorm + RoPE: one pool dispatch over B*(Nq+Nk) —
+     * same per-head math and order, bit-exact. Norm tensors optional. */
+    const float* qn = b->attn_q_norm ? q35_f32_tensor_ptr(b->attn_q_norm) : NULL;
+    const float* kn = b->attn_k_norm ? q35_f32_tensor_ptr(b->attn_k_norm) : NULL;
+    st_par_dispatch(B * (Nq + Nk), ^(size_t wi) {
+        int s = (int)wi / (Nq + Nk), h = (int)wi % (Nq + Nk);
+        if (h < Nq) {
+            float* qb = q35_g_q_only_b[s] + (size_t)h * Hd;
+            if (qn) { float buf[1024];
+                      q35_rmsnorm(qb, qn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(qb, buf, sizeof(float) * Hd); }
+            q35_rope_half(qb, Hd, q35_g_cfg.rope_dim, positions[s],
+                          q35_g_cfg.rope_theta);
+        } else {
+            float* kb = q35_g_k_buf_b[s] + (size_t)(h - Nq) * Hd;
+            if (kn) { float buf[1024];
+                      q35_rmsnorm(kb, kn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(kb, buf, sizeof(float) * Hd); }
+            q35_rope_half(kb, Hd, q35_g_cfg.rope_dim, positions[s],
+                          q35_g_cfg.rope_theta);
         }
-    }
-    if (b->attn_k_norm) {
-        const float* kn = q35_f32_tensor_ptr(b->attn_k_norm);
-        for (int s = 0; s < B; s++) {
-            for (int h = 0; h < Nk; h++) {
-                float buf[1024];
-                q35_rmsnorm(q35_g_k_buf_b[s] + h * Hd, kn, Hd,
-                            q35_g_cfg.rms_eps, buf);
-                memcpy(q35_g_k_buf_b[s] + h * Hd, buf, sizeof(float) * Hd);
-            }
-        }
-    }
-
-    for (int s = 0; s < B; s++) {
-        for (int h = 0; h < Nq; h++)
-            q35_rope_half(q35_g_q_only_b[s] + h * Hd, Hd, q35_g_cfg.rope_dim,
-                          positions[s], q35_g_cfg.rope_theta);
-        for (int h = 0; h < Nk; h++)
-            q35_rope_half(q35_g_k_buf_b[s] + h * Hd, Hd, q35_g_cfg.rope_dim,
-                          positions[s], q35_g_cfg.rope_theta);
-    }
+    });
 
     int kv_slot = q35_g_full_attn_slot[li];
     size_t per_layer = (size_t)q35_MAX_KV * Nk * Hd;
@@ -9763,25 +9756,27 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
 #endif
     }
 
-    if (b->attn_q_norm) {
-        const float* qn = q35_f32_tensor_ptr(b->attn_q_norm);
-        for (int h = 0; h < Nq; h++) {
-            float buf[1024];
-            q35_rmsnorm(q35_g_q_only + h * Hd, qn, Hd, q35_g_cfg.rms_eps, buf);
-            memcpy(q35_g_q_only + h * Hd, buf, sizeof(float) * Hd);
+    /* Per-head q/k RMSNorm + RoPE: one pool dispatch covers all heads —
+     * same per-head math and order, bit-exact; drops the serial tail
+     * between matmul dispatches. Norm tensors optional (NULL skips). */
+    const float* qn = b->attn_q_norm ? q35_f32_tensor_ptr(b->attn_q_norm) : NULL;
+    const float* kn = b->attn_k_norm ? q35_f32_tensor_ptr(b->attn_k_norm) : NULL;
+    st_par_dispatch(Nq + Nk, ^(size_t hh) {
+        int h = (int)hh;
+        if (h < Nq) {
+            float* qb = q35_g_q_only + (size_t)h * Hd;
+            if (qn) { float buf[1024];
+                      q35_rmsnorm(qb, qn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(qb, buf, sizeof(float) * Hd); }
+            q35_rope_half(qb, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
+        } else {
+            float* kb = q35_g_k_buf + (size_t)(h - Nq) * Hd;
+            if (kn) { float buf[1024];
+                      q35_rmsnorm(kb, kn, Hd, q35_g_cfg.rms_eps, buf);
+                      memcpy(kb, buf, sizeof(float) * Hd); }
+            q35_rope_half(kb, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
         }
-    }
-    if (b->attn_k_norm) {
-        const float* kn = q35_f32_tensor_ptr(b->attn_k_norm);
-        for (int h = 0; h < Nk; h++) {
-            float buf[1024];
-            q35_rmsnorm(q35_g_k_buf + h * Hd, kn, Hd, q35_g_cfg.rms_eps, buf);
-            memcpy(q35_g_k_buf + h * Hd, buf, sizeof(float) * Hd);
-        }
-    }
-
-    for (int h = 0; h < Nq; h++) q35_rope_half(q35_g_q_only + h * Hd, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
-    for (int h = 0; h < Nk; h++) q35_rope_half(q35_g_k_buf  + h * Hd, Hd, q35_g_cfg.rope_dim, position, q35_g_cfg.rope_theta);
+    });
 
     int kv_len_now = q35_g_mtp_kv_len + 1;
     {
