@@ -687,7 +687,7 @@ static int la_forward_one_token_gpu(int token_id, int position) {
                                    H, la_g_cfg.head_dim, la_g_cfg.n_q_heads, la_g_cfg.n_kv_heads,
                                    la_g_cfg.n_ff, V, la_g_cfg.rope_dim, position,
                                    la_g_cfg.rope_theta, la_g_cfg.rms_eps, la_g_kv_len, la_g_kvbound,
-                                   la_g_rope_neox, 0, 0, -1);
+                                   la_g_rope_neox, 0, 0, 0, -1);
     if (rc != 0) return -1;
     /* V-opt: if fused argmax, get token from GPU.
      * Write token to la_g_logits[0] as a sentinel — caller checks
@@ -1867,8 +1867,15 @@ int run_llama_arch(int argc, char** argv) {
     /* Chained GPU decode: the token ring + embd gather live on GPU — all
      * n_gen command buffers are submitted back-to-back with no CPU wait
      * between tokens, removing the per-token sync gap. */
+    /* CHAIN pays off only on the fused per-layer path (6 dispatches/layer,
+     * qk-norm models). On the general path it regresses (measured: MiniCPM5
+     * 15.9 vs 84.1 tok/s), so require qk-norm — the fuse_all gate's dominant
+     * discriminator — as well as an embedding layout the gather kernels cover. */
     if (la_g_gpu_full && getenv("STRATUM_GPU_CHAIN") && n_gen <= 1000
-        && la_g_token_embd->type == GGML_TYPE_F32) {
+        && la_g_blocks[0].attn_q_norm
+        && (la_g_token_embd->type == GGML_TYPE_F32
+            || la_g_token_embd->type == GGML_TYPE_Q4_K
+            || la_g_token_embd->type == GGML_TYPE_Q6_K)) {
         const GgufTensor* lm = la_g_output_w ? la_g_output_w : la_g_token_embd;
         stratum_metal_chain_seed(0, next_tok);
         int ok = 1;
@@ -1881,7 +1888,8 @@ int run_llama_arch(int argc, char** argv) {
                 la_g_cfg.rope_dim, position + s, la_g_cfg.rope_theta,
                 la_g_cfg.rms_eps, la_g_kv_len + s, la_g_kvbound,
                 la_g_rope_neox,
-                la_g_token_embd->offset, la_g_token_embd->nbytes, s);
+                la_g_token_embd->offset, la_g_token_embd->nbytes,
+                la_g_token_embd->type, s);
             if (rc != 0) ok = 0;
         }
         if (!ok || stratum_metal_chain_wait() != 0) {

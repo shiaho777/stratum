@@ -45,7 +45,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                           int rope_dim, int position, float rope_theta,
                           float rms_eps, int kv_len, int max_kv, int rope_neox,
                           unsigned long long embd_off, unsigned long embd_tb,
-                          int chain_slot);
+                          int embd_ty, int chain_slot);
 
 /* Chained decode: seed the GPU token ring, then submit forward() calls with
  * chain_slot = step index. Each buffer gathers its embedding from the ring
