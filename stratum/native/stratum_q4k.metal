@@ -2457,7 +2457,7 @@ kernel void qkv_coal16_norm(
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    if (tg_size != 256) return;
+    if (tg_size != 256 || K > 4096u) return;
     threadgroup float tg_red[8];
     threadgroup float tg_scale;
     {
@@ -2478,6 +2478,11 @@ kernel void qkv_coal16_norm(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     const float nrm = tg_scale;
+    /* stage normed+scaled input once — every row reuses it */
+    threadgroup float xn_s[4096];
+    for (uint i = tid; i < K; i += 256u)
+        xn_s[i] = (x[i] * nrm) * gain[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
@@ -2508,12 +2513,8 @@ kernel void qkv_coal16_norm(
                 uint2  w2  = *(device const uint2*)(qp + 16u*l2);
                 uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
                 uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
-                float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
-                float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
-                xa = (xa * nrm) * ga;
-                float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
-                float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
-                xb = (xb * nrm) * gb;
+                float4 xa = *(threadgroup const float4*)(xn_s + xoff + 16u*l2);
+                float4 xb = *(threadgroup const float4*)(xn_s + xoff + 16u*l2 + 4);
                 qx += dot(float4(na), xa) + dot(float4(nb), xb);
                 xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
             }
@@ -2548,12 +2549,8 @@ kernel void qkv_coal16_norm(
                 uint2  w2  = *(device const uint2*)(qp + 16u*l2);
                 uchar4 na  = (as_type<uchar4>(w2.x) >> uchar4((uchar)shift)) & uchar4(0xF);
                 uchar4 nb  = (as_type<uchar4>(w2.y) >> uchar4((uchar)shift)) & uchar4(0xF);
-                float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
-                float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
-                xa = (xa * nrm) * ga;
-                float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
-                float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
-                xb = (xb * nrm) * gb;
+                float4 xa = *(threadgroup const float4*)(xn_s + xoff + 16u*l2);
+                float4 xb = *(threadgroup const float4*)(xn_s + xoff + 16u*l2 + 4);
                 qx += dot(float4(na), xa) + dot(float4(nb), xb);
                 xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
             }
@@ -2590,18 +2587,14 @@ kernel void qkv_coal16_norm(
             const int4 q2v = int4(ql_hi4 & uchar4(0xF)) | (int4((qh4 >> uchar4(2)) & uchar4(3)) << 4);
             const int4 q3v = int4(ql_lo4 >> uchar4(4))    | (int4((qh4 >> uchar4(4)) & uchar4(3)) << 4);
             const int4 q4v = int4(ql_hi4 >> uchar4(4))    | (int4((qh4 >> uchar4(6)) & uchar4(3)) << 4);
-            const float4 xv1 = (*(device const float4*)(x + base + l0)) * nrm;
-            const float4 gv1 = *(device const float4*)(gain + base + l0);
-            const float4 xv2 = (*(device const float4*)(x + base + l0 + 32)) * nrm;
-            const float4 gv2 = *(device const float4*)(gain + base + l0 + 32);
-            const float4 xv3 = (*(device const float4*)(x + base + l0 + 64)) * nrm;
-            const float4 gv3 = *(device const float4*)(gain + base + l0 + 64);
-            const float4 xv4 = (*(device const float4*)(x + base + l0 + 96)) * nrm;
-            const float4 gv4 = *(device const float4*)(gain + base + l0 + 96);
-            a1 = dot(float4(q1v - 32), xv1 * gv1);
-            a2 = dot(float4(q2v - 32), xv2 * gv2);
-            a3 = dot(float4(q3v - 32), xv3 * gv3);
-            a4 = dot(float4(q4v - 32), xv4 * gv4);
+            const float4 xv1 = *(threadgroup const float4*)(xn_s + base + l0);
+            const float4 xv2 = *(threadgroup const float4*)(xn_s + base + l0 + 32);
+            const float4 xv3 = *(threadgroup const float4*)(xn_s + base + l0 + 64);
+            const float4 xv4 = *(threadgroup const float4*)(xn_s + base + l0 + 96);
+            a1 = dot(float4(q1v - 32), xv1);
+            a2 = dot(float4(q2v - 32), xv2);
+            a3 = dot(float4(q3v - 32), xv3);
+            a4 = dot(float4(q4v - 32), xv4);
             partial += d * float(s[is + 0]) * a1;
             partial += d * float(s[is + 2]) * a2;
             partial += d * float(s[is + 4]) * a3;
@@ -2632,7 +2625,7 @@ kernel void gateup_coal16_norm(
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    if (tg_size != 256) return;
+    if (tg_size != 256 || K > 4096u) return;
     threadgroup float tg_red[8];
     threadgroup float tg_scale;
     {
@@ -2653,6 +2646,11 @@ kernel void gateup_coal16_norm(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     const float nrm = tg_scale;
+    /* stage normed+scaled input once — every row reuses it */
+    threadgroup float xn_s[4096];
+    for (uint i = tid; i < K; i += 256u)
+        xn_s[i] = (x[i] * nrm) * gain[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     /* row-pair variant: each lane computes TWO adjacent rows sharing one
      * x/gain slice — halves x-load issue. 32 rows per threadgroup. */
@@ -2697,12 +2695,8 @@ kernel void gateup_coal16_norm(
             uchar4 nb0 = (as_type<uchar4>(w20.y) >> uchar4((uchar)shift)) & uchar4(0xF);
             uchar4 na1 = (as_type<uchar4>(w21.x) >> uchar4((uchar)shift)) & uchar4(0xF);
             uchar4 nb1 = (as_type<uchar4>(w21.y) >> uchar4((uchar)shift)) & uchar4(0xF);
-            float4 xa  = *(device const float4*)(x    + xoff + 16u*l2);
-            float4 ga  = *(device const float4*)(gain + xoff + 16u*l2);
-            xa = (xa * nrm) * ga;
-            float4 xb  = *(device const float4*)(x    + xoff + 16u*l2 + 4);
-            float4 gb  = *(device const float4*)(gain + xoff + 16u*l2 + 4);
-            xb = (xb * nrm) * gb;
+            float4 xa = *(threadgroup const float4*)(xn_s + xoff + 16u*l2);
+            float4 xb = *(threadgroup const float4*)(xn_s + xoff + 16u*l2 + 4);
             qx0 += dot(float4(na0), xa) + dot(float4(nb0), xb);
             qx1 += dot(float4(na1), xa) + dot(float4(nb1), xb);
             xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
@@ -2730,8 +2724,12 @@ kernel void q4k_sgemv_row_coal16_accum(
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    if (tg_size != 256) return;
+    if (tg_size != 256 || K > 4096u) return;
     const uint blocks_per_row = K / 256;
+    /* stage x once — all rows share it */
+    threadgroup float xs_s[4096];
+    for (uint i = tid; i < K; i += 256u) xs_s[i] = x[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     /* row-pair: lane covers rows r0,r0+1 sharing one x slice (32 rows/tg) */
     const uint local_row = tid >> 4;
     const uint lane      = tid & 15;
@@ -2766,8 +2764,8 @@ kernel void q4k_sgemv_row_coal16_accum(
             uchar4 nb0 = (as_type<uchar4>(w20.y) >> uchar4((uchar)shift)) & uchar4(0xF);
             uchar4 na1 = (as_type<uchar4>(w21.x) >> uchar4((uchar)shift)) & uchar4(0xF);
             uchar4 nb1 = (as_type<uchar4>(w21.y) >> uchar4((uchar)shift)) & uchar4(0xF);
-            float4 xa = *(device const float4*)(x + xoff + 16u*l2);
-            float4 xb = *(device const float4*)(x + xoff + 16u*l2 + 4);
+            float4 xa = *(threadgroup const float4*)(xs_s + xoff + 16u*l2);
+            float4 xb = *(threadgroup const float4*)(xs_s + xoff + 16u*l2 + 4);
             qx0 += dot(float4(na0), xa) + dot(float4(nb0), xb);
             qx1 += dot(float4(na1), xa) + dot(float4(nb1), xb);
             xs += xa.x + xa.y + xa.z + xa.w + xb.x + xb.y + xb.z + xb.w;
@@ -2786,6 +2784,9 @@ kernel void q4k_sgemv_row_coal16_accum(
         if (r1 != r0) y[r1] += tot1;
     }
 }
+
+
+
 
 /* Per-head qk-norm + rope for q and k in ONE dispatch:
  * threadgroup h<nq handles q head h, else k head h-nq. */
@@ -2918,6 +2919,7 @@ kernel void q4k_sgemv_row_coal16_swires(
         if (r1 != r0) y[r1] += tot1;
     }
 }
+
 
 /* Shared flash-decode scan: simd sid sweeps positions [tbeg,tend) with
  * stride nsimd, batching 4 positions per iteration so the four xor-reduce
@@ -3398,3 +3400,32 @@ kernel void attn_combine_f32(
     }
 }
 
+
+/* Chained-decode embedding gather for Q4_K token_embd: dequantize one row
+ * of the embedding table.  Same sub-block/nibble mapping as the Q4_K GEMV
+ * path. */
+kernel void embd_gather_q4k(
+    device float*              x    [[buffer(0)]],
+    device const block_q4_K*   embd [[buffer(1)]],
+    device const uint*         tokp [[buffer(2)]],
+    constant uint&             H    [[buffer(3)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    device const block_q4_K* row = embd + (size_t)(*tokp) * (H / 256u);
+    const uint nb = H / 256u;
+    for (uint blk = tid; blk < nb; blk += tg) {
+        const device block_q4_K& b = row[blk];
+        const float d = float(b.d), dm = float(b.dmin);
+        for (uint sb = 0; sb < 8; sb++) {
+            uchar sc, m; unpack_scale_min(sb, b.scales, sc, m);
+            const float dsc = d * float(sc), dmm = dm * float(m);
+            const device uchar* qb = b.qs + (sb >> 1) * 32u;
+            const uint sh = (sb & 1u) * 4u;
+            for (uint j = 0; j < 32; j++) {
+                const float w = float((qb[j] >> sh) & 0xFu);
+                x[blk * 256u + sb * 32u + j] = dsc * w - dmm;
+            }
+        }
+    }
+}

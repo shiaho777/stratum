@@ -1519,7 +1519,7 @@ kernel void q6k_sgemv_row_coal16_norm(
     uint tid     [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    if (tg_size != 256) return;
+    if (tg_size != 256 || K > 4096u) return;
     threadgroup float tg_red[8];
     threadgroup float tg_scale;
     {
@@ -1540,6 +1540,11 @@ kernel void q6k_sgemv_row_coal16_norm(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
     const float nrm = tg_scale;
+    /* stage normed+scaled input once — every row reuses it */
+    threadgroup float xn_s[4096];
+    for (uint i = tid; i < K; i += 256u)
+        xn_s[i] = (x[i] * nrm) * gain[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     const uint blocks_per_row = K / 256;
     const uint local_row = tid >> 4;
@@ -1578,14 +1583,10 @@ kernel void q6k_sgemv_row_coal16_norm(
         uchar4 ql_lo1 = *(device const uchar4*)(ql1 + l0);
         uchar4 ql_hi1 = *(device const uchar4*)(ql1 + l0 + 32);
         uchar4 qh_1   = *(device const uchar4*)(qh1 + l0);
-        float4 x1 = *(device const float4*)(x + base +  0);
-        float4 g1 = *(device const float4*)(gain + base +  0); x1 = (x1 * nrm) * g1;
-        float4 x2 = *(device const float4*)(x + base + 32);
-        float4 g2 = *(device const float4*)(gain + base + 32); x2 = (x2 * nrm) * g2;
-        float4 x3 = *(device const float4*)(x + base + 64);
-        float4 g3 = *(device const float4*)(gain + base + 64); x3 = (x3 * nrm) * g3;
-        float4 x4 = *(device const float4*)(x + base + 96);
-        float4 g4 = *(device const float4*)(gain + base + 96); x4 = (x4 * nrm) * g4;
+        float4 x1 = *(threadgroup const float4*)(xn_s + base +  0);
+        float4 x2 = *(threadgroup const float4*)(xn_s + base + 32);
+        float4 x3 = *(threadgroup const float4*)(xn_s + base + 64);
+        float4 x4 = *(threadgroup const float4*)(xn_s + base + 96);
 
         int4 q10 = (int4(ql_lo0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(0)) & 3) << 4)) - 32;
         int4 q20 = (int4(ql_hi0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(2)) & 3) << 4)) - 32;
@@ -1710,5 +1711,171 @@ kernel void q6k_sgemv_row_coal16_swires(
     if (lane == 0) {
         y[r0] += tot0;
         if (r1 != r0) y[r1] += tot1;
+    }
+}
+
+/* Chained-decode embedding gather for Q6_K embedding tables: dequantizes row
+ * *tokp (GPU token ring) into x. Element mapping identical to the q6k GEMV
+ * kernels: element i sits in 256-block (i>>8); within the block, half
+ * h=(i>>7), quadrant g=(i>>5)&3, lane l=i&31 selects the ql/qh byte pair and
+ * nibble/2-bit fields; value = d * sc[h*8 + (l>>4) + 2*g] * (q - 32). */
+kernel void embd_gather_q6k(
+    device float*       x    [[buffer(0)]],
+    device const uchar* embd [[buffer(1)]],
+    device const uint*  tokp [[buffer(2)]],
+    constant uint&      H    [[buffer(3)]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint tg  [[threads_per_threadgroup]])
+{
+    const uint bpr = H >> 8;
+    device const block_q6_K* row =
+        (device const block_q6_K*)embd + (size_t)(*tokp) * bpr;
+    for (uint i = tid; i < H; i += tg) {
+        const device block_q6_K& b = row[i >> 8];
+        const uint e  = i & 255u;
+        const uint h  = e >> 7;            /* 128-element half */
+        const uint r  = e & 127u;
+        const uint g  = r >> 5;            /* quadrant */
+        const uint l  = r & 31u;
+        const uint ql_i = h * 64u + l + ((g & 1u) << 5);
+        const uint qhb  = b.qh[h * 32u + l];
+        const uint lo   = (g < 2u) ? (uint)(b.ql[ql_i] & 0xFu)
+                                   : (uint)(b.ql[ql_i] >> 4);
+        const uint hi   = (uint)((qhb >> (g * 2u)) & 3u);
+        const int  q    = (int)(lo | (hi << 4)) - 32;
+        const int  si   = (int)(h * 8u + (l >> 4) + 2u * g);
+        x[i] = float(b.d) * float(b.scales[si]) * float(q);
+    }
+}
+
+/* lm_head fused variant: rmsnorm prologue + Q6_K GEMV + per-TG argmax.
+ * Grid = ceil(V/32) TGs, each emits (best_val, best_idx) for its 32-row tile
+ * — logits never materialize to device memory (saves a 600 KB write, the
+ * argmax_tiles re-read, and one dispatch). Requires N_total % 32 == 0. */
+kernel void q6k_norm_top1(
+    device const block_q6_K* W           [[buffer(0)]],
+    device const float*      x           [[buffer(1)]],
+    device const float*      gain        [[buffer(2)]],
+    device float*            fvals       [[buffer(3)]],
+    device uint*             fidxs       [[buffer(4)]],
+    constant uint&           K           [[buffer(5)]],
+    constant uint&           N_total     [[buffer(6)]],
+    constant float&          eps         [[buffer(7)]],
+    uint tgid    [[threadgroup_position_in_grid]],
+    uint tid     [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]])
+{
+    if (tg_size != 256 || K > 4096u) return;
+    threadgroup float tg_red[8];
+    threadgroup float tg_scale;
+    {
+        float ss = 0.0f;
+        for (uint i = tid; i < K; i += 256u) { float v = x[i]; ss += v*v; }
+        ss += simd_shuffle_xor(ss, 16);
+        ss += simd_shuffle_xor(ss, 8);
+        ss += simd_shuffle_xor(ss, 4);
+        ss += simd_shuffle_xor(ss, 2);
+        ss += simd_shuffle_xor(ss, 1);
+        if ((tid & 31u) == 0u) tg_red[tid >> 5] = ss;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tid == 0u) {
+            float t = 0.0f;
+            for (int i = 0; i < 8; i++) t += tg_red[i];
+            tg_scale = 1.0f / sqrt(t / float(K) + eps);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    const float nrm = tg_scale;
+    threadgroup float xn_s[4096];
+    for (uint i = tid; i < K; i += 256u)
+        xn_s[i] = (x[i] * nrm) * gain[i];
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint blocks_per_row = K / 256;
+    const uint local_row = tid >> 4;
+    const uint lane      = tid & 15;
+    const uint r0 = tgid * 32u + local_row * 2u;
+    float tot0 = -INFINITY, tot1 = -INFINITY;
+    if (r0 < N_total) {
+        const uint r1 = r0 + 1u;
+        const bool has1 = r1 < N_total;
+        device const block_q6_K* rb0 = W + (uint)r0 * blocks_per_row;
+        device const block_q6_K* rb1 = W + (uint)(has1 ? r1 : r0) * blocks_per_row;
+        const uint half_idx = lane >> 3;
+        const uint t8       = lane & 7;
+        const uint l0       = t8 * 4;
+        const uint is       = t8 >> 2;
+        float partial0 = 0.0f, partial1 = 0.0f;
+        for (uint blk = 0; blk < blocks_per_row; blk++) {
+            const device block_q6_K& b0 = rb0[blk];
+            const device block_q6_K& b1 = rb1[blk];
+            const float d0 = float(b0.d), d1 = float(b1.d);
+            const uint n = half_idx * 128;
+            const device uchar* ql0 = b0.ql + n / 2;
+            const device uchar* qh0 = b0.qh + n / 4;
+            const device char*  s0  = b0.scales + n / 16;
+            const device uchar* ql1 = b1.ql + n / 2;
+            const device uchar* qh1 = b1.qh + n / 4;
+            const device char*  s1  = b1.scales + n / 16;
+            const uint base = blk * 256 + n + l0;
+            uchar4 ql_lo0 = *(device const uchar4*)(ql0 + l0);
+            uchar4 ql_hi0 = *(device const uchar4*)(ql0 + l0 + 32);
+            uchar4 qh_0   = *(device const uchar4*)(qh0 + l0);
+            uchar4 ql_lo1 = *(device const uchar4*)(ql1 + l0);
+            uchar4 ql_hi1 = *(device const uchar4*)(ql1 + l0 + 32);
+            uchar4 qh_1   = *(device const uchar4*)(qh1 + l0);
+            float4 x1 = *(threadgroup const float4*)(xn_s + base +  0);
+            float4 x2 = *(threadgroup const float4*)(xn_s + base + 32);
+            float4 x3 = *(threadgroup const float4*)(xn_s + base + 64);
+            float4 x4 = *(threadgroup const float4*)(xn_s + base + 96);
+            int4 q10 = (int4(ql_lo0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(0)) & 3) << 4)) - 32;
+            int4 q20 = (int4(ql_hi0 & uchar4(0xF)) | ((int4(qh_0 >> uchar4(2)) & 3) << 4)) - 32;
+            int4 q30 = (int4(ql_lo0 >> uchar4(4))    | ((int4(qh_0 >> uchar4(4)) & 3) << 4)) - 32;
+            int4 q40 = (int4(ql_hi0 >> uchar4(4))    | ((int4(qh_0 >> uchar4(6)) & 3) << 4)) - 32;
+            int4 q11 = (int4(ql_lo1 & uchar4(0xF)) | ((int4(qh_1 >> uchar4(0)) & 3) << 4)) - 32;
+            int4 q21 = (int4(ql_hi1 & uchar4(0xF)) | ((int4(qh_1 >> uchar4(2)) & 3) << 4)) - 32;
+            int4 q31 = (int4(ql_lo1 >> uchar4(4))    | ((int4(qh_1 >> uchar4(4)) & 3) << 4)) - 32;
+            int4 q41 = (int4(ql_hi1 >> uchar4(4))    | ((int4(qh_1 >> uchar4(6)) & 3) << 4)) - 32;
+            float a1 = dot(float4(q10), x1), a2 = dot(float4(q20), x2),
+                  a3 = dot(float4(q30), x3), a4 = dot(float4(q40), x4);
+            partial0 += d0 * float(s0[is + 0]) * a1;
+            partial0 += d0 * float(s0[is + 2]) * a2;
+            partial0 += d0 * float(s0[is + 4]) * a3;
+            partial0 += d0 * float(s0[is + 6]) * a4;
+            if (has1) {
+                float b1a = dot(float4(q11), x1), b2a = dot(float4(q21), x2),
+                      b3a = dot(float4(q31), x3), b4a = dot(float4(q41), x4);
+                partial1 += d1 * float(s1[is + 0]) * b1a;
+                partial1 += d1 * float(s1[is + 2]) * b2a;
+                partial1 += d1 * float(s1[is + 4]) * b3a;
+                partial1 += d1 * float(s1[is + 6]) * b4a;
+            }
+        }
+        tot0 = partial0; tot1 = partial1;
+        tot0 += simd_shuffle_xor(tot0, 8); tot1 += simd_shuffle_xor(tot1, 8);
+        tot0 += simd_shuffle_xor(tot0, 4); tot1 += simd_shuffle_xor(tot1, 4);
+        tot0 += simd_shuffle_xor(tot0, 2); tot1 += simd_shuffle_xor(tot1, 2);
+        tot0 += simd_shuffle_xor(tot0, 1); tot1 += simd_shuffle_xor(tot1, 1);
+    }
+    /* per-TG argmax over its 32 rows — lowest index wins ties (same as
+     * argmax_f32_tiles' strict > scan order) */
+    threadgroup float rv[32];
+    threadgroup uint  ri[32];
+    if (lane == 0u) {
+        rv[local_row * 2u]      = tot0;
+        ri[local_row * 2u]      = r0 < N_total ? r0 : 0u;
+        rv[local_row * 2u + 1u] = tot1;
+        ri[local_row * 2u + 1u] = r0 + 1u < N_total ? r0 + 1u : 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tid < 32u) {
+        float v0 = rv[tid]; uint i0 = ri[tid];
+        /* butterfly reduce over the 32 rows */
+        for (uint s = 16u; s > 0u; s >>= 1u) {
+            float ov = simd_shuffle_xor(v0, s);
+            uint  oi = simd_shuffle_xor(i0, s);
+            if (ov > v0 || (ov == v0 && oi < i0)) { v0 = ov; i0 = oi; }
+        }
+        if (tid == 0u) { fvals[tgid] = v0; fidxs[tgid] = i0; }
     }
 }
