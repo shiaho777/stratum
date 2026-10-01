@@ -6,970 +6,980 @@
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1789046599.909143,
+ "t0": 1790856957.251043,
  "stdout_events": [
   {
-   "t": 0.4901,
-   "bytes": 117,
-   "text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n<think>"
+   "t": 1.1178,
+   "bytes": 71,
+   "text": "user\nuser\nWhat is the capital of France? Answer in one short sentence.\n"
   },
   {
-   "t": 0.4945,
+   "t": 1.1178,
+   "bytes": 21,
+   "text": "assistant\n\nassistant\n"
+  },
+  {
+   "t": 1.1783,
+   "bytes": 7,
+   "text": "<think>"
+  },
+  {
+   "t": 1.184,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 0.4987,
+   "t": 1.1897,
    "bytes": 4,
    "text": "Okay"
   },
   {
-   "t": 0.5028,
+   "t": 1.1961,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 0.5071,
+   "t": 1.2012,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 0.5113,
+   "t": 1.2094,
    "bytes": 5,
    "text": " user"
   },
   {
-   "t": 0.5156,
+   "t": 1.2162,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 0.5198,
+   "t": 1.2228,
    "bytes": 7,
    "text": " asking"
   },
   {
-   "t": 0.524,
+   "t": 1.2331,
    "bytes": 4,
    "text": " for"
   },
   {
-   "t": 0.5283,
+   "t": 1.2378,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 0.5326,
+   "t": 1.2474,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 0.537,
+   "t": 1.2526,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 0.5431,
+   "t": 1.2691,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 0.5489,
+   "t": 1.2692,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 0.5531,
-   "bytes": 4,
-   "text": " one"
+   "t": 1.2783,
+   "bytes": 2,
+   "text": " a"
   },
   {
-   "t": 0.5575,
+   "t": 1.2891,
+   "bytes": 7,
+   "text": " single"
+  },
+  {
+   "t": 1.296,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 0.5619,
+   "t": 1.3048,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 0.5663,
+   "t": 1.311,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.5707,
-   "bytes": 4,
-   "text": " Let"
-  },
-  {
-   "t": 0.5751,
-   "bytes": 3,
-   "text": " me"
-  },
-  {
-   "t": 0.5796,
-   "bytes": 6,
-   "text": " think"
-  },
-  {
-   "t": 0.584,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.5884,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 0.5927,
-   "bytes": 2,
-   "text": "'s"
-  },
-  {
-   "t": 0.5971,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 0.6013,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 0.6057,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 0.6101,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.6145,
+   "t": 1.318,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 0.6188,
+   "t": 1.325,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 0.6232,
+   "t": 1.3305,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 0.6277,
-   "bytes": 5,
-   "text": " make"
+   "t": 1.3372,
+   "bytes": 7,
+   "text": " recall"
   },
   {
-   "t": 0.632,
-   "bytes": 5,
-   "text": " sure"
+   "t": 1.3427,
+   "bytes": 4,
+   "text": " the"
   },
   {
-   "t": 0.6365,
-   "bytes": 5,
-   "text": " that"
-  },
-  {
-   "t": 0.6409,
-   "bytes": 2,
-   "text": "'s"
-  },
-  {
-   "t": 0.6455,
+   "t": 1.3486,
    "bytes": 8,
    "text": " correct"
   },
   {
-   "t": 0.6503,
+   "t": 1.3589,
+   "bytes": 7,
+   "text": " answer"
+  },
+  {
+   "t": 1.3642,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.6551,
-   "bytes": 2,
-   "text": " I"
-  },
-  {
-   "t": 0.6598,
-   "bytes": 9,
-   "text": " remember"
-  },
-  {
-   "t": 0.6644,
-   "bytes": 5,
-   "text": " that"
-  },
-  {
-   "t": 0.6691,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 0.6738,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 0.6786,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 0.6832,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 0.6877,
-   "bytes": 4,
-   "text": " and"
-  },
-  {
-   "t": 0.6924,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 0.6968,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 0.7012,
-   "bytes": 5,
-   "text": " city"
-  },
-  {
-   "t": 0.7055,
-   "bytes": 3,
-   "text": " of"
-  },
-  {
-   "t": 0.7097,
+   "t": 1.3706,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 0.714,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.7182,
-   "bytes": 3,
-   "text": " No"
-  },
-  {
-   "t": 0.7226,
-   "bytes": 5,
-   "text": " need"
-  },
-  {
-   "t": 0.7268,
-   "bytes": 3,
-   "text": " to"
-  },
-  {
-   "t": 0.7311,
-   "bytes": 8,
-   "text": " mention"
-  },
-  {
-   "t": 0.7354,
-   "bytes": 9,
-   "text": " anything"
-  },
-  {
-   "t": 0.7398,
-   "bytes": 5,
-   "text": " else"
-  },
-  {
-   "t": 0.7441,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.7485,
-   "bytes": 5,
-   "text": " Just"
-  },
-  {
-   "t": 0.7529,
-   "bytes": 6,
-   "text": " state"
-  },
-  {
-   "t": 0.7573,
-   "bytes": 3,
-   "text": " it"
-  },
-  {
-   "t": 0.7617,
-   "bytes": 5,
-   "text": " conc"
-  },
-  {
-   "t": 0.7661,
-   "bytes": 2,
-   "text": "is"
-  },
-  {
-   "t": 0.7705,
-   "bytes": 3,
-   "text": "ely"
-  },
-  {
-   "t": 0.7748,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.7792,
-   "bytes": 4,
-   "text": " Let"
-  },
-  {
-   "t": 0.7836,
-   "bytes": 3,
-   "text": " me"
-  },
-  {
-   "t": 0.7881,
-   "bytes": 6,
-   "text": " check"
-  },
-  {
-   "t": 0.7925,
-   "bytes": 6,
-   "text": " again"
-  },
-  {
-   "t": 0.797,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.8014,
-   "bytes": 4,
-   "text": " Yes"
-  },
-  {
-   "t": 0.8059,
-   "bytes": 1,
-   "text": ","
-  },
-  {
-   "t": 0.8103,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 0.8147,
-   "bytes": 3,
-   "text": " is"
-  },
-  {
-   "t": 0.8191,
-   "bytes": 4,
-   "text": " the"
-  },
-  {
-   "t": 0.8235,
-   "bytes": 8,
-   "text": " capital"
-  },
-  {
-   "t": 0.8279,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.8323,
-   "bytes": 8,
-   "text": " Alright"
-  },
-  {
-   "t": 0.8367,
-   "bytes": 1,
-   "text": ","
-  },
-  {
-   "t": 0.8411,
-   "bytes": 5,
-   "text": " that"
-  },
-  {
-   "t": 0.8455,
+   "t": 1.3763,
    "bytes": 2,
    "text": "'s"
   },
   {
-   "t": 0.8499,
-   "bytes": 3,
-   "text": " it"
-  },
-  {
-   "t": 0.8543,
-   "bytes": 2,
-   "text": ".\n"
-  },
-  {
-   "t": 0.8587,
-   "bytes": 8,
-   "text": "</think>"
-  },
-  {
-   "t": 0.8631,
-   "bytes": 2,
-   "text": "\n\n"
-  },
-  {
-   "t": 0.8676,
-   "bytes": 3,
-   "text": "The"
-  },
-  {
-   "t": 0.872,
+   "t": 1.383,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 0.8764,
-   "bytes": 3,
-   "text": " of"
-  },
-  {
-   "t": 0.8808,
-   "bytes": 7,
-   "text": " France"
-  },
-  {
-   "t": 0.8852,
+   "t": 1.3899,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 0.8896,
+   "t": 1.3969,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 0.8939,
+   "t": 1.4051,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.8984,
+   "t": 1.4126,
+   "bytes": 4,
+   "text": " Let"
+  },
+  {
+   "t": 1.4188,
+   "bytes": 3,
+   "text": " me"
+  },
+  {
+   "t": 1.4254,
+   "bytes": 5,
+   "text": " make"
+  },
+  {
+   "t": 1.4318,
+   "bytes": 5,
+   "text": " sure"
+  },
+  {
+   "t": 1.4379,
+   "bytes": 6,
+   "text": " there"
+  },
+  {
+   "t": 1.4444,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.4509,
+   "bytes": 3,
+   "text": " no"
+  },
+  {
+   "t": 1.4584,
+   "bytes": 6,
+   "text": " other"
+  },
+  {
+   "t": 1.4646,
+   "bytes": 5,
+   "text": " city"
+  },
+  {
+   "t": 1.4721,
    "bytes": 10,
-   "text": "<|im_end|>"
+   "text": " mentioned"
   },
   {
-   "t": 0.9029,
+   "t": 1.4772,
    "bytes": 1,
-   "text": "\n"
+   "text": "."
   },
   {
-   "t": 0.9073,
-   "bytes": 13,
-   "text": "<|endoftext|>"
+   "t": 1.484,
+   "bytes": 3,
+   "text": " No"
   },
   {
-   "t": 0.9118,
-   "bytes": 5,
-   "text": "Human"
-  },
-  {
-   "t": 0.9162,
+   "t": 1.492,
    "bytes": 1,
-   "text": ":"
+   "text": ","
   },
   {
-   "t": 0.9206,
-   "bytes": 5,
-   "text": " What"
+   "t": 1.4976,
+   "bytes": 6,
+   "text": " Paris"
   },
   {
-   "t": 0.925,
+   "t": 1.5051,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 0.9294,
+   "t": 1.5123,
+   "bytes": 11,
+   "text": " definitely"
+  },
+  {
+   "t": 1.5198,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 0.9341,
+   "t": 1.5265,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 0.9385,
+   "t": 1.5342,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.5415,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 1.5504,
+   "bytes": 7,
+   "text": " should"
+  },
+  {
+   "t": 1.5584,
+   "bytes": 6,
+   "text": " check"
+  },
+  {
+   "t": 1.5708,
+   "bytes": 3,
+   "text": " if"
+  },
+  {
+   "t": 1.5786,
+   "bytes": 6,
+   "text": " there"
+  },
+  {
+   "t": 1.5901,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.5927,
+   "bytes": 4,
+   "text": " any"
+  },
+  {
+   "t": 1.5993,
+   "bytes": 6,
+   "text": " other"
+  },
+  {
+   "t": 1.6072,
+   "bytes": 5,
+   "text": " city"
+  },
+  {
+   "t": 1.6121,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 1.6194,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 1.626,
+   "bytes": 10,
+   "text": " sometimes"
+  },
+  {
+   "t": 1.6348,
+   "bytes": 9,
+   "text": " confused"
+  },
+  {
+   "t": 1.6398,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 1.6565,
+   "bytes": 4,
+   "text": " but"
+  },
+  {
+   "t": 1.6628,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 1.6692,
+   "bytes": 4,
+   "text": " don"
+  },
+  {
+   "t": 1.6775,
+   "bytes": 2,
+   "text": "'t"
+  },
+  {
+   "t": 1.6859,
+   "bytes": 6,
+   "text": " think"
+  },
+  {
+   "t": 1.6929,
+   "bytes": 3,
+   "text": " so"
+  },
+  {
+   "t": 1.7031,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.7148,
+   "bytes": 3,
+   "text": " So"
+  },
+  {
+   "t": 1.7299,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 1.7365,
+   "bytes": 7,
+   "text": " answer"
+  },
+  {
+   "t": 1.7501,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 1.7568,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 1.7647,
+   "bytes": 2,
+   "text": ".\n"
+  },
+  {
+   "t": 1.7793,
+   "bytes": 8,
+   "text": "</think>"
+  },
+  {
+   "t": 1.7851,
+   "bytes": 2,
+   "text": "\n\n"
+  },
+  {
+   "t": 1.79,
+   "bytes": 5,
+   "text": "Paris"
+  },
+  {
+   "t": 1.8022,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.8091,
+   "bytes": 3,
+   "text": " \ufffd"
+  },
+  {
+   "t": 1.8175,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 1.8263,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 1.8344,
+   "bytes": 4,
+   "text": "\ud83c\uddf7"
+  },
+  {
+   "t": 1.8418,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 1.8498,
+   "bytes": 3,
+   "text": " \n\n"
+  },
+  {
+   "t": 1.8597,
+   "bytes": 4,
+   "text": "Wait"
+  },
+  {
+   "t": 1.8649,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 1.8778,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 1.884,
+   "bytes": 5,
+   "text": " user"
+  },
+  {
+   "t": 1.8897,
+   "bytes": 5,
+   "text": " said"
+  },
+  {
+   "t": 1.8956,
+   "bytes": 2,
+   "text": " \""
+  },
+  {
+   "t": 1.9065,
+   "bytes": 3,
+   "text": "one"
+  },
+  {
+   "t": 1.9146,
+   "bytes": 6,
+   "text": " short"
+  },
+  {
+   "t": 1.9189,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 1.9276,
+   "bytes": 2,
+   "text": ".\""
+  },
+  {
+   "t": 1.9366,
+   "bytes": 3,
+   "text": " So"
+  },
+  {
+   "t": 1.9438,
+   "bytes": 6,
+   "text": " maybe"
+  },
+  {
+   "t": 1.9504,
+   "bytes": 2,
+   "text": " I"
+  },
+  {
+   "t": 1.9581,
+   "bytes": 7,
+   "text": " should"
+  },
+  {
+   "t": 1.9664,
+   "bytes": 7,
+   "text": " phrase"
+  },
+  {
+   "t": 1.973,
+   "bytes": 3,
+   "text": " it"
+  },
+  {
+   "t": 1.9797,
+   "bytes": 5,
+   "text": " more"
+  },
+  {
+   "t": 1.9919,
+   "bytes": 7,
+   "text": " simply"
+  },
+  {
+   "t": 1.9965,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.0021,
+   "bytes": 4,
+   "text": " Let"
+  },
+  {
+   "t": 2.0103,
+   "bytes": 3,
+   "text": " me"
+  },
+  {
+   "t": 2.0184,
+   "bytes": 7,
+   "text": " verify"
+  },
+  {
+   "t": 2.0249,
+   "bytes": 6,
+   "text": " again"
+  },
+  {
+   "t": 2.0328,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.0442,
+   "bytes": 4,
+   "text": " Yes"
+  },
+  {
+   "t": 2.0508,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 2.0582,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.0672,
+   "bytes": 3,
+   "text": " is"
+  },
+  {
+   "t": 2.0775,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.0811,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.0881,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.0979,
+   "bytes": 8,
+   "text": " Alright"
+  },
+  {
+   "t": 2.1027,
+   "bytes": 1,
+   "text": ","
+  },
+  {
+   "t": 2.1126,
+   "bytes": 5,
+   "text": " that"
+  },
+  {
+   "t": 2.126,
+   "bytes": 2,
+   "text": "'s"
+  },
+  {
+   "t": 2.1608,
+   "bytes": 8,
+   "text": " correct"
+  },
+  {
+   "t": 2.1691,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.1755,
+   "bytes": 3,
+   "text": " No"
+  },
+  {
+   "t": 2.1858,
+   "bytes": 5,
+   "text": " need"
+  },
+  {
+   "t": 2.1945,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 2.2022,
+   "bytes": 4,
+   "text": " add"
+  },
+  {
+   "t": 2.211,
+   "bytes": 6,
+   "text": " extra"
+  },
+  {
+   "t": 2.2179,
+   "bytes": 6,
+   "text": " words"
+  },
+  {
+   "t": 2.2253,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.2353,
+   "bytes": 5,
+   "text": " Just"
+  },
+  {
+   "t": 2.2435,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.25,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 2.2574,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.2642,
+   "bytes": 3,
+   "text": " \ufffd"
+  },
+  {
+   "t": 2.2729,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 2.2808,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.2863,
+   "bytes": 3,
+   "text": " \n\n"
+  },
+  {
+   "t": 2.2944,
+   "bytes": 2,
+   "text": "**"
+  },
+  {
+   "t": 2.3031,
+   "bytes": 6,
+   "text": "Answer"
+  },
+  {
+   "t": 2.311,
+   "bytes": 3,
+   "text": ":**"
+  },
+  {
+   "t": 2.319,
+   "bytes": 6,
+   "text": " Paris"
+  },
+  {
+   "t": 2.3267,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.3348,
+   "bytes": 3,
+   "text": " \ufffd"
+  },
+  {
+   "t": 2.3421,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 2.3498,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 2.3589,
+   "bytes": 4,
+   "text": "\ud83c\uddf7"
+  },
+  {
+   "t": 2.3652,
+   "bytes": 1,
+   "text": "."
+  },
+  {
+   "t": 2.3749,
+   "bytes": 2,
+   "text": " ("
+  },
+  {
+   "t": 2.3831,
+   "bytes": 5,
+   "text": "Short"
+  },
+  {
+   "t": 2.3901,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 2.417,
+   "bytes": 1,
+   "text": ")"
+  },
+  {
+   "t": 2.4221,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.4305,
+   "bytes": 2,
+   "text": "**"
+  },
+  {
+   "t": 2.4379,
+   "bytes": 11,
+   "text": "Explanation"
+  },
+  {
+   "t": 2.4448,
+   "bytes": 3,
+   "text": ":**"
+  },
+  {
+   "t": 2.4561,
+   "bytes": 4,
+   "text": " The"
+  },
+  {
+   "t": 2.4622,
+   "bytes": 8,
+   "text": " capital"
+  },
+  {
+   "t": 2.4679,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 0.9429,
+   "t": 2.4754,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 0.9472,
-   "bytes": 1,
-   "text": "?"
-  },
-  {
-   "t": 0.9517,
+   "t": 2.4837,
    "bytes": 3,
-   "text": "  \n"
+   "text": " is"
   },
   {
-   "t": 0.9562,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 0.9606,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 0.965,
+   "t": 2.4921,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 0.9696,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 0.9741,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 0.9785,
+   "t": 2.4999,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 0.9829,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 0.9874,
+   "t": 2.5084,
    "bytes": 3,
-   "text": "  \n"
+   "text": " \ufffd"
   },
   {
-   "t": 0.9918,
+   "t": 2.5137,
    "bytes": 1,
-   "text": "C"
+   "text": "\ufffd"
   },
   {
-   "t": 0.9962,
+   "t": 2.5214,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.0007,
+   "t": 2.5304,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.5366,
+   "bytes": 2,
+   "text": "**"
+  },
+  {
+   "t": 2.547,
    "bytes": 5,
-   "text": " Rome"
+   "text": "Final"
   },
   {
-   "t": 1.0052,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.0096,
-   "bytes": 1,
-   "text": "D"
-  },
-  {
-   "t": 1.0141,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.0185,
+   "t": 2.5587,
    "bytes": 7,
-   "text": " Berlin"
+   "text": " Answer"
   },
   {
-   "t": 1.023,
+   "t": 2.5678,
    "bytes": 3,
-   "text": "  \n"
+   "text": ":**"
   },
   {
-   "t": 1.0275,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 1.032,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.0364,
+   "t": 2.572,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 1.041,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.0455,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 1.05,
+   "t": 2.5769,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.0545,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 1.059,
+   "t": 2.5927,
    "bytes": 3,
-   "text": "  \n"
+   "text": " \ufffd"
   },
   {
-   "t": 1.0636,
+   "t": 2.5997,
    "bytes": 1,
-   "text": "C"
+   "text": "\ufffd"
   },
   {
-   "t": 1.0682,
+   "t": 2.6061,
+   "bytes": 1,
+   "text": "\ufffd"
+  },
+  {
+   "t": 2.6131,
+   "bytes": 4,
+   "text": "\ud83c\uddf7"
+  },
+  {
+   "t": 2.6194,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.0727,
+   "t": 2.6276,
+   "bytes": 3,
+   "text": "  \n"
+  },
+  {
+   "t": 2.6364,
+   "bytes": 2,
+   "text": "**"
+  },
+  {
+   "t": 2.6436,
    "bytes": 5,
-   "text": " Rome"
+   "text": "Short"
   },
   {
-   "t": 1.0773,
+   "t": 2.6518,
+   "bytes": 9,
+   "text": " sentence"
+  },
+  {
+   "t": 2.657,
    "bytes": 3,
-   "text": "  \n"
+   "text": ":**"
   },
   {
-   "t": 1.0818,
-   "bytes": 1,
-   "text": "D"
-  },
-  {
-   "t": 1.0863,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.0909,
-   "bytes": 7,
-   "text": " Berlin"
-  },
-  {
-   "t": 1.0955,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.1,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 1.1047,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.1093,
+   "t": 2.6638,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 1.1139,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.1185,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 1.1233,
+   "t": 2.6714,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 1.1283,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 1.1334,
+   "t": 2.6777,
    "bytes": 3,
-   "text": "  \n"
+   "text": " \ufffd"
   },
   {
-   "t": 1.1382,
+   "t": 2.6859,
    "bytes": 1,
-   "text": "C"
+   "text": "\ufffd"
   },
   {
-   "t": 1.1429,
+   "t": 2.6939,
    "bytes": 1,
-   "text": "."
+   "text": "\ufffd"
   },
   {
-   "t": 1.1477,
-   "bytes": 5,
-   "text": " Rome"
+   "t": 2.7173,
+   "bytes": 4,
+   "text": "\ud83c\uddf7"
   },
   {
-   "t": 1.1526,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.1576,
-   "bytes": 1,
-   "text": "D"
-  },
-  {
-   "t": 1.1625,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.1672,
-   "bytes": 7,
-   "text": " Berlin"
-  },
-  {
-   "t": 1.1721,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.177,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 1.1819,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.1865,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 1.1912,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.1958,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 1.2005,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2051,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 1.2096,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.2143,
-   "bytes": 1,
-   "text": "C"
-  },
-  {
-   "t": 1.2189,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2235,
-   "bytes": 5,
-   "text": " Rome"
-  },
-  {
-   "t": 1.2281,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.2329,
-   "bytes": 1,
-   "text": "D"
-  },
-  {
-   "t": 1.2376,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2424,
-   "bytes": 7,
-   "text": " Berlin"
-  },
-  {
-   "t": 1.2471,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.2519,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 1.2566,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2613,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 1.266,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.2706,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 1.2752,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2798,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 1.2844,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.289,
-   "bytes": 1,
-   "text": "C"
-  },
-  {
-   "t": 1.2937,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.2984,
-   "bytes": 5,
-   "text": " Rome"
-  },
-  {
-   "t": 1.3031,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.3078,
-   "bytes": 1,
-   "text": "D"
-  },
-  {
-   "t": 1.3124,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.317,
-   "bytes": 7,
-   "text": " Berlin"
-  },
-  {
-   "t": 1.3216,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.3263,
-   "bytes": 1,
-   "text": "A"
-  },
-  {
-   "t": 1.3309,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.3356,
-   "bytes": 6,
-   "text": " Paris"
-  },
-  {
-   "t": 1.3404,
-   "bytes": 3,
-   "text": "  \n"
-  },
-  {
-   "t": 1.345,
-   "bytes": 1,
-   "text": "B"
-  },
-  {
-   "t": 1.3497,
-   "bytes": 1,
-   "text": "."
-  },
-  {
-   "t": 1.3545,
-   "bytes": 7,
-   "text": " London"
-  },
-  {
-   "t": 1.3714,
+   "t": 2.7299,
    "bytes": 1,
    "text": "\n"
   }
@@ -978,15 +988,16 @@
  "peak_anon_mb": 0.0,
  "peak_file_mb": 0.0,
  "llama_no_mmap": false,
+ "prompt_echo_len": 92,
  "exit_code": 0,
- "wall_s": 1.373,
- "stderr_tail": "     = 21\nllama_context: causal_attn           = 1\nllama_context: flash_attn            = auto\nllama_context: kv_unified            = false\nllama_context: freq_base             = 1000000.0\nllama_context: freq_scale            = 1\nllama_context: n_rs_seq              = 0\nllama_context: n_outputs_max         = 21\nllama_context: n_outputs_max_per_seq = 1\nllama_context: n_ctx_seq (256) < n_ctx_train (40960) -- the full capacity of the model will not be utilized\nset_abort_callback: call\nllama_context:        CPU  output buffer size =     0.58 MiB\nllama_kv_cache: layer   0: dev = CPU\nllama_kv_cache: layer   1: dev = CPU\nllama_kv_cache: layer   2: dev = CPU\nllama_kv_cache: layer   3: dev = CPU\nllama_kv_cache: layer   4: dev = CPU\nllama_kv_cache: layer   5: dev = CPU\nllama_kv_cache: layer   6: dev = CPU\nllama_kv_cache: layer   7: dev = CPU\nllama_kv_cache: layer   8: dev = CPU\nllama_kv_cache: layer   9: dev = CPU\nllama_kv_cache: layer  10: dev = CPU\nllama_kv_cache: layer  11: dev = CPU\nllama_kv_cache: layer  12: dev = CPU\nllama_kv_cache: layer  13: dev = CPU\nllama_kv_cache: layer  14: dev = CPU\nllama_kv_cache: layer  15: dev = CPU\nllama_kv_cache: layer  16: dev = CPU\nllama_kv_cache: layer  17: dev = CPU\nllama_kv_cache: layer  18: dev = CPU\nllama_kv_cache: layer  19: dev = CPU\nllama_kv_cache: layer  20: dev = CPU\nllama_kv_cache: layer  21: dev = CPU\nllama_kv_cache: layer  22: dev = CPU\nllama_kv_cache: layer  23: dev = CPU\nllama_kv_cache: layer  24: dev = CPU\nllama_kv_cache: layer  25: dev = CPU\nllama_kv_cache: layer  26: dev = CPU\nllama_kv_cache: layer  27: dev = CPU\nllama_kv_cache:        CPU KV buffer size =    28.00 MiB\nllama_kv_cache: size =   28.00 MiB (   256 cells,  28 layers,  1/1 seqs), K (f16):   14.00 MiB, V (f16):   14.00 MiB\nllama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 128\nllama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 128\nllama_context: enumerating backends\nllama_context: backend_ptrs.size() = 2\nsched_reserve: reserving ...\nsched_reserve: max_nodes = 2488\nsched_reserve: reserving full memory module\nsched_reserve: worst-case: n_tokens = 21, n_seqs = 1, n_outputs = 1\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: Flash Attention enabled\nresolve_fused_ops: resolving fused DeepSeek V4 HC support:\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC pre enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC comb enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\nresolve_fused_ops: fused DeepSeek V4 HC post enabled\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\ngraph_reserve: reserving a graph for ubatch with n_tokens =    1, n_seqs =  1, n_outputs =    1\ngraph_reserve: reserving a graph for ubatch with n_tokens =   21, n_seqs =  1, n_outputs =   21\nsched_reserve:        CPU compute buffer size =    12.67 MiB\nsched_reserve: graph nodes  = 986\nsched_reserve: graph splits = 1\nsched_reserve: reserve took 1.28 ms, sched copies = 1\nmain: decoded 192 tokens in 0.90 s, speed: 213.13 t/s\n\nllama_perf_sampler_print:    samplers time =       8.06 ms /   192 runs\nllama_perf_context_print:        load time =     437.00 ms\nllama_perf_context_print: prompt eval time =      36.30 ms /    21 tokens (    1.73 ms per token,   578.43 tokens per second)\nllama_perf_context_print:        eval time =     849.92 ms /   191 runs   (    4.45 ms per token,   224.73 tokens per second)\nllama_perf_context_print:       total time =    1301.55 ms /   212 tokens\nllama_perf_context_print:    graphs reused =        190\n\n~llama_context:        CPU compute buffer size is  12.6745 MiB, matches expectation of  12.6745 MiB\n~llama_context:        CPU compute buffer size is   0.0000 MiB, matches expectation of   0.0000 MiB\n",
- "gen_chunks": 192,
- "gen_bytes": 698,
- "t_first_gen_chunk_s": 0.494,
- "t_last_gen_chunk_s": 1.371,
- "gen_span_s": 0.877,
- "tok_per_s_stream": 218.95,
- "tok_per_s_wall": 139.84,
+ "wall_s": 3.097,
+ "stderr_tail": "0.00.088.346 I main: llama backend init\n0.00.088.350 I main: load the model and apply lora adapter, if any\n0.00.088.354 I common_init_result: fitting params to device memory ...\n0.00.088.355 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n0.00.323.405 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden\n0.00.810.465 W common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)\n0.01.109.066 I main: llama threadpool init, n_threads = 10\n0.01.109.078 I main: chat template is available, enabling conversation mode (disable it with -no-cnv)\n0.01.109.079 W *** User-specified prompt will pre-start conversation, did you mean to set --system-prompt (-sys) instead?\n0.01.109.208 I main: chat template example:\n<|im_start|>system\nYou are a helpful assistant<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\nHi there<|im_end|>\n<|im_start|>user\nHow are you?<|im_end|>\n<|im_start|>assistant\n\n0.01.109.210 I \n0.01.109.222 I system_info: n_threads = 10 (n_threads_batch = 10) / 14 | MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | FP16_VA = 1 | MATMUL_INT8 = 1 | DOTPROD = 1 | SME = 1 | ACCELERATE = 1 | OPENMP = 1 | REPACK = 1 | \n0.01.109.223 I \n0.01.109.325 I main: interactive mode on.\n0.01.109.327 I sampler seed: 3176222916\n0.01.109.331 I sampler params: \n\trepeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000\n\tdry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = -1\n\ttop_k = 20, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.600\n\tmirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900\n0.01.109.335 I sampler chain: logits -> logit-bias -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist \n0.01.109.336 I generate: n_ctx = 40960, n_batch = 2048, n_predict = 192, n_keep = 0\n0.01.109.336 I \n0.01.109.336 I == Running in interactive mode. ==\n0.01.109.338 I  - Press Ctrl+C to interject at any time.\n0.01.109.338 I  - Press Return to return control to the AI.\n - To return control without starting a new line, end your input with '/'.\n - If you want to submit another line, end your input with '\\'.\n0.01.109.338 I  - Not using system message. To change it, set a different value via -sys PROMPT\n0.01.109.338 I \n0.02.717.994 I common_perf_print:    sampling time =      37.73 ms\n0.02.717.994 I common_perf_print:    samplers time =      21.16 ms /   221 tokens\n0.02.717.995 I common_perf_print:        load time =     836.49 ms\n0.02.717.996 I common_perf_print: prompt eval time =      59.50 ms /    29 tokens (    2.05 ms per token,   487.39 tokens per second)\n0.02.717.997 I common_perf_print:        eval time =    1497.11 ms /   191 runs   (    7.84 ms per token,   127.58 tokens per second)\n0.02.717.997 I common_perf_print:       total time =    1608.93 ms /   220 tokens\n0.02.717.997 I common_perf_print: unaccounted time =      14.58 ms /   0.9 %      (total - sampling - prompt eval - eval) / (total)\n0.02.717.998 I common_perf_print:    graphs reused =        191\n",
+ "gen_chunks": 193,
+ "gen_bytes": 768,
+ "t_first_gen_chunk_s": 1.178,
+ "t_last_gen_chunk_s": 2.73,
+ "gen_span_s": 1.552,
+ "tok_per_s_stream": 123.74,
+ "tok_per_s_wall": 62.0,
  "mem_samples": 0
 }

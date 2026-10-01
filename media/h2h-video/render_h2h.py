@@ -64,7 +64,7 @@ class Case:
             self.mem = json.load(open(mem))
         else:
             self.mem = self.rec
-        self.is_stratum = self.rec["engine"] == "stratum"
+        self.is_stratum = self.rec["engine"].startswith("stratum")
         self.accent = STRATUM_ACCENT if self.is_stratum else LLAMA_ACCENT
         self.name = "stratum" if self.is_stratum else "llama.cpp"
         # generation text timeline: [(t, text)]
@@ -76,7 +76,7 @@ class Case:
         if self.is_stratum:
             events = self.rec["stdout_events"]
         else:
-            skip = len(prompt_text)
+            skip = self.rec.get("prompt_echo_len") or len(prompt_text)
             acc = ""
             for ev in self.rec["stdout_events"]:
                 if skip > 0:
@@ -190,7 +190,7 @@ def draw_case_panel(draw, case, x, y, w, h, t, fnts):
                            fill=(10, 12, 16), outline=case.accent, width=1)
     draw.text((hud_x + 10, y + 14), f"{tokps:5.1f} tok/s", font=f_hud,
               fill=case.accent if not done else TEXT_DIM)
-    draw.text((hud_x + 10, y + 42), f"MEM  {anon:7.1f} MB", font=f_mono,
+    draw.text((hud_x + 10, y + 42), f"FOOT {anon:7.1f} MB", font=f_mono,
               fill=WARN if anon > 100 else TEXT)
     draw.text((hud_x + 10, y + 64), f"PAGE {filemb:7.0f} MB", font=f_mono,
               fill=TEXT_DIM)
@@ -198,7 +198,7 @@ def draw_case_panel(draw, case, x, y, w, h, t, fnts):
               font=f_mono, fill=TEXT_DIM)
     # memory bar (anon) under HUD
     bar_y = y + h - 64
-    draw.text((x + 16, bar_y - 22), "anonymous (wired) memory",
+    draw.text((x + 16, bar_y - 22), "physical footprint (vmmap)",
               font=f_small, fill=TEXT_DIM)
     # scale: log-ish bar, 512MB full-scale reference
     frac = min(1.0, math.log10(max(anon, 1.0)) / math.log10(1024.0))
@@ -281,7 +281,8 @@ def render(left, right, out_path, title, fps=FPS, right_cannot_run=None):
         if t < 0:
             d.text((W // 2 - d.textlength("stratum vs llama.cpp", font=f_card) // 2,
                     H // 2 - 60), "stratum vs llama.cpp", font=f_card, fill=TEXT)
-            sub = "same GGUF · same prompt · greedy · CPU-only"
+            sub = os.environ.get("H2H_SUBTITLE",
+                                 "same GGUF · same prompt · greedy · CPU-only")
             d.text((W // 2 - d.textlength(sub, font=f_title) // 2, H // 2 + 10),
                    sub, font=f_title, fill=TEXT_DIM)
             d.text((W // 2 - d.textlength(title, font=f_small) // 2, H // 2 + 70),
@@ -289,8 +290,8 @@ def render(left, right, out_path, title, fps=FPS, right_cannot_run=None):
         else:
             d.text((24, 14), title, font=f_title, fill=TEXT)
             if lc:
-                ratio = f"anon ratio  {max(lc.peak_anon,0.1)/max(rc.peak_anon if rc else 1.0,0.1):.1f}x less RAM" if rc else \
-                       f"anonymous memory  {lc.peak_anon:.0f} MB total"
+                ratio = f"{max(rc.peak_anon,0.1)/max(lc.peak_anon,0.1):.0f}x smaller footprint" if rc else \
+                       f"physical footprint  {lc.peak_anon:.0f} MB peak"
                 d.text((W - 24 - d.textlength(ratio, font=f_small), 22), ratio,
                        font=f_small, fill=TEXT_DIM)
                 draw_case_panel(d, lc, 24, 60, 606, 640, t, fnts)
@@ -318,6 +319,14 @@ def main():
     if "--right-cannot-run" in sys.argv:
         rcn = {"model": "qwen3.6-27b-mixed.gguf (11.98 GB)",
                "reasons": CANNOT_RUN_27B}
+    if "--cannot-model" in sys.argv:
+        i = sys.argv.index("--cannot-model")
+        rcn = rcn or {}
+        rcn["model"] = sys.argv[i + 1]
+    if "--cannot-lines" in sys.argv:
+        i = sys.argv.index("--cannot-lines")
+        rcn = rcn or {}
+        rcn["reasons"] = sys.argv[i + 1].split("|")
     render(left if left != "-" else None, right if right != "-" else None,
            out, title, right_cannot_run=rcn)
 

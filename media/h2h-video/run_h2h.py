@@ -95,15 +95,32 @@ def main():
             env["STRATUM_HOT_FAST"] = "1"
         cmd = [binpath, model, str(n_gen)] + [str(i) for i in prompt_ids]
         prompt_echo_len = 0            # stratum prints only generated tokens
+    elif engine == "stratum_gpu":
+        env = dict(os.environ, STRATUM_GPU="1", STRATUM_GPU_FULL="1",
+                   STRATUM_GPU_FUSED_ARGMAX="1")
+        if "--chain" in sys.argv:
+            env["STRATUM_GPU_CHAIN"] = "1"
+        cmd = [binpath, model, str(n_gen)] + [str(i) for i in prompt_ids]
+        prompt_echo_len = 0
     elif engine == "llamacpp":
         env = dict(os.environ)
-        # llama-simple's argv parser treats the first unknown flag as the
-        # start of the prompt — anything else silently becomes prompt text.
-        # It understands exactly: -m, -n, -ngl, --ignore-eos (patched in
-        # our local build to honor it). Sampler defaults to greedy.
-        cmd = [binpath, "-m", model, "-n", str(n_gen), "-ngl", "0",
-               "--ignore-eos", prompt_text]
-        prompt_echo_len = len(prompt_text)   # llama-simple echoes the prompt
+        # llama-completion (stock b9180): honors --ignore-eos natively, raw
+        # completion mode, exits on stdin EOF. -ngl from --ngl flag.
+        ngl = "0"
+        for a in sys.argv:
+            if a.startswith("--ngl="):
+                ngl = a.split("=", 1)[1]
+        # calibrate the prompt echo once: a -n 0 run prints the rendered
+        # prompt + the "> EOF by user" trailer; the echo is what precedes it
+        echo_probe = subprocess.run(
+            [binpath, "-m", model, "-n", "0", "-ngl", ngl,
+             "--ignore-eos", "-p", prompt_text],
+            stdin=subprocess.DEVNULL, capture_output=True, env=env)
+        echo = echo_probe.stdout
+        marker = echo.find(b"> EOF by user")
+        prompt_echo_len = (marker - 1) if marker > 0 else len(echo)
+        cmd = [binpath, "-m", model, "-n", str(n_gen), "-ngl", ngl,
+               "--ignore-eos", "-p", prompt_text]
     else:
         raise SystemExit(f"unknown engine {engine}")
 
@@ -117,10 +134,14 @@ def main():
         "stdout_events": [], "mem_series": [],
         "peak_anon_mb": 0.0, "peak_file_mb": 0.0,
         "llama_no_mmap": "--nommap" in sys.argv,
+        "prompt_echo_len": prompt_echo_len,
     }
 
+    # stratum auto-detects stratum_q4k.metallib from CWD then native/ —
+    # run from the binary's own directory so GPU paths actually engage.
+    cwd = os.path.dirname(os.path.abspath(binpath)) if engine.startswith("stratum") else None
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            env=env)
+                            stdin=subprocess.DEVNULL, env=env, cwd=cwd)
     stop = threading.Event()
     t_mem = threading.Thread(target=mem_sampler, args=(proc.pid, stop, rec), daemon=True)
     t_out = threading.Thread(target=stdout_reader, args=(proc.stdout.fileno(), rec), daemon=True)
@@ -144,6 +165,15 @@ def main():
             echoed += ev["bytes"]
             continue
         gen_events.append(ev)
+    # llama-completion appends "\n> EOF by user" after the last token — cut it
+    for ev in reversed(gen_events):
+        m = ev["text"].find("> EOF by user")
+        if m >= 0:
+            ev["text"] = ev["text"][:m]
+            ev["bytes"] = len(ev["text"].encode("utf-8"))
+            break
+        if ev["bytes"] > 0:
+            break
     rec["gen_chunks"] = len(gen_events)
     rec["gen_bytes"] = sum(e["bytes"] for e in gen_events)
     if gen_events:

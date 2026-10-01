@@ -1,0 +1,33 @@
+{
+ "engine": "stratum_gpu",
+ "model_path": "/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.q4km.llamacpp.gguf",
+ "model_size_mb": 461.8,
+ "n_prompt_tokens": 21,
+ "n_gen": 192,
+ "sdot0": false,
+ "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
+ "t0": 1790856965.595237,
+ "stdout_events": [
+  {
+   "t": 0.8343,
+   "bytes": 691,
+   "text": "\nOkay, the user is asking for the capital of France in one short sentence. Let me think. France's capital is Paris. I need to make sure that's correct. I remember that Paris is the capital city. No other cities are mentioned here. Let me double-check. Yes, Paris is the capital. Alright, that's it.\n</think>\n\nThe capital of France is Paris.<|im_end|>\n<|endoftext|>Human: What is the capital of France?  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \nB. Lyon  \nC. Marseille  \nD. Nice  \nA. Paris  \n"
+  }
+ ],
+ "mem_series": [],
+ "peak_anon_mb": 0.0,
+ "peak_file_mb": 0.0,
+ "llama_no_mmap": false,
+ "prompt_echo_len": 0,
+ "exit_code": 0,
+ "wall_s": 0.837,
+ "stderr_tail": "m_argmax=32  (chain)\n  step 93  stratum_argmax=13  (chain)\n  step 94  stratum_argmax=12095  (chain)\n  step 95  stratum_argmax=2303  (chain)\n  step 96  stratum_argmax=33  (chain)\n  step 97  stratum_argmax=13  (chain)\n  step 98  stratum_argmax=55201  (chain)\n  step 99  stratum_argmax=2303  (chain)\n  step 100  stratum_argmax=34  (chain)\n  step 101  stratum_argmax=13  (chain)\n  step 102  stratum_argmax=87693  (chain)\n  step 103  stratum_argmax=2303  (chain)\n  step 104  stratum_argmax=35  (chain)\n  step 105  stratum_argmax=13  (chain)\n  step 106  stratum_argmax=28859  (chain)\n  step 107  stratum_argmax=2303  (chain)\n  step 108  stratum_argmax=32  (chain)\n  step 109  stratum_argmax=13  (chain)\n  step 110  stratum_argmax=12095  (chain)\n  step 111  stratum_argmax=2303  (chain)\n  step 112  stratum_argmax=33  (chain)\n  step 113  stratum_argmax=13  (chain)\n  step 114  stratum_argmax=55201  (chain)\n  step 115  stratum_argmax=2303  (chain)\n  step 116  stratum_argmax=34  (chain)\n  step 117  stratum_argmax=13  (chain)\n  step 118  stratum_argmax=87693  (chain)\n  step 119  stratum_argmax=2303  (chain)\n  step 120  stratum_argmax=35  (chain)\n  step 121  stratum_argmax=13  (chain)\n  step 122  stratum_argmax=28859  (chain)\n  step 123  stratum_argmax=2303  (chain)\n  step 124  stratum_argmax=32  (chain)\n  step 125  stratum_argmax=13  (chain)\n  step 126  stratum_argmax=12095  (chain)\n  step 127  stratum_argmax=2303  (chain)\n  step 128  stratum_argmax=33  (chain)\n  step 129  stratum_argmax=13  (chain)\n  step 130  stratum_argmax=55201  (chain)\n  step 131  stratum_argmax=2303  (chain)\n  step 132  stratum_argmax=34  (chain)\n  step 133  stratum_argmax=13  (chain)\n  step 134  stratum_argmax=87693  (chain)\n  step 135  stratum_argmax=2303  (chain)\n  step 136  stratum_argmax=35  (chain)\n  step 137  stratum_argmax=13  (chain)\n  step 138  stratum_argmax=28859  (chain)\n  step 139  stratum_argmax=2303  (chain)\n  step 140  stratum_argmax=32  (chain)\n  step 141  stratum_argmax=13  (chain)\n  step 142  stratum_argmax=12095  (chain)\n  step 143  stratum_argmax=2303  (chain)\n  step 144  stratum_argmax=33  (chain)\n  step 145  stratum_argmax=13  (chain)\n  step 146  stratum_argmax=55201  (chain)\n  step 147  stratum_argmax=2303  (chain)\n  step 148  stratum_argmax=34  (chain)\n  step 149  stratum_argmax=13  (chain)\n  step 150  stratum_argmax=87693  (chain)\n  step 151  stratum_argmax=2303  (chain)\n  step 152  stratum_argmax=35  (chain)\n  step 153  stratum_argmax=13  (chain)\n  step 154  stratum_argmax=28859  (chain)\n  step 155  stratum_argmax=2303  (chain)\n  step 156  stratum_argmax=32  (chain)\n  step 157  stratum_argmax=13  (chain)\n  step 158  stratum_argmax=12095  (chain)\n  step 159  stratum_argmax=2303  (chain)\n  step 160  stratum_argmax=33  (chain)\n  step 161  stratum_argmax=13  (chain)\n  step 162  stratum_argmax=55201  (chain)\n  step 163  stratum_argmax=2303  (chain)\n  step 164  stratum_argmax=34  (chain)\n  step 165  stratum_argmax=13  (chain)\n  step 166  stratum_argmax=87693  (chain)\n  step 167  stratum_argmax=2303  (chain)\n  step 168  stratum_argmax=35  (chain)\n  step 169  stratum_argmax=13  (chain)\n  step 170  stratum_argmax=28859  (chain)\n  step 171  stratum_argmax=2303  (chain)\n  step 172  stratum_argmax=32  (chain)\n  step 173  stratum_argmax=13  (chain)\n  step 174  stratum_argmax=12095  (chain)\n  step 175  stratum_argmax=2303  (chain)\n  step 176  stratum_argmax=33  (chain)\n  step 177  stratum_argmax=13  (chain)\n  step 178  stratum_argmax=55201  (chain)\n  step 179  stratum_argmax=2303  (chain)\n  step 180  stratum_argmax=34  (chain)\n  step 181  stratum_argmax=13  (chain)\n  step 182  stratum_argmax=87693  (chain)\n  step 183  stratum_argmax=2303  (chain)\n  step 184  stratum_argmax=35  (chain)\n  step 185  stratum_argmax=13  (chain)\n  step 186  stratum_argmax=28859  (chain)\n  step 187  stratum_argmax=2303  (chain)\n  step 188  stratum_argmax=32  (chain)\n  step 189  stratum_argmax=13  (chain)\n  step 190  stratum_argmax=12095  (chain)\n  step 191  stratum_argmax=2303  (chain)\n",
+ "gen_chunks": 1,
+ "gen_bytes": 691,
+ "t_first_gen_chunk_s": 0.834,
+ "t_last_gen_chunk_s": 0.834,
+ "gen_span_s": 0.0,
+ "tok_per_s_stream": null,
+ "tok_per_s_wall": 229.39,
+ "mem_samples": 0
+}
