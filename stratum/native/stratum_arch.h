@@ -19,6 +19,7 @@
 #include "stratum_rope.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <limits.h>
 #include <string.h>
 
 /* ------------------------------------------------------------------ */
@@ -277,16 +278,26 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
     uint32_t u;
     float f;
 
+/* Metadata is uint32. Casting a value above INT_MAX to int makes it
+ * negative, and later `n_embed / n_q_heads` or a layer scan then divides
+ * by zero or walks a wrapped count. */
+#define FIT_U32(dst) \
+    if (u > (uint32_t)INT_MAX) { \
+        fprintf(stderr, "stratum_load_config: %s=%u does not fit in a signed int\n", key, u); \
+        return -1; \
+    } \
+    *(dst) = (int)u;
+
 #define NEED_U32(suffix, dst) \
     snprintf(key, sizeof(key), "%s.%s", c->arch, suffix); \
     if (gguf_get_u32(g, key, &u) != 0) { \
         fprintf(stderr, "stratum_load_config: missing %s\n", key); return -1; \
     } \
-    *(dst) = (int)u;
+    FIT_U32(dst)
 
 #define OPT_U32(suffix, dst, def) \
     snprintf(key, sizeof(key), "%s.%s", c->arch, suffix); \
-    if (gguf_get_u32(g, key, &u) == 0) *(dst) = (int)u; else *(dst) = (def);
+    if (gguf_get_u32(g, key, &u) == 0) { FIT_U32(dst) } else *(dst) = (def);
 
 #define OPT_F32(suffix, dst, def) \
     snprintf(key, sizeof(key), "%s.%s", c->arch, suffix); \
@@ -298,16 +309,34 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
     NEED_U32("feed_forward_length",  &c->n_ff);
     NEED_U32("attention.head_count", &c->n_q_heads);
 
+    /* Bound the layer scan below before it can walk a hostile block_count,
+     * and reject a zero head count before the head_dim division. */
+    if (c->n_layers <= 0 || c->n_layers > 100000) {
+        fprintf(stderr, "stratum_load_config: block_count %d is outside 1..100000\n",
+                c->n_layers);
+        return -1;
+    }
+    if (c->n_embed <= 0 || c->n_ff <= 0 || c->n_q_heads <= 0) {
+        fprintf(stderr, "stratum_load_config: embed/ff/head_count must be positive "
+                "(embed=%d ff=%d heads=%d)\n",
+                c->n_embed, c->n_ff, c->n_q_heads);
+        return -1;
+    }
+
     OPT_U32("attention.head_count_kv", &c->n_kv_heads, c->n_q_heads);
 
     /* head_dim: prefer metadata, fall back to tensor shape, then n_embed/n_q_heads */
     snprintf(key, sizeof(key), "%s.attention.key_length", c->arch);
     if (gguf_get_u32(g, key, &u) == 0) {
-        c->head_dim = (int)u;
+        FIT_U32(&c->head_dim)
     } else {
         /* Try to infer from blk.0 tensor (NOT blk.3 — must work for any layer count) */
         const GgufTensor* tk = gguf_find_tensor(g, "blk.0.attn_k.weight");
         if (tk && tk->n_dims >= 2 && c->n_kv_heads > 0) {
+            if (tk->dims[1] > (uint64_t)INT_MAX) {
+                fprintf(stderr, "stratum_load_config: blk.0.attn_k.weight dim does not fit in a signed int\n");
+                return -1;
+            }
             c->head_dim = (int)tk->dims[1] / c->n_kv_heads;
         } else {
             c->head_dim = c->n_embed / c->n_q_heads;
@@ -325,6 +354,12 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
         fprintf(stderr, "stratum_load_config: missing token_embd.weight\n");
         return -1;
     }
+    if (te->dims[1] == 0 || te->dims[1] > (uint64_t)INT_MAX) {
+        fprintf(stderr,
+                "stratum_load_config: token_embd vocab dimension %llu is not a positive int\n",
+                (unsigned long long)te->dims[1]);
+        return -1;
+    }
     c->vocab_size = (int)te->dims[1];
 
     /* Output weight */
@@ -338,7 +373,7 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
     c->full_attn_stride = 0;  /* 0 = all full-attn (standard Transformer) */
     snprintf(key, sizeof(key), "%s.full_attention_interval", c->arch);
     if (gguf_get_u32(g, key, &u) == 0) {
-        c->full_attn_stride = (int)u;
+        FIT_U32(&c->full_attn_stride)
     } else {
         /* Auto-detect: if layer 0 has no attn_q.weight, it's an SSM layer.
          * Find the first full-attn layer to determine stride. */
@@ -366,14 +401,29 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
      * No hardcoded defaults that assume any specific model. */
     snprintf(key, sizeof(key), "%s.ssm.state_size", c->arch);
     if (gguf_get_u32(g, key, &u) == 0) {
-        c->ssm_state_size = (int)u;
+        FIT_U32(&c->ssm_state_size)
         OPT_U32("ssm.group_count",   &c->ssm_group_count, 0);
         OPT_U32("ssm.time_step_rank", &c->ssm_value_heads, c->ssm_group_count);
-        OPT_U32("ssm.inner_size",    &c->ssm_inner_size,
-                c->ssm_value_heads * c->ssm_state_size);
+        if (c->ssm_value_heads < 0 ||
+            (c->ssm_value_heads > 0 && c->ssm_state_size > INT_MAX / c->ssm_value_heads)) {
+            fprintf(stderr, "stratum_load_config: ssm inner size overflows\n");
+            return -1;
+        }
+        int inner_def = c->ssm_value_heads * c->ssm_state_size;
+        OPT_U32("ssm.inner_size",    &c->ssm_inner_size, inner_def);
         OPT_U32("ssm.conv_kernel",   &c->ssm_conv_kernel, 4);
-        c->ssm_key_dim  = c->ssm_group_count * c->ssm_state_size;
-        c->ssm_conv_dim = 2 * c->ssm_key_dim + c->ssm_inner_size;
+        if (c->ssm_group_count < 0 ||
+            (c->ssm_group_count > 0 && c->ssm_state_size > INT_MAX / c->ssm_group_count)) {
+            fprintf(stderr, "stratum_load_config: ssm key_dim overflows\n");
+            return -1;
+        }
+        c->ssm_key_dim = c->ssm_group_count * c->ssm_state_size;
+        int64_t conv = (int64_t)c->ssm_key_dim * 2 + (int64_t)c->ssm_inner_size;
+        if (c->ssm_inner_size < 0 || conv < 0 || conv > INT_MAX) {
+            fprintf(stderr, "stratum_load_config: ssm conv_dim overflows\n");
+            return -1;
+        }
+        c->ssm_conv_dim = (int)conv;
     }
     /* If no SSM metadata: ssm_state_size stays 0 → stratum_has_ssm() returns false */
 
@@ -384,9 +434,27 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
     OPT_U32("expert_count",      &c->n_experts, 0);
     OPT_U32("expert_used_count", &c->n_experts_used, 0);
 
+#undef FIT_U32
 #undef NEED_U32
 #undef OPT_U32
 #undef OPT_F32
+    if (c->n_kv_heads <= 0 || c->head_dim <= 0 || c->vocab_size <= 0) {
+        fprintf(stderr, "stratum_load_config: non-positive geometry "
+                "(kv_heads=%d head_dim=%d vocab=%d)\n",
+                c->n_kv_heads, c->head_dim, c->vocab_size);
+        return -1;
+    }
+    if (c->n_nextn_layers < 0 || c->n_nextn_layers > c->n_layers) {
+        fprintf(stderr, "stratum_load_config: nextn_predict_layers %d is outside 0..%d\n",
+                c->n_nextn_layers, c->n_layers);
+        return -1;
+    }
+    if (c->n_experts < 0 || c->n_experts_used < 0 ||
+        c->n_experts_used > c->n_experts) {
+        fprintf(stderr, "stratum_load_config: expert_used_count %d is not in 0..expert_count %d\n",
+                c->n_experts_used, c->n_experts);
+        return -1;
+    }
     stratum_rope_load(g, c);
     return 0;
 }
