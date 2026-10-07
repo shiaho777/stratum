@@ -655,11 +655,19 @@ static int la_forward_one_token(int token_id, int position) {
 static int la_g_gpu_full = 0;
 static StratumMetalLayer la_g_lys[128];
 static int la_g_lys_built = 0;
+static int la_gpu_layer_table_ok(int nL) {
+    int cap = (int)(sizeof(la_g_lys) / sizeof(la_g_lys[0]));
+    if (nL <= cap) return 0;
+    fprintf(stderr, "llama: GPU layer table holds %d layers, model has %d\n",
+            cap, nL);
+    return -1;
+}
 static int la_forward_one_token_gpu(int token_id, int position) {
     int H = la_g_cfg.n_embed, V = la_g_cfg.vocab_size;
 /* lys moved to global la_g_lys */
 /* built moved to global la_g_lys_built */
     int nL = la_g_cfg.n_layers;
+    if (la_gpu_layer_table_ok(nL) != 0) return -1;
     if (!la_g_lys_built) {
         for (int i = 0; i < nL; i++) {
             la_BlockTensors* b = &la_g_blocks[i];
@@ -1124,6 +1132,7 @@ static int la_forward_multiseq_gpu(const int* tokens, const int* pos,
                                    const int* kvlen, int B, int* next_out) {
     int H=la_g_cfg.n_embed, V=la_g_cfg.vocab_size, nL=la_g_cfg.n_layers;
 /* lys moved to global la_g_lys */
+    if (la_gpu_layer_table_ok(nL) != 0) return -1;
     if (!la_g_lys_built) {
         for (int i=0;i<nL;i++){
             la_BlockTensors* b=&la_g_blocks[i];

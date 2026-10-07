@@ -32,7 +32,19 @@ GGML_Q2_K = 10
 
 # Base geometry — small enough to build in milliseconds, big enough to
 # exercise GQA attention, RoPE, FFN, and the F16 dequant matmul path.
-BASE = dict(N_LAYERS=4, H=64, NQ=4, NK=2, HD=16, FF=176, V=256)
+def _env_override(d):
+    """STRATUM_TINY_<KEY> overrides one geometry field. Unset keys stay put,
+    so the default tiny models and CI's pinned argmax sequences do not move.
+    """
+    import os
+    out = dict(d)
+    for k in list(out):
+        v = os.environ.get('STRATUM_TINY_' + k)
+        if v:
+            out[k] = int(v)
+    return out
+
+BASE = _env_override(dict(N_LAYERS=4, H=64, NQ=4, NK=2, HD=16, FF=176, V=256))
 # Q4_K needs every matmul input dim (K) to be a multiple of 256.
 # Env overrides let kernel work exercise realistic dims (e.g. the W16/AMX
 # path wants H=1024 / FF=3584): STRATUM_TINY_{LAYERS,H,NQ,NK,HD,FF,V}.

@@ -161,3 +161,7 @@ jobs:
           SEQ=$(echo "$OUT" | grep -oE '(stratum_argmax ?=? ?|sampled = )[0-9]+' | grep -oE '[0-9]+$' | tr '\n' ' ' | xargs)
           echo "pinned sequence: $SEQ"
           [ "$SEQ" = "875 240 779 418 769 769 769 769 769" ]
+
+      - name: Streaming layer table refuses models past 128 main layers
+        working-directory: stratum/native
+        run: sh stream_layer_cap_test.sh
