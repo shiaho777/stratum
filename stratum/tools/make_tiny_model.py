@@ -35,16 +35,30 @@ GGML_Q2_K = 10
 BASE = dict(N_LAYERS=4, H=64, NQ=4, NK=2, HD=16, FF=176, V=256)
 # Q4_K needs every matmul input dim (K) to be a multiple of 256.
 # Env overrides let kernel work exercise realistic dims (e.g. the W16/AMX
-# path wants H=1024 / FF=3584): STRATUM_TINY_{LAYERS,H,NQ,NK,HD,FF,V}.
-def _q4k_dims():
-    d = dict(N_LAYERS=2, H=256, NQ=8, NK=2, HD=32, FF=512, V=1024)
+# path wants H=1024 / FF=3584, and a wide-GQA llama wants NQ=80):
+# STRATUM_TINY_{LAYERS,H,NQ,NK,HD,FF,V}. Unset keys keep the defaults.
+def _env_dims(d):
     import os
-    for k in list(d):
+    out = dict(d)
+    for k in list(out):
         v = os.environ.get('STRATUM_TINY_' + k)
         if v:
-            d[k] = int(v)
-    return d
+            out[k] = int(v)
+    return out
+
+def _q4k_dims():
+    return _env_dims(dict(N_LAYERS=2, H=256, NQ=8, NK=2, HD=32, FF=512, V=1024))
 Q4K = _q4k_dims()
+
+def _active_dims(weights):
+    """Geometry for this invocation. Does not mutate BASE.
+    Quantized builds reuse Q4K (env already applied at import). F16 reads
+    STRATUM_TINY_* at call time so a test can request NQ>64 without
+    changing the default tiny llama.
+    """
+    if weights in ('q4k', 'q6k', 'q2k', 'q8_0'):
+        return Q4K
+    return _env_dims(BASE)
 
 # Hybrid (Gated DeltaNet) SSM geometry — scaled-down from the real 27B
 # (HV=128, NK=16, NV=48, conv_dim=10240) by the same factor as H.
@@ -260,7 +274,7 @@ def q2k_encode_mat(vals, k, n):
 
 
 def build_entries(arch, weights, rng):
-    G = Q4K if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE
+    G = _active_dims(weights)
     NL, H, NQ, NK, HD, FF, V = (G[k] for k in
                                 ('N_LAYERS', 'H', 'NQ', 'NK', 'HD', 'FF', 'V'))
     wt = (GGML_Q4_K if weights == 'q4k' else
@@ -463,7 +477,7 @@ def kv_pair(key, val):
     return struct.pack('<Q', len(key)) + key.encode() + struct.pack('<I', vt) + vb
 
 
-def kv_pairs(arch, weights):
+def kv_pairs(arch, weights, meta=None):
     if arch == 'dit':
         G = DIT
         kvs = [
@@ -486,32 +500,26 @@ def kv_pairs(arch, weights):
     # hybrid-ness comes from full_attention_interval + ssm.* metadata
     if arch == 'moe':
         p = 'llama-moe'
+        G = _active_dims(weights)
         kvs = [
             kv_pair('general.architecture', p),
-            kv_pair(f'{p}.block_count', Q4K['N_LAYERS'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0')
-                    else BASE['N_LAYERS']),
-            kv_pair(f'{p}.embedding_length',
-                    Q4K['H'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['H']),
-            kv_pair(f'{p}.feed_forward_length',
-                    Q4K['FF'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['FF']),
+            kv_pair(f'{p}.block_count', G['N_LAYERS']),
+            kv_pair(f'{p}.embedding_length', G['H']),
+            kv_pair(f'{p}.feed_forward_length', G['FF']),
             kv_pair(f'{p}.expert_count', MOE_N_EXP),
             kv_pair(f'{p}.expert_used_count', MOE_USED),
-            kv_pair(f'{p}.attention.head_count',
-                    Q4K['NQ'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['NQ']),
-            kv_pair(f'{p}.attention.head_count_kv',
-                    Q4K['NK'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['NK']),
-            kv_pair(f'{p}.attention.key_length',
-                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['HD']),
+            kv_pair(f'{p}.attention.head_count', G['NQ']),
+            kv_pair(f'{p}.attention.head_count_kv', G['NK']),
+            kv_pair(f'{p}.attention.key_length', G['HD']),
             kv_pair(f'{p}.attention.layer_norm_rms_epsilon', 1e-5),
             kv_pair(f'{p}.rope.freq_base', 10000.0),
-            kv_pair(f'{p}.rope.dimension_count',
-                    Q4K['HD'] if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE['HD']),
+            kv_pair(f'{p}.rope.dimension_count', G['HD']),
             kv_pair('general.alignment', 32),
         ]
         return b''.join(kvs), len(kvs)
 
     p = 'llama' if arch == 'llama' else 'qwen35'
-    G = Q4K if weights in ('q4k', 'q6k', 'q2k', 'q8_0') else BASE
+    G = _active_dims(weights)
     kvs = [
         kv_pair('general.architecture', p),
         kv_pair(f'{p}.block_count', G['N_LAYERS']),
@@ -524,6 +532,16 @@ def kv_pairs(arch, weights):
         kv_pair(f'{p}.rope.freq_base', 10000.0),
         kv_pair(f'{p}.rope.dimension_count', G['HD']),
     ]
+    if meta:
+        if meta.get('context_length'):
+            kvs.append(kv_pair(f'{p}.context_length', int(meta['context_length'])))
+        if meta.get('rope_scaling'):
+            kvs.append(kv_pair(f'{p}.rope.scaling.type', meta['rope_scaling']))
+        if meta.get('rope_scale'):
+            kvs.append(kv_pair(f'{p}.rope.scaling.factor', float(meta['rope_scale'])))
+        if meta.get('yarn_orig'):
+            kvs.append(kv_pair(f'{p}.rope.scaling.original_context_length',
+                               int(meta['yarn_orig'])))
     if arch == 'qwen35':
         kvs.append(kv_pair(f'{p}.full_attention_interval', 1))
     if arch == 'qwen35-hybrid':
@@ -536,8 +554,7 @@ def kv_pairs(arch, weights):
             kv_pair(f'{p}.ssm.conv_kernel', SSM_CONV_K),
         ]
     kvs.append(kv_pair('general.alignment', 32))
-    return (b''.join(kvs), (17 if arch == 'qwen35-hybrid' else
-                            (12 if arch == 'qwen35' else 11)))
+    return b''.join(kvs), len(kvs)
 
 
 def main():
@@ -547,6 +564,10 @@ def main():
     ap.add_argument('--weights', default='f16', choices=['f16', 'q4k', 'q6k', 'q2k', 'q8_0'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--seed', type=int, default=20260821)
+    ap.add_argument('--context-length', type=int, default=0)
+    ap.add_argument('--rope-scaling', default='', choices=['', 'none', 'linear', 'yarn'])
+    ap.add_argument('--rope-scale', type=float, default=0.0)
+    ap.add_argument('--yarn-orig', type=int, default=0)
     args = ap.parse_args()
     if args.weights == 'q4k' and args.arch == 'qwen35-hybrid':
         raise SystemExit('q4k weights not supported for hybrid yet '
@@ -554,7 +575,13 @@ def main():
 
     rng = random.Random(args.seed)
     entries = build_entries(args.arch, args.weights, rng)
-    kvs, n_kv = kv_pairs(args.arch, args.weights)
+    meta = {
+        'context_length': args.context_length,
+        'rope_scaling': args.rope_scaling,
+        'rope_scale': args.rope_scale,
+        'yarn_orig': args.yarn_orig,
+    }
+    kvs, n_kv = kv_pairs(args.arch, args.weights, meta)
 
     header = b'GGUF' + struct.pack('<IQQ', 3, len(entries), n_kv)
 

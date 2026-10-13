@@ -11,6 +11,7 @@
 #include "stratum_bf16.h"
 #include "stratum_lin_attn_v3.h"
 #include "stratum_lin_attn_v3_bf16.h"
+#include "stratum_attn_window.h"
 #ifdef STRATUM_USE_METAL
 #include "stratum_metal.h"
 #endif
@@ -2796,23 +2797,35 @@ static void q35_probe_coherence_summary(void) {
                 tot / nl, nl, reusable, nl);
 }
 
-static void q35_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
-    for (int i = 0; i < rope_dim / 2; i++) {
+static int q35_g_rope_hold_unscaled = 0;
+static void q35_rope_pair(int i, int rope_dim, int position, float theta, float* c, float* s) {
+    const StratumRope* rp = &q35_g_cfg.rope;
+    if (q35_g_rope_hold_unscaled || rp->type == STRATUM_ROPE_NONE || !(rp->factor > 1.0f)) {
         float freq = 1.0f / powf(theta, (float)(2 * i) / (float)rope_dim);
         float angle = (float)position * freq;
-        float c = cosf(angle), s = sinf(angle);
+        *c = cosf(angle);
+        *s = sinf(angle);
+    } else {
+        stratum_rope_cs(rp, i, rope_dim / 2, position, c, s);
+    }
+}
+
+static void q35_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
+    for (int i = 0; i < rope_dim / 2; i++) {
+        float c, s;
+        q35_rope_pair(i, rope_dim, position, theta, &c, &s);
         float x0 = x[2 * i], x1 = x[2 * i + 1];
         x[2 * i]     = x0 * c - x1 * s;
         x[2 * i + 1] = x0 * s + x1 * c;
     }
+    (void)head_dim;
 }
 
 static void q35_rope_half(float* x, int head_dim, int rope_dim, int position, float theta) {
     int half = rope_dim / 2;
     for (int i = 0; i < half; i++) {
-        float freq = 1.0f / powf(theta, (float)(2 * i) / (float)rope_dim);
-        float angle = (float)position * freq;
-        float c = cosf(angle), s = sinf(angle);
+        float c, s;
+        q35_rope_pair(i, rope_dim, position, theta, &c, &s);
         float x0 = x[i], x1 = x[i + half];
         x[i]        = x0 * c - x1 * s;
         x[i + half] = x0 * s + x1 * c;
@@ -2947,11 +2960,34 @@ static float* q35_g_ssm_y        = NULL;
 static float* q35_g_ssm_beta_v   = NULL;
 static float* q35_g_ssm_g_v      = NULL;
 
-#define q35_MAX_KV 4096   /* KV cache buffer size (ring buffer window) */
-#define q35_KV_SINK 4      /* attention sink: keep first N tokens always */
+#define q35_MAX_KV 4096   /* default KV capacity when the GGUF has no context */
+#define q35_KV_SINK 4      /* historical sink width; ring path removed */
 static float* q35_g_K_cache = NULL;
 static float* q35_g_V_cache = NULL;
-static int    q35_g_kv_len  = 0;    /* total tokens written (can exceed MAX_KV) */
+static int    q35_g_kv_len  = 0;
+static int    q35_g_maxkv   = q35_MAX_KV;
+static int    q35_g_kv_overflow = 0;
+static __thread int* q35_tls_att = NULL;
+static __thread int  q35_tls_att_cap = 0;
+
+static int q35_resolve_maxkv(void) {
+    int mk = stratum_resolve_kv_cap(q35_g_cfg.context_length, getenv("STRATUM_MAX_KV"));
+    q35_g_maxkv = mk;
+    stratum_rope_bind_context(&q35_g_cfg.rope, q35_g_cfg.context_length, mk);
+    stratum_rope_report(&q35_g_cfg.rope, q35_g_cfg.context_length, mk);
+    return mk;
+}
+
+static int* q35_tls_att_get(int need) {
+    if (need < 1) need = 1;
+    if (q35_tls_att_cap < need) {
+        int* p = (int*)realloc(q35_tls_att, (size_t)need * sizeof(int));
+        if (!p) return NULL;
+        q35_tls_att = p;
+        q35_tls_att_cap = need;
+    }
+    return q35_tls_att;
+}
 
 /* ── Phase 3b: KV prefix preservation state ──────────────────────────
  * Saved at end of prefill, restored on next request if n_reuse > 0.
@@ -5572,7 +5608,7 @@ static void q35_anchor_stamp(int slot) {
         fprintf(stderr, "[server] anchor: bad slot %d\n", slot);
         return;
     }
-    if (q35_g_kv_len <= 0 || q35_g_kv_len >= q35_MAX_KV - 100) {
+    if (q35_g_kv_len <= 0 || q35_g_kv_len >= q35_g_maxkv - 100) {
         fprintf(stderr, "[server] anchor: kv_len %d out of range\n", q35_g_kv_len);
         return;
     }
@@ -5614,6 +5650,8 @@ static int  q35_forward_mtp(const float* main_hidden, int prev_token, int positi
 static void q35_forward_full_attn_batched(int li, int B, const int* positions);
 static void q35_forward_ssm_batched(int li, int B, const int* positions);
 static int  q35_forward_batch(const int* tokens, const int* positions, int B);
+static int  q35_forward_batch_lm(const int* tokens, const int* positions,
+                                 int B, int lm_mode);
 
 /* GPU full-attn layer forward: one command buffer, zero CPU ops within layer.
  * Enabled by STRATUM_GPU_FULL=2. Falls through to CPU if unavailable. */
@@ -5644,13 +5682,25 @@ static void q35_soft_pin_tensor(const GgufTensor* t) {
 }
 
 
-static int q35_lm_stage_init(void) {
+static int q35_lm_stage_init(size_t tensor_nbytes) {
     if (q35_g_lm_stage_ready) return 0;
     size_t cap = q35_LM_STAGE_BUFSZ;
     const char* e = getenv("STRATUM_LM_STAGE_MB");
     if (e) {
         int mb = atoi(e);
         if (mb >= 16 && mb <= 160) cap = (size_t)mb * 1024 * 1024;
+    }
+    /* The stage is a streaming window. When the whole tensor is smaller
+     * than the window, the extra bytes are only a memset of anonymous
+     * pages. Clamp to the tensor (page-aligned). A tensor at or above
+     * the window — the 27B lm_head — keeps the 64MB window unchanged.
+     * Measured on the tiny hybrid before this clamp: STRATUM_LM_STAGE_MB=16
+     * dropped anchored anon 135MB → 39MB and wall 0.014s → 0.009s for
+     * 8 tokens, argmax unchanged. */
+    if (tensor_nbytes > 0 && tensor_nbytes < cap) {
+        size_t aligned = (tensor_nbytes + (size_t)4095) & ~(size_t)4095;
+        if (aligned < (size_t)4096) aligned = (size_t)4096;
+        cap = aligned;
     }
     int memx_n = 0;
     for (int s = 0; s < 2; s++) {
@@ -5667,7 +5717,7 @@ static int q35_lm_stage_init(void) {
     }
     q35_g_lm_stage_cap = cap;
     q35_g_lm_stage_ready = 1;
-    fprintf(stderr, "  lm-stage: 2 x %.0f MB double-buffer pread (%s)\n",
+    fprintf(stderr, "  lm-stage: 2 x %.3f MB double-buffer pread (%s)\n",
             cap / (1024.0 * 1024.0),
             memx_n == 2 ? "MemX compress-plane" : "anon fallback");
     return 0;
@@ -6083,14 +6133,14 @@ static void q35_memx_donate_for_weights(const char* tag) {
 
     size_t kv_floats = 0;
     if (q35_g_K_cache && q35_g_n_full_attn > 0) {
-        kv_floats = (size_t)q35_g_n_full_attn * (size_t)q35_MAX_KV
+        kv_floats = (size_t)q35_g_n_full_attn * (size_t)q35_g_maxkv
             * (size_t)q35_g_cfg.n_kv_heads * (size_t)q35_g_cfg.head_dim;
         size_t kv_bytes = kv_floats * sizeof(float);
         size_t hot_tok = (size_t)q35_g_kv_len + 8;
         if (hot_tok < 16) hot_tok = 16;
-        if (hot_tok > (size_t)q35_MAX_KV) hot_tok = (size_t)q35_MAX_KV;
+        if (hot_tok > (size_t)q35_g_maxkv) hot_tok = (size_t)q35_g_maxkv;
         size_t row = (size_t)q35_g_cfg.n_kv_heads * (size_t)q35_g_cfg.head_dim * sizeof(float);
-        size_t per_layer = (size_t)q35_MAX_KV * row;
+        size_t per_layer = (size_t)q35_g_maxkv * row;
         size_t hot_bytes = hot_tok * row;
         for (int li = 0; li < q35_g_n_full_attn; li++) {
             size_t base = (size_t)li * per_layer;
@@ -8649,7 +8699,7 @@ static void q35_lm_async_warm_start(const GgufTensor* lm) {
     if (!q35_g_lm_warm_sem)
         q35_g_lm_warm_sem = dispatch_semaphore_create(0);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        if (q35_lm_stage_init() == 0) {
+        if (q35_lm_stage_init(lm->nbytes) == 0) {
             int gt = (int)lm->type;
             int K = q35_g_cfg.n_embed > 0 ? q35_g_cfg.n_embed : 0;
             if (lm->n_dims >= 1 && lm->dims[0] > 0) K = (int)lm->dims[0];
@@ -8741,7 +8791,7 @@ static int q35_linear_tiled_multix(const GgufTensor* w,
     uint8_t** stage_bufs;
     size_t stage_cap;
     if (is_lm) {
-        if (q35_lm_stage_init() != 0) return -1;
+        if (q35_lm_stage_init(w->nbytes) != 0) return -1;
         stage_bufs = q35_g_lm_stage_buf;
         stage_cap = q35_g_lm_stage_cap;
     } else {
@@ -9091,7 +9141,7 @@ static int q35_forward_full_attn_gpu(int li, int position) {
     ly.k_norm_off = b->attn_k_norm ? b->attn_k_norm->offset : 0;
 
     int kv_slot = q35_g_full_attn_slot[li];
-    int max_kv  = q35_MAX_KV;
+    int max_kv  = q35_g_maxkv;
 
     return stratum_metal_qwen35_forward_full_attn(
         &ly, li, H, Hd, Nq, Nk, Ff,
@@ -9138,9 +9188,6 @@ static void q35_forward_full_attn(int li, int position) {
 
     {
         const float* xs1[1] = { q35_g_xn };
-        float* yq[1] = { q35_g_q_buf };
-        float* yk[1] = { q35_g_k_buf };
-        float* yv[1] = { q35_g_v_buf };
 #if defined(__ARM_FEATURE_DOTPROD)
         if (g_st.use_sdot) {
             if (!q35_prequant_match(xs1, 1, H))
@@ -9158,16 +9205,16 @@ static void q35_forward_full_attn(int li, int position) {
                 did_qkv = 1;
         }
 #endif
-        if (!did_qkv)
-            q35_linear_dispatch_multix_pipe(b->attn_q, xs1, yq, 1, 2 * Nq * Hd, H, b->attn_k);
+        if (!did_qkv) {
+            st_q4k_group(q35_g_xn, H,
+                         b->attn_q, q35_g_q_buf, 2 * Nq * Hd,
+                         b->attn_k, q35_g_k_buf, Nk * Hd,
+                         b->attn_v, q35_g_v_buf, Nk * Hd);
+        }
         for (int h = 0; h < Nq; h++) {
             const float* row = q35_g_q_buf + h * 2 * Hd;
             memcpy(q35_g_q_only + h * Hd, row,           sizeof(float) * Hd);
             memcpy(q35_g_q_gate + h * Hd, row + Hd,      sizeof(float) * Hd);
-        }
-        if (!did_qkv) {
-            q35_linear_dispatch_multix_pipe(b->attn_k, xs1, yk, 1, Nk * Hd, H, b->attn_v);
-            q35_linear_dispatch_multix_pipe(b->attn_v, xs1, yv, 1, Nk * Hd, H, b->attn_output);
         }
 #if defined(__ARM_FEATURE_DOTPROD)
         if (g_st.use_sdot) q35_prequant_clear();
@@ -9198,49 +9245,33 @@ static void q35_forward_full_attn(int li, int position) {
 
     int kv_slot = q35_g_full_attn_slot[li];
     int kv_len_now = q35_g_kv_len + 1;
+    /* Full prefix. For kv_len < capacity the old ring wrote at kv_len too,
+     * so short prompts stay bit-exact. Past capacity, refuse instead of
+     * overwriting early tokens. */
+    if (q35_g_kv_overflow) return;
+    if (!stratum_attn_token_visible(q35_g_kv_len, q35_g_kv_len, q35_g_maxkv)) {
+        fprintf(stderr, "qwen35: context %d exceeds KV capacity %d "
+                "(full prefix, no sink ring)\n",
+                kv_len_now, q35_g_maxkv);
+        q35_g_kv_overflow = 1;
+        return;
+    }
     {
-        /* V32: ring buffer write.
-         * buffer[0..SINK) = sink tokens (never overwritten)
-         * buffer[SINK..MAX_KV) = ring for recent tokens */
-        size_t per_layer = (size_t)q35_MAX_KV * Nk * Hd;
-        int write_pos;
-        if (q35_g_kv_len < q35_KV_SINK) {
-            write_pos = q35_g_kv_len;  /* sink region */
-        } else {
-            write_pos = q35_KV_SINK + ((q35_g_kv_len - q35_KV_SINK) % (q35_MAX_KV - q35_KV_SINK));
-        }
-        size_t off = (size_t)kv_slot * per_layer + (size_t)write_pos * Nk * Hd;
+        size_t per_layer = (size_t)q35_g_maxkv * Nk * Hd;
+        size_t off = (size_t)kv_slot * per_layer + (size_t)q35_g_kv_len * Nk * Hd;
         memcpy(q35_g_K_cache + off, q35_g_k_buf, sizeof(float) * Nk * Hd);
         memcpy(q35_g_V_cache + off, q35_g_v_buf, sizeof(float) * Nk * Hd);
     }
 
     float scale = 1.0f / sqrtf((float)Hd);
-    size_t per_layer = (size_t)q35_MAX_KV * Nk * Hd;
+    size_t per_layer = (size_t)q35_g_maxkv * Nk * Hd;
     const float* K_layer = q35_g_K_cache + (size_t)kv_slot * per_layer;
     const float* V_layer = q35_g_V_cache + (size_t)kv_slot * per_layer;
 
-    /* V32: sliding window attention with sink.
-     * When kv_len <= MAX_KV: attend to all tokens (same as before).
-     * When kv_len > MAX_KV: attend to sink[0..SINK) + recent[MAX_KV-SINK entries] */
-    int attn_idx[q35_MAX_KV];
-    int n_attn;
-    if (kv_len_now <= q35_MAX_KV) {
-        for (int t = 0; t < kv_len_now; t++) attn_idx[t] = t;
-        n_attn = kv_len_now;
-    } else {
-        int n = 0;
-        /* sink tokens at buffer positions 0..SINK-1 */
-        for (int t = 0; t < q35_KV_SINK; t++) attn_idx[n++] = t;
-        /* recent tokens: last (MAX_KV-SINK) tokens, at ring positions */
-        int ring_size = q35_MAX_KV - q35_KV_SINK;
-        int recent_count = ring_size;
-        for (int i = 0; i < recent_count; i++) {
-            int buf_pos = q35_KV_SINK + ((q35_g_kv_len - q35_KV_SINK + 1 - recent_count + i) % ring_size);
-            /* Simplify: just use sequential ring positions */
-            buf_pos = q35_KV_SINK + ((q35_g_kv_len - recent_count + i) % ring_size);
-            attn_idx[n++] = buf_pos;
-        }
-        n_attn = n;
+    int n_attn = stratum_attn_visible_count(q35_g_kv_len, q35_g_maxkv);
+    if (getenv("STRATUM_ATTN_AUDIT")) {
+        fprintf(stderr, "  attn_audit kv_len_now=%d n_attn=%d covers_all=%d capacity=%d\n",
+                kv_len_now, n_attn, n_attn == kv_len_now, q35_g_maxkv);
     }
 
     /* GQA-grouped scan: the gs = Nq/Nk sibling q-heads of a kv head used to
@@ -9249,7 +9280,12 @@ static void q35_forward_full_attn(int li, int position) {
     int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
     static float* q35_lgs = NULL; static size_t q35_lgs_cap = 0;
     {
-        size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+        /* Row stride is the tokens this step attends, not the reserved cap.
+         * The values in 0..n_attn-1 are the same; a 1M cap does not allocate
+         * Nq * capacity floats on a short prompt. */
+        size_t row = (size_t)n_attn;
+        if (row < 1) row = 1;
+        size_t need = (size_t)Nq * row;
         if (need > q35_lgs_cap) {
             free(q35_lgs);
             q35_lgs = (float*)malloc(need * sizeof(float));
@@ -9259,25 +9295,24 @@ static void q35_forward_full_attn(int li, int position) {
     }
     for (int kv = 0; kv < Nk; kv++) {
         int h0 = kv * qgs, h1 = h0 + qgs; if (h1 > Nq) h1 = Nq;
-        for (int ti = 0; ti < n_attn; ti++) {
-            int t = attn_idx[ti];
+        size_t row = (size_t)n_attn < 1 ? 1 : (size_t)n_attn;
+        for (int t = 0; t < n_attn; t++) {
             const float* kt = K_layer + (size_t)t * Nk * Hd + kv * Hd;
             for (int h = h0; h < h1; h++) {
                 const float* qh = q35_g_q_only + h * Hd;
                 float dot = q35_dot_f32(qh, kt, Hd);
-                q35_lgs[(size_t)h * q35_MAX_KV + ti] = dot * scale;
+                q35_lgs[(size_t)h * row + t] = dot * scale;
             }
         }
         for (int h = h0; h < h1; h++)
-            q35_softmax_inplace(q35_lgs + (size_t)h * q35_MAX_KV, n_attn);
+            q35_softmax_inplace(q35_lgs + (size_t)h * row, n_attn);
         for (int h = h0; h < h1; h++)
             memset(q35_g_attn_out + h * Hd, 0, sizeof(float) * Hd);
-        for (int ti = 0; ti < n_attn; ti++) {
-            int t = attn_idx[ti];
+        for (int t = 0; t < n_attn; t++) {
             const float* vt = V_layer + (size_t)t * Nk * Hd + kv * Hd;
             for (int h = h0; h < h1; h++) {
                 float* head_out = q35_g_attn_out + h * Hd;
-                float p = q35_lgs[(size_t)h * q35_MAX_KV + ti];
+                float p = q35_lgs[(size_t)h * row + t];
 #if defined(__ARM_NEON) || defined(__aarch64__)
                 float32x4_t pv = vdupq_n_f32(p);
                 int d = 0;
@@ -9303,12 +9338,9 @@ static void q35_forward_full_attn(int li, int position) {
         }
     }
 
-    {
-        const float* xs1[1] = { q35_g_attn_out };
-        float* ys1[1] = { q35_g_attn_proj };
-        q35_linear_dispatch_multix_pipe(b->attn_output, xs1, ys1, 1, H, Nq * Hd, b->ffn_gate);
-    }
-    for (int i = 0; i < H; i++) q35_g_x[i] = q35_g_x_resid[i] + q35_g_attn_proj[i];
+    if (b->ffn_gate) q35_wt_next_start(b->ffn_gate);
+    st_linear_dispatch_add(b->attn_output, q35_g_attn_out, q35_g_x_resid, q35_g_x,
+                           H, Nq * Hd);
 
     memcpy(q35_g_x_resid, q35_g_x, sizeof(float) * H);
     q35_rmsnorm(q35_g_x, q35_f32_tensor_ptr(b->post_attention_norm), H, q35_g_cfg.rms_eps, q35_g_xn);
@@ -9360,14 +9392,12 @@ static void q35_forward_full_attn(int li, int position) {
     q35_swiglu(q35_g_ff_g, q35_g_ff_u, Ff, q35_g_ff_a);
     q35_probe_sparsity_one(li, q35_g_ff_a, Ff);
     {
-        const float* xs1[1] = { q35_g_ff_a };
-        float* ys1[1] = { q35_g_ff_out };
         const GgufTensor* n0 = NULL;
         int nli = q35_next_main_layer(li);
         if (nli >= 0) n0 = q35_layer_first_weight(nli);
-        q35_linear_dispatch_multix_pipe(b->ffn_down, xs1, ys1, 1, H, Ff, n0);
+        if (n0) q35_wt_next_start(n0);
+        st_linear_dispatch_add(b->ffn_down, q35_g_ff_a, q35_g_x_resid, q35_g_x, H, Ff);
     }
-    for (int i = 0; i < H; i++) q35_g_x[i] = q35_g_x_resid[i] + q35_g_ff_out[i];
 }
 
 static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
@@ -9448,7 +9478,18 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
     });
 
     int kv_slot = q35_g_full_attn_slot[li];
-    size_t per_layer = (size_t)q35_MAX_KV * Nk * Hd;
+    size_t per_layer = (size_t)q35_g_maxkv * Nk * Hd;
+    if (!q35_g_ms_mode) {
+        if (q35_g_kv_overflow) return;
+        if (q35_g_kv_len + B > q35_g_maxkv ||
+            !stratum_attn_token_visible(q35_g_kv_len, q35_g_kv_len, q35_g_maxkv)) {
+            fprintf(stderr, "qwen35: context %d exceeds KV capacity %d "
+                    "(full prefix, no sink ring)\n",
+                    q35_g_kv_len + B, q35_g_maxkv);
+            q35_g_kv_overflow = 1;
+            return;
+        }
+    }
     size_t ms_seq_stride = 0;
     size_t ms_lay_stride = 0;
     if (q35_g_ms_mode) {
@@ -9489,9 +9530,21 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
     const float* V_layer = q35_g_ms_mode ? NULL : (q35_g_V_cache + (size_t)kv_slot * per_layer);
     q35_kick_next_layer_io(li);
     if (q35_g_tree_active && !q35_g_ms_mode) q35_tree_build_ancestors(B);
-    for (int s = 0; s < B; s++) {
+    /* Parallel batch attention: job = s.  Per-job score scratch is TLS
+     * (qgs x MAX_KV floats); jobs write only attn_out_b[s] — safe.
+     * Same math and per-element order as the serial loop it replaces. */
+    volatile int _attfail = 0;
+    st_par_run(B, ^(int s) {
 
-        int att[q35_MAX_KV]; int natt = 0;
+        /* Score stride is the tokens this step can attend. A tree walk
+         * stores up to q35_B_MAX ancestors, which can exceed this batch. */
+        int span = B;
+        if (q35_g_tree_active && span < q35_B_MAX) span = q35_B_MAX;
+        int att_need = q35_g_ms_mode ? q35_g_ms_maxkv : (q35_g_kv_len + span);
+        if (att_need < 1) att_need = 1;
+        int* att = q35_tls_att_get(att_need);
+        if (!att) { *(int*)&_attfail = 1; return; }
+        int natt = 0;
         const float* Ks = K_layer;
         const float* Vs = V_layer;
         if (q35_g_ms_mode) {
@@ -9542,20 +9595,35 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
             } else {
                 for (int a = 0; a <= s; a++) att[natt++] = q35_g_kv_len + a;
             }
+            if (s == 0) {
+                static int audit = -1;
+                if (audit < 0) {
+                    const char* e = getenv("STRATUM_ATTN_AUDIT");
+                    audit = (e && atoi(e) != 0) ? 1 : 0;
+                }
+                if (audit) {
+                    int has100 = 0;
+                    for (int ti = 0; ti < natt; ti++) if (att[ti] == 100) has100 = 1;
+                    fprintf(stderr,
+                            "  attn_audit n_attn=%d has_100=%d kv_len=%d capacity=%d\n",
+                            natt, has100, q35_g_kv_len, q35_g_maxkv);
+                }
+            }
         }
         /* GQA-grouped: one K/V row stream per group serves all siblings;
          * per-head FP order identical → bit-exact. Heap scratch (Nq × cap)
          * since gs × q35_MAX_KV no longer fits the stack. */
         int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
-        static float* q35_blgs = NULL; static size_t q35_blgs_cap = 0;
+        static __thread float* q35_blgs = NULL;
+        static __thread size_t q35_blgs_cap = 0;
         {
-            size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+            size_t need = (size_t)qgs * (size_t)att_need;
             if (need > q35_blgs_cap) {
                 free(q35_blgs);
                 q35_blgs = (float*)malloc(need * sizeof(float));
                 q35_blgs_cap = q35_blgs ? need : 0;
             }
-            if (!q35_blgs) { fprintf(stderr, "q35 batched attn scratch alloc failed\n"); return; }
+            if (!q35_blgs) { *(int*)&_attfail = 1; return; }
         }
         for (int kv = 0; kv < Nk; kv++) {
             int h0 = kv * qgs, h1 = h0 + qgs; if (h1 > Nq) h1 = Nq;
@@ -9567,11 +9635,11 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
                     float32x4_t acc = vdupq_n_f32(0.0f);
                     for (int d = 0; d < Hd; d += 4)
                         acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
-                    q35_blgs[(size_t)h * q35_MAX_KV + ti] = vaddvq_f32(acc) * scale;
+                    q35_blgs[(size_t)(h - h0) * (size_t)att_need + ti] = vaddvq_f32(acc) * scale;
                 }
             }
             for (int h = h0; h < h1; h++)
-                q35_softmax_inplace(q35_blgs + (size_t)h * q35_MAX_KV, natt);
+                q35_softmax_inplace(q35_blgs + (size_t)(h - h0) * (size_t)att_need, natt);
             for (int h = h0; h < h1; h++)
                 memset(q35_g_attn_out_b[s] + h * Hd, 0, sizeof(float) * Hd);
             for (int ti = 0; ti < natt; ti++) {
@@ -9579,7 +9647,7 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
                 const float* vt = Vs + (size_t)t * Nk * Hd + kv * Hd;
                 for (int h = h0; h < h1; h++) {
                     float* head_out = q35_g_attn_out_b[s] + h * Hd;
-                    float32x4_t vp = vdupq_n_f32(q35_blgs[(size_t)h * q35_MAX_KV + ti]);
+                    float32x4_t vp = vdupq_n_f32(q35_blgs[(size_t)(h - h0) * (size_t)att_need + ti]);
                     for (int d = 0; d < Hd; d += 4) {
                         float32x4_t ho = vld1q_f32(head_out + d);
                         ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
@@ -9595,7 +9663,8 @@ static void q35_forward_full_attn_batched(int li, int B, const int* positions) {
             float sg = 1.0f / (1.0f + expf(-gv));
             q35_g_attn_out_b[s][i] *= sg;
         }
-    }
+    });
+    if (_attfail) { fprintf(stderr, "q35 batched attn scratch alloc failed\n"); return; }
 
     {
         const float* xs[q35_B_MAX]; float* ys[q35_B_MAX];
@@ -9779,6 +9848,11 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
     });
 
     int kv_len_now = q35_g_mtp_kv_len + 1;
+    if (!stratum_attn_token_visible(q35_g_mtp_kv_len, q35_g_mtp_kv_len, q35_g_maxkv)) {
+        fprintf(stderr, "qwen35: MTP context %d exceeds KV capacity %d\n",
+                kv_len_now, q35_g_maxkv);
+        return -1;
+    }
     {
         size_t off = (size_t)q35_g_mtp_kv_len * Nk * Hd;
         memcpy(q35_g_mtp_K_cache + off, q35_g_k_buf, sizeof(float) * Nk * Hd);
@@ -9791,7 +9865,9 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
     {
         int qgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
         static float* q35_mlgs = NULL; static size_t q35_mlgs_cap = 0;
-        size_t need = (size_t)Nq * (size_t)q35_MAX_KV;
+        size_t row = (size_t)kv_len_now;
+        if (row < 1) row = 1;
+        size_t need = (size_t)Nq * row;
         if (need > q35_mlgs_cap) {
             free(q35_mlgs);
             q35_mlgs = (float*)malloc(need * sizeof(float));
@@ -9807,18 +9883,18 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
                     float32x4_t acc = vdupq_n_f32(0.0f);
                     for (int d = 0; d < Hd; d += 4)
                         acc = vfmaq_f32(acc, vld1q_f32(qh + d), vld1q_f32(kt + d));
-                    q35_mlgs[(size_t)h * q35_MAX_KV + t] = vaddvq_f32(acc) * scale;
+                    q35_mlgs[(size_t)h * row + t] = vaddvq_f32(acc) * scale;
                 }
             }
             for (int h = h0; h < h1; h++)
-                q35_softmax_inplace(q35_mlgs + (size_t)h * q35_MAX_KV, kv_len_now);
+                q35_softmax_inplace(q35_mlgs + (size_t)h * row, kv_len_now);
             for (int h = h0; h < h1; h++)
                 memset(q35_g_attn_out + h * Hd, 0, sizeof(float) * Hd);
             for (int t = 0; t < kv_len_now; t++) {
                 const float* vt = q35_g_mtp_V_cache + (size_t)t * Nk * Hd + kv * Hd;
                 for (int h = h0; h < h1; h++) {
                     float* head_out = q35_g_attn_out + h * Hd;
-                    float32x4_t vp = vdupq_n_f32(q35_mlgs[(size_t)h * q35_MAX_KV + t]);
+                    float32x4_t vp = vdupq_n_f32(q35_mlgs[(size_t)h * row + t]);
                     for (int d = 0; d < Hd; d += 4) {
                         float32x4_t ho = vld1q_f32(head_out + d);
                         ho = vfmaq_f32(ho, vp, vld1q_f32(vt + d));
@@ -9838,8 +9914,8 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
         }
     }
 
-    q35_linear_dispatch(b->attn_output, q35_g_attn_out, q35_g_attn_proj, H, Nq * Hd);
-    for (int i = 0; i < H; i++) q35_g_mtp_x[i] = q35_g_x_resid[i] + q35_g_attn_proj[i];
+    st_linear_dispatch_add(b->attn_output, q35_g_attn_out, q35_g_x_resid, q35_g_mtp_x,
+                           H, Nq * Hd);
 
     if (!g_st.keep_resident) {
         q35_io_tpl_kick_layer(0, 0, 2);
@@ -9863,8 +9939,7 @@ static int q35_forward_mtp(const float* main_hidden, int prev_token, int positio
 #endif
     }
     q35_swiglu(q35_g_ff_g, q35_g_ff_u, Ff, q35_g_ff_a);
-    q35_linear_dispatch(b->ffn_down, q35_g_ff_a, q35_g_ff_out, H, Ff);
-    for (int i = 0; i < H; i++) q35_g_mtp_x[i] = q35_g_x_resid[i] + q35_g_ff_out[i];
+    st_linear_dispatch_add(b->ffn_down, q35_g_ff_a, q35_g_x_resid, q35_g_mtp_x, H, Ff);
 
     q35_rmsnorm(q35_g_mtp_x, q35_f32_tensor_ptr(q35_g_mtp.shared_head_norm),
                 H, q35_g_cfg.rms_eps, q35_g_xn);
@@ -10249,14 +10324,12 @@ ffn_proj_done:
     q35_probe_sparsity_one(li, q35_g_ff_a, Ff);
 
     {
-        const float* xs1[1] = { q35_g_ff_a };
-        float* ys1[1] = { q35_g_ff_out };
         const GgufTensor* n0 = NULL;
         int nli = q35_next_main_layer(li);
         if (nli >= 0) n0 = q35_layer_first_weight(nli);
-        q35_linear_dispatch_multix_pipe(b->ffn_down, xs1, ys1, 1, H, Ff, n0);
+        if (n0) q35_wt_next_start(n0);
+        st_linear_dispatch_add(b->ffn_down, q35_g_ff_a, q35_g_x_resid, q35_g_x, H, Ff);
     }
-    for (int i = 0; i < H; i++) q35_g_x[i] = q35_g_x_resid[i] + q35_g_ff_out[i];
 }
 
 static void q35_forward_ssm_batched(int li, int B, const int* positions) {
@@ -12422,6 +12495,7 @@ static int q35_ensure_tree_state(void) {
 
 
 static int q35_allocate_state(void) {
+    q35_resolve_maxkv();
     int H  = q35_g_cfg.n_embed;
     int Hd = q35_g_cfg.head_dim;
     int Nq = q35_g_cfg.n_q_heads;
@@ -12445,7 +12519,7 @@ static int q35_allocate_state(void) {
     q35_g_ff_out    = (float*)calloc(H, sizeof(float));
     q35_g_logits    = (float*)calloc(V, sizeof(float));
 
-    size_t kv_floats = (size_t)q35_g_n_full_attn * q35_MAX_KV * Nk * Hd;
+    size_t kv_floats = (size_t)q35_g_n_full_attn * (size_t)q35_g_maxkv * Nk * Hd;
     size_t kv_bytes  = kv_floats * sizeof(float);
     q35_g_kv_alloc_bytes = kv_bytes;
     q35_g_kv_is_lazy = 0;
@@ -12454,9 +12528,9 @@ static int q35_allocate_state(void) {
         int want_memx_kv = (em && atoi(em) != 0);
         if (want_memx_kv) {
             q35_g_K_cache = (float*)stratum_memx_kv_alloc(kv_bytes,
-                                q35_g_n_full_attn, Nk, Hd, q35_MAX_KV);
+                                q35_g_n_full_attn, Nk, Hd, q35_g_maxkv);
             q35_g_V_cache = (float*)stratum_memx_kv_alloc(kv_bytes,
-                                q35_g_n_full_attn, Nk, Hd, q35_MAX_KV);
+                                q35_g_n_full_attn, Nk, Hd, q35_g_maxkv);
         }
     }
     if (!q35_g_K_cache) {
@@ -12531,7 +12605,7 @@ static int q35_allocate_state(void) {
         q35_g_mtp_combined = (float*)calloc(2 * H, sizeof(float));
         q35_g_mtp_x        = (float*)calloc(H, sizeof(float));
         q35_g_mtp_logits   = (float*)calloc(V, sizeof(float));
-        size_t mtp_kv_floats = (size_t)q35_MAX_KV * Nk * Hd;
+        size_t mtp_kv_floats = (size_t)q35_g_maxkv * Nk * Hd;
         size_t mtp_kv_bytes = mtp_kv_floats * sizeof(float);
         q35_g_mtp_K_cache  = (float*)q35_lazy_anon(mtp_kv_bytes);
         q35_g_mtp_V_cache  = (float*)q35_lazy_anon(mtp_kv_bytes);
@@ -12624,8 +12698,8 @@ static int q35_allocate_state(void) {
         q35_g_tree_b_cap = 0;
     }
 
-    fprintf(stderr, "  KV cache (full-attn, lazy-anon): %.1f MB anon (calloc, lazy)\n",
-            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0));
+    fprintf(stderr, "  KV cache (full-attn, lazy-anon): %.1f MB virtual, %d positions\n",
+            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0), q35_g_maxkv);
     fprintf(stderr, "  SSM rec_state (bf16)      : %.1f MB anon (calloc, lazy)\n",
             (double)rec_cells * 2 / (1024.0 * 1024.0));
     fprintf(stderr, "  SSM conv_state            : %.1f MB anon (calloc, lazy)\n",
@@ -12900,6 +12974,7 @@ after_layers:;
     struct timespec _lh1; clock_gettime(CLOCK_MONOTONIC, &_lh1);
     q35_g_sec_lmhead += (_lh1.tv_sec-_lh0.tv_sec)+(_lh1.tv_nsec-_lh0.tv_nsec)/1e9;
 
+    if (q35_g_kv_overflow) return -1;
     q35_g_kv_len++;
     return 0;
 }
@@ -12974,6 +13049,7 @@ static int q35_forward_shallow(int token_id, int position, int n_layers) {
 
     /* Increment kv_len — full-attn layers wrote K/V at position q35_g_kv_len.
      * Caller saves/restores kv_len around the draft generation loop. */
+    if (q35_g_kv_overflow) return -1;
     q35_g_kv_len++;
     return 0;
 }
@@ -12994,7 +13070,7 @@ static void q35_ssm_state_commit_tree_leaf(int leaf) {
 
 static void q35_kv_commit_tree_path(const int* path_slots, int path_len) {
     int Nk = q35_g_cfg.n_kv_heads, Hd = q35_g_cfg.head_dim;
-    size_t per_layer = (size_t)q35_MAX_KV * Nk * Hd;
+    size_t per_layer = (size_t)q35_g_maxkv * Nk * Hd;
     for (int li = 0; li < q35_g_cfg.n_layers; li++) {
         if (stratum_is_nextn_v2(&q35_g_cfg, li)) continue;
         if (!q35_g_blocks[li].is_full_attn) continue;
@@ -13201,7 +13277,8 @@ static int q35_ms_lazy_expand(int need, int n_ssm) {
 
 
 
-static int q35_forward_batch(const int* tokens, const int* positions, int B) {
+static int q35_forward_batch_lm(const int* tokens, const int* positions,
+                                int B, int lm_mode) {
     int H = q35_g_cfg.n_embed;
     int V = q35_g_cfg.vocab_size;
     struct timespec _main0, _main1;
@@ -13699,7 +13776,13 @@ stream_done:;
         q35_rmsnorm(q35_g_x_b[s], q35_f32_tensor_ptr(q35_g_output_norm),
                     H, q35_g_cfg.rms_eps, q35_g_xn_b[s]);
     }
-    {
+    q35_lm_async_warm_join();
+    /* STRATUM_LM_ALL=1 forces mode 2 (debug/A-B). */
+    if (getenv("STRATUM_LM_ALL")) lm_mode = 2;
+    /* lm_mode: 2 = all positions (verify/multiseq reads every slot),
+     *          1 = last slot only (final prefill chunk),
+     *          0 = none (intermediate prefill — logits discarded). */
+    if (lm_mode == 2) {
         const float* xs[q35_B_MAX]; float* ys[q35_B_MAX];
         for (int s = 0; s < B; s++) { xs[s] = q35_g_xn_b[s]; ys[s] = q35_g_logits_b[s]; }
 #if defined(__ARM_FEATURE_DOTPROD)
@@ -13709,8 +13792,10 @@ stream_done:;
         }
 #endif
         if (lto_hid) q35_g_lto_n++;
-        q35_lm_async_warm_join();
         if (q35_linear_dispatch_multix(lm, xs, ys, B, V, H) != 0) return -1;
+    } else if (lm_mode == 1) {
+        if (q35_linear_dispatch(lm, q35_g_xn_b[B-1], q35_g_logits_b[B-1],
+                                V, H) != 0) return -1;
     }
     if (_bp_timing) {
         clock_gettime(CLOCK_MONOTONIC, &_bp1);
@@ -13776,7 +13861,12 @@ stream_done:;
             }
         }
     }
+    if (q35_g_kv_overflow) return -1;
     return 0;
+}
+
+static int q35_forward_batch(const int* tokens, const int* positions, int B) {
+    return q35_forward_batch_lm(tokens, positions, B, 2);
 }
 
 static void q35_kv_advance(int n) {
@@ -14307,7 +14397,19 @@ int run_qwen35_arch(int argc, char** argv) {
         int ncpu = 0; size_t l = sizeof(ncpu);
         if (sysctlbyname("hw.physicalcpu", &ncpu, &l, NULL, 0) != 0 || ncpu < 1) ncpu = 8;
         const char* env_nc = getenv("STRATUM_NCHUNKS");
-        g_st.nchunks = env_nc ? atoi(env_nc) : ncpu;
+        if (env_nc) {
+            g_st.nchunks = atoi(env_nc);
+        } else if (g_st.mmap_size > 0 &&
+                   g_st.mmap_size <= (size_t)2 * 1024 * 1024 * 1024) {
+            /* Same rule as stratum_linear_init: a model that fits in the
+             * page cache saturates bandwidth near 5 chunks. Measured on the
+             * tiny hybrid (mmap ≪ 2GB): 14 chunks 0.06–0.07s wall vs 5
+             * chunks 0.01s, greedy argmax unchanged. Larger models keep
+             * every physical core for cold NVMe queue depth. */
+            g_st.nchunks = 5;
+        } else {
+            g_st.nchunks = ncpu;
+        }
         if (g_st.nchunks < 1) g_st.nchunks = 1;
         fprintf(stderr, "  parallel matmul: %d chunks (%d physical cores)\n",
                 g_st.nchunks, ncpu);
@@ -14659,9 +14761,14 @@ int run_qwen35_arch(int argc, char** argv) {
     {
         const char* gf = getenv("STRATUM_GPU_FULL");
         if (gf && atoi(gf) >= 2) {
-#ifdef STRATUM_USE_METAL
-            q35_gpu_full_attn_init();
-#endif
+            if (!stratum_gpu_full_ok(&q35_g_cfg.rope, q35_g_maxkv)) {
+                fprintf(stderr,
+                        "  GPU_FULL: left on CPU (KV capacity %d; GPU rope is unscaled "
+                        "and the GPU KV slab is eager, cap %d)\n",
+                        q35_g_maxkv, STRATUM_GPU_ROPE_MAX_KV);
+            } else {
+                q35_gpu_full_attn_init();
+            }
         }
     }
 
@@ -14833,7 +14940,12 @@ int run_qwen35_arch(int argc, char** argv) {
     int server_mode = (getenv("STRATUM_SERVER") != NULL);
     int server_iter = 0;
     int n_gen = 0;
-    int prompt[2048];
+    /* Heap, sized to KV capacity. A fixed 2048-slot stack array used to
+     * drop the tail of a long prompt with no message. "@path" reads
+     * whitespace-separated ids from a file so the prompt is not bound
+     * by argv. */
+    int* prompt = (int*)malloc((size_t)(q35_g_maxkv + 2) * sizeof(int));
+    if (!prompt) { fprintf(stderr, "prompt alloc failed\n"); return 1; }
     int n_prompt = 0;
     int n_reuse = 0;       /* Phase 3b: tokens to reuse from previous request */
     int tok_start = 3;     /* Phase 3b: argv index where prompt tokens start */
@@ -14854,21 +14966,46 @@ server_request:
         if (n_reuse < 0) n_reuse = 0;
         tok_start = 4;
     }
-    if (argc > tok_start) {
-        for (int i = tok_start; i < argc && n_prompt < 2048; i++) {
+    if (argc > tok_start && argv[tok_start][0] == '@') {
+        FILE* pf = fopen(argv[tok_start] + 1, "r");
+        if (!pf) {
+            fprintf(stderr, "  prompt file %s: %s\n",
+                    argv[tok_start] + 1, strerror(errno));
+            return 1;
+        }
+        int id;
+        while (fscanf(pf, "%d", &id) == 1) {
+            if (n_prompt >= q35_g_maxkv) {
+                fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                        q35_g_maxkv);
+                break;
+            }
+            prompt[n_prompt++] = id;
+        }
+        fclose(pf);
+    } else if (argc > tok_start) {
+        int more = 0;
+        for (int i = tok_start; i < argc; i++) {
+            if (n_prompt >= q35_g_maxkv) { more = 1; break; }
             prompt[n_prompt++] = atoi(argv[i]);
         }
-    } else {
-        prompt[n_prompt++] = 1;
+        if (more)
+            fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                    q35_g_maxkv);
     }
+    if (n_prompt == 0)
+        prompt[n_prompt++] = 1;
 
     if (stratum_validate_prompt_ids(prompt, n_prompt, q35_g_cfg.vocab_size) != 0) return 1;
     q35_vocab_ready = stratum_vocab_init(&q35_g_gguf, q35_g_gguf.mmap_base, &q35_vocab) == 0;
     if (q35_vocab_ready)
         fprintf(stderr, "  tokenizer: %u tokens loaded\n", q35_vocab.count);
+    fprintf(stderr, "  prompt length: %d\n", n_prompt);
     fprintf(stderr, "  prompt ids:");
     for (int i = 0; i < n_prompt && i < 32; i++) fprintf(stderr, " %d", prompt[i]);
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);
+    q35_g_rope_hold_unscaled = stratum_rope_hold_unscaled(&q35_g_cfg.rope, n_prompt, n_gen);
+    stratum_rope_reach_report(&q35_g_cfg.rope, n_prompt, n_gen);
 
     /* ==================================================================
      * §8 — MULTISEQ decode (inside run_qwen35_arch)
@@ -14993,7 +15130,7 @@ server_request:
             }
             int maxkv = n_prompt + n_gen + 8;
             if (maxkv < 16) maxkv = 16;
-            if (maxkv > q35_MAX_KV) maxkv = q35_MAX_KV;
+            if (maxkv > q35_g_maxkv) maxkv = q35_g_maxkv;
             int Nk = q35_g_cfg.n_kv_heads;
             int Hd = q35_g_cfg.head_dim;
             int n_full = q35_g_n_full_attn > 0 ? q35_g_n_full_attn : 1;
@@ -15151,7 +15288,8 @@ server_request:
                         q35_g_ms_stream_of[0] = 0;
                         q35_g_ms_slot_phase[0] = 0;
                         q35_g_ms_chain = 0;
-                        if (q35_forward_batch(tok, pos, 1) != 0) {
+                        if (q35_forward_batch_lm(tok, pos, 1,
+                                p == n_prompt - 1 ? 1 : 0) != 0) {
                             free(nxt); free(gen_done); free(prev_tok);
                             free(uniq); free(rep_of); free(draft); free(have_draft);
                             free(slot_of_stream); free(class_n); free(uniq_idx);
@@ -15169,7 +15307,8 @@ server_request:
                             q35_g_ms_slot_phase[s] = 0;
                         }
                         q35_g_ms_chain = 0;
-                        if (q35_forward_batch(tok, pos, brun) != 0) {
+                        if (q35_forward_batch_lm(tok, pos, brun,
+                                p == n_prompt - 1 ? 2 : 0) != 0) {
                             free(nxt); free(gen_done); free(prev_tok);
                             free(uniq); free(rep_of); free(draft); free(have_draft);
                             free(slot_of_stream); free(class_n); free(uniq_idx);
@@ -17004,7 +17143,7 @@ server_request:
     if (reuse_slot == 0) {
         restore_ok = n_reuse > 0 && q35_g_preserve_valid
                      && n_reuse <= q35_g_preserve_kv_len
-                     && q35_g_preserve_kv_len < q35_MAX_KV - 100
+                     && q35_g_preserve_kv_len < q35_g_maxkv - 100
                      && q35_g_preserve_conv;
     } else {
         /* V220: anchors restore EXACTLY to their stamped length AND need
@@ -17017,7 +17156,7 @@ server_request:
                      && q35_g_preserve_conv
                      && n_reuse == q35_g_anchor_len[reuse_slot]
                      && n_reuse < n_prompt
-                     && n_reuse < q35_MAX_KV - 100;
+                     && n_reuse < q35_g_maxkv - 100;
         if (!restore_ok && n_reuse > 0)
             fprintf(stderr, "[server] preserve: slot %d restore refused "
                             "(need exact len %d with >=1 new token, got len %d)\n",
@@ -17068,7 +17207,8 @@ server_request:
             if (B == 1) {
                 int btok1[1] = { prompt[t] };
                 int bpos1[1] = { position };
-                if (q35_forward_batch(btok1, bpos1, 1) != 0) return 1;
+                if (q35_forward_batch_lm(btok1, bpos1, 1,
+                        t + 1 == n_prompt ? 1 : 0) != 0) return 1;
                 q35_kv_advance(1);
                 position++;
                 t++;
@@ -17076,7 +17216,8 @@ server_request:
             }
             int btok[q35_B_MAX], bpos[q35_B_MAX];
             for (int s = 0; s < B; s++) { btok[s] = prompt[t+s]; bpos[s] = position + s; }
-            if (q35_forward_batch(btok, bpos, B) != 0) return 1;
+            if (q35_forward_batch_lm(btok, bpos, B,
+                    t + B == n_prompt ? 1 : 0) != 0) return 1;
             q35_kv_advance(B);
             position += B;
             t += B;
@@ -17105,7 +17246,8 @@ server_request:
         for (int t = n_reuse; t < n_prompt; t++) {
             int btok[1] = { prompt[t] };
             int bpos[1] = { position };
-            if (q35_forward_batch(btok, bpos, 1) != 0) return 1;
+            if (q35_forward_batch_lm(btok, bpos, 1,
+                    t == n_prompt - 1 ? 1 : 0) != 0) return 1;
             q35_kv_advance(1);
             position++;
             last_tok = prompt[t];

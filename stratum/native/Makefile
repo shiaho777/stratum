@@ -79,6 +79,7 @@ stratum_archs.gen.h: $(ARCH_INCS)
 
 stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) $(MEMX_OBJ) \
          stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
+         stratum_attn_lg.h stratum_rope.h \
          stratum_metal.h \
          stratum_memx.h \
          stratum_sro.h \

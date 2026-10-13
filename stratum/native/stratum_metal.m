@@ -98,6 +98,125 @@ static id<MTLComputePipelineState> g_embd_gather_q6k = nil;
 static id<MTLBuffer> g_tok_ring = nil;          /* 256 x uint32 token ring */
 static id<MTLCommandBuffer> g_chain_last = nil; /* last committed chain cmd */
 static id<MTLCommandBuffer> g_chain_cmd = nil;  /* shared chain cmdbuf */
+
+/* ---- STRATUM_GPU_STAMPS: per-stage GPU timestamp instrumentation ----
+ * Apple GPUs only sample counters at encoder (pass) boundaries, so stamp
+ * mode splits the fused path into one compute encoder per stage; each
+ * encoder's pass descriptor auto-writes start/end timestamps. The memory
+ * barrier between stages is replaced by a real encoder boundary (which is
+ * also a full ordering point), so semantics stay equivalent.
+ * pairs: slot 2i = encoder-start ts, slot 2i+1 = encoder-end ts. */
+static id<MTLCounterSampleBuffer> g_stamp_buf = nil;
+static uint32_t* g_stamp_tags = nil;
+static uint32_t  g_stamp_n = 0, g_stamp_cap = 0;
+static int       g_stamp_on = 0;
+static int       s_stamps_init = -1;
+static id<MTLComputeCommandEncoder> g_cur_enc = nil;
+
+static void stamps_init_once(void) {
+    if (s_stamps_init >= 0) return;
+    s_stamps_init = 0;
+    if (!getenv("STRATUM_GPU_STAMPS") || !g_device) return;
+    id<MTLCounterSet> ts_set = nil;
+    for (id<MTLCounterSet> cs in g_device.counterSets)
+        if ([cs.name isEqualToString:MTLCommonCounterSetTimestamp]) { ts_set = cs; break; }
+    if (!ts_set) { fprintf(stderr, "  [stamps] no timestamp counterSet\n"); return; }
+    MTLCounterSampleBufferDescriptor* d = [MTLCounterSampleBufferDescriptor new];
+    d.counterSet = ts_set; d.storageMode = MTLStorageModeShared; d.sampleCount = 4096;
+    NSError* err = nil;
+    g_stamp_buf = [g_device newCounterSampleBufferWithDescriptor:d error:&err];
+    if (!g_stamp_buf) { fprintf(stderr, "  [stamps] buf: %s\n",
+        [[err localizedDescription] UTF8String]); return; }
+    g_stamp_cap = 4096;
+    g_stamp_tags = (uint32_t*)malloc(g_stamp_cap * sizeof(uint32_t));
+    g_stamp_n = 0;
+    g_stamp_on = 1;
+    s_stamps_init = 1;
+    fprintf(stderr, "  [stamps] on: %u sample slots (encoder-per-stage mode)\n",
+            g_stamp_cap);
+}
+
+static id<MTLComputeCommandEncoder> new_stage_enc(id<MTLCommandBuffer> cbuf,
+                                                  uint32_t tag) {
+    if (g_stamp_on && g_stamp_n + 2 <= g_stamp_cap) {
+        MTLComputePassDescriptor* pd = [MTLComputePassDescriptor computePassDescriptor];
+        MTLComputePassSampleBufferAttachmentDescriptor* a = pd.sampleBufferAttachments[0];
+        a.sampleBuffer = g_stamp_buf;
+        a.startOfEncoderSampleIndex = g_stamp_n;
+        a.endOfEncoderSampleIndex   = g_stamp_n + 1;
+        g_stamp_tags[g_stamp_n / 2] = tag;
+        g_stamp_n += 2;
+        id<MTLComputeCommandEncoder> e =
+            [cbuf computeCommandEncoderWithDescriptor:pd];
+        if (e) return e;
+    }
+    return [cbuf computeCommandEncoder];
+}
+
+/* End current stage encoder, open the next one (stamp mode);
+ * plain memory barrier otherwise — identical ordering semantics. */
+#define ENC_CUT(enc_, tag_) do {     if (g_stamp_on) { [enc_ endEncoding]; \
+        enc_ = new_stage_enc(cmd, (tag_)); g_cur_enc = enc_; } \
+    else BAR; } while(0)
+
+static void stamps_dump(void) {
+    if (!g_stamp_on || g_stamp_n == 0) return;
+    NSData* d = nil;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if ([g_stamp_buf respondsToSelector:@selector(resolveCounterRange:)])
+        d = [g_stamp_buf resolveCounterRange:NSMakeRange(0, g_stamp_n)];
+#pragma clang diagnostic pop
+    if (!d || d.length < (NSUInteger)g_stamp_n * 8) { g_stamp_n = 0; return; }
+    const uint64_t* ts = (const uint64_t*)d.bytes;
+    static const char* nm[10] = {"?","qkv_norm","attn","o_proj",
+        "gu_norm","down_res","embd","lm_head","argmax","misc"};
+    double esum[10]={0},emx[10]={0},emn[10]; uint32_t ecnt[10]={0};
+    double gsum[10]={0}; uint32_t gcnt[10]={0};
+    for (int i=0;i<10;i++) emn[i]=1e30;
+    uint64_t prev_end = 0;
+    for (uint32_t i=0;i+1<g_stamp_n;i+=2) {
+        uint32_t tag = g_stamp_tags[i/2]; if (tag > 9u) tag = 9u;
+        double exec_us = (double)(ts[i+1]-ts[i])/1000.0;
+        esum[tag]+=exec_us; ecnt[tag]++;
+        if (exec_us>emx[tag])emx[tag]=exec_us;
+        if (exec_us<emn[tag])emn[tag]=exec_us;
+        if (prev_end && ts[i] >= prev_end) {   /* gap between encoders */
+            gsum[tag]+=(double)(ts[i]-prev_end)/1000.0; gcnt[tag]++;
+        }
+        prev_end = ts[i+1];
+    }
+    double span_ms = (double)(ts[g_stamp_n-1]-ts[0])/1e6;
+    fprintf(stderr, "\n  [stamps] %u stage-encoders, GPU span %.3f ms\n",
+            g_stamp_n/2, span_ms);
+    double etot=0, gtot=0;
+    for (int i=0;i<=9;i++){ etot+=esum[i]; gtot+=gsum[i]; }
+    for (int i=0;i<=8;i++) if (ecnt[i]) fprintf(stderr,
+        "    %-8s n=%-4u exec sum=%8.3fms (%4.1f%%) mean=%7.2fus"
+        "  [min %6.2f max %8.2f]  pre-gap mean %5.2fus\n",
+        nm[i], ecnt[i], esum[i]/1000.0, 100.0*esum[i]/span_ms/1000.0,
+        esum[i]/ecnt[i], emn[i], emx[i],
+        gcnt[i] ? gsum[i]/gcnt[i] : 0.0);
+    fprintf(stderr, "    TOTAL exec %.3fms (%.1f%% of span)  boundaries %.3fms (%.1f%%)\n",
+            etot/1000.0, 100.0*etot/1000.0/span_ms,
+            gtot/1000.0, 100.0*gtot/1000.0/span_ms);
+    /* token-level: embd(6) opens a token, argmax(8) ends it */
+    uint64_t tok_open=0, tok_close=0; uint32_t ntok=0;
+    double tspan=0, gsum2=0;
+    for (uint32_t i=0;i+1<g_stamp_n;i+=2) {
+        uint32_t tag = g_stamp_tags[i/2];
+        if (tag==6u){ if (tok_close) gsum2 += (double)(ts[i]-tok_close)/1000.0;
+                      tok_open=ts[i]; }
+        else if (tag==8u){ if (tok_open){ tspan+=(double)(ts[i+1]-tok_open)/1000.0;
+                           ntok++; } tok_close=ts[i+1]; }
+    }
+    if (ntok) fprintf(stderr,
+        "    token: n=%u  mean on-GPU span %.2fus  mean inter-token gap %.2fus\n",
+        ntok, tspan/ntok, gsum2/ntok);
+    if (g_stamp_n >= g_stamp_cap) fprintf(stderr, "    (buffer full — truncated)\n");
+    g_stamp_n = 0;
+}
+
 static id<MTLComputePipelineState> g_add = nil;
 static id<MTLComputePipelineState> g_copy = nil;
 static id<MTLBuffer> g_ffn_gate = nil, g_ffn_up = nil, g_ffn_a = nil, g_ffn_out = nil;
@@ -207,6 +326,49 @@ static int load_batched_psos(const char* prefix, int target) {
     return loaded;
 }
 
+/* ---- per-family GPU tuning table ------------------------------------
+ * llama.cpp's fa-vec tuned tables (Aug-Sep 2026, ~10 per-SKU PRs keyed
+ * by family in #29075) demonstrated that Apple GPU kernel parameters
+ * differ materially across families.  Our measured anchor: on M4 Pro the
+ * wq_layer_f32 megakernel needs all TGs co-resident for its epoch
+ * barriers — 48-56 TGs peak, 64 marginal, >=80 collapses into spin
+ * starvation.  ntg ~= 2.8 x GPU cores at 256 threads + ~16.5 KB tgmem.
+ * Entries marked est. are scaled by core count and should be
+ * re-measured per family. */
+static int s_gpu_fam  = 0;   /* 1..5 = M1..M5 */
+static int s_gpu_tier = 0;   /* 0 base, 1 Pro, 2 Max, 3 Ultra */
+
+static void stratum_gpu_class_detect(void) {
+    const char* n = [[g_device name] UTF8String];
+    if      (strstr(n, "M5")) s_gpu_fam = 5;
+    else if (strstr(n, "M4")) s_gpu_fam = 4;
+    else if (strstr(n, "M3")) s_gpu_fam = 3;
+    else if (strstr(n, "M2")) s_gpu_fam = 2;
+    else if (strstr(n, "M1")) s_gpu_fam = 1;
+    if      (strstr(n, "Ultra")) s_gpu_tier = 3;
+    else if (strstr(n, "Max"))   s_gpu_tier = 2;
+    else if (strstr(n, "Pro"))   s_gpu_tier = 1;
+    if (s_gpu_fam)
+        fprintf(stderr, "  Metal class: M%d tier %d\n", s_gpu_fam, s_gpu_tier);
+}
+
+/* default persistent-layer TG count by (family, tier) — must stay under
+ * the co-residency cliff or the epoch spins starve unscheduled TGs.
+ * [fam][tier]: fam 1..5, tier base/Pro/Max/Ultra.  M4 Pro = 56 measured;
+ * others estimated at ~2.8 TG/core pending per-family measurement. */
+static uint32_t gpu_default_wq_ntg(void) {
+    static const uint32_t t[6][4] = {
+        /*            base  Pro  Max  Ultra */
+        /* unk  */  {  32,  48,  64,   96 },
+        /* M1   */  {  24,  40,  56,   80 },   /* est. */
+        /* M2   */  {  32,  48,  64,   96 },   /* est. */
+        /* M3   */  {  32,  48,  64,   96 },   /* est. */
+        /* M4   */  {  32,  56,  80,  112 },   /* Pro measured 56 */
+        /* M5   */  {  40,  64,  96,  128 },   /* est. */
+    };
+    return t[s_gpu_fam][s_gpu_tier];
+}
+
 int stratum_metal_init(const char* metallib_path,
                        const void* model_base,
                        size_t model_size) {
@@ -219,6 +381,7 @@ int stratum_metal_init(const char* metallib_path,
         fprintf(stderr, "  Metal device: %s (max threads/tg = %lu)\n",
                 [[g_device name] UTF8String],
                 (unsigned long)g_device.maxThreadsPerThreadgroup.width);
+        stratum_gpu_class_detect();
 
         g_queue = [g_device newCommandQueue];
         if (!g_queue) { fprintf(stderr, "Metal: queue creation failed\n"); return -1; }
@@ -904,6 +1067,7 @@ int stratum_metal_chain_wait(void) {
     }
     if (!g_chain_last) return -1;
     [g_chain_last waitUntilCompleted];
+    if (g_stamp_on) stamps_dump();
     int rc = g_chain_last.status == MTLCommandBufferStatusCompleted ? 0 : -1;
     g_chain_last = nil;
     return rc;
@@ -933,6 +1097,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
         embd_ty == 12 ? g_embd_gather_q4k  :
         embd_ty == 14 ? g_embd_gather_q6k  : nil;
     if (chain_slot >= 0 && (!gather_pso || !g_tok_ring)) return -1;
+    stamps_init_once();
 
     @autoreleasepool {
         static int s_cmerge = -1;
@@ -1010,7 +1175,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 : [g_queue commandBuffer];
 
         if (chain_slot >= 0) {
-            id<MTLComputeCommandEncoder> e0=[cmd computeCommandEncoder];
+            id<MTLComputeCommandEncoder> e0=new_stage_enc(cmd, 6);
             id<MTLBuffer> eb; uint64_t eo;
             if (find_chunk(embd_off,embd_tb,&eb,&eo)!=0) return -1;
             [e0 setComputePipelineState:gather_pso];
@@ -1146,21 +1311,31 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             s_mega = me ? atoi(me) : 0; }
         static uint s_wq_ntg = 0;
         if (!s_wq_ntg) { const char* e = getenv("STRATUM_GPU_WQG");
-            s_wq_ntg = e ? (uint)atoi(e) : 96u;
+            /* all wq threadgroups must be co-resident for the in-kernel
+             * epoch barriers — past the residency cliff the spins starve
+             * unscheduled TGs into watchdog-scale stalls.  Measured on
+             * M4 Pro: 48-56 peak, 64 marginal, >=80 collapse. */
+            s_wq_ntg = e ? (uint)atoi(e) : gpu_default_wq_ntg();
             if (s_wq_ntg < 16u) s_wq_ntg = 16u;
             if (s_wq_ntg > 1024u) s_wq_ntg = 1024u; }
-        const int use_wq = fuse_all && s_mega > 0 && g_wq_layer &&
-            g_fence_probe && Hd <= 128 && (Hd & 31) == 0 && Nq <= 32 && kvn <= 1024u;
         static uint s_mega_st = 0;
         if (!s_mega_st) { const char* e = getenv("STRATUM_GPU_MEGA_STAGES");
             s_mega_st = e ? (uint)atoi(e) : 4u; if (s_mega_st > 4u) s_mega_st = 4u; }
+        /* wq_layer_f32 always runs all five layer phases; partial stage
+         * coverage is not expressible (the pipeline is sequential), so the
+         * megakernel is only taken when MEGA_STAGES covers the whole layer. */
+        const int use_wq = fuse_all && s_mega > 0 && s_mega_st >= 4u &&
+            g_wq_layer && g_fence_probe &&
+            Hd <= 128 && (Hd & 31) == 0 && Nq <= 32 && kvn <= 1024u &&
+            H <= 4096 && Ff <= 4096;
         id<MTLComputeCommandEncoder> fenc = nil;
-        if (fuse_all) fenc = [cmd computeCommandEncoder];
+        if (fuse_all) fenc = new_stage_enc(cmd, 1);   /* tag1 = qkv_norm */
         for (int L=0; L<n_layers; L++) {
             const StratumMetalLayer* ly=&layers[L];
             size_t koff = ((size_t)L*kv_layer_stride + kv_slot)*4;
             id<MTLComputeCommandEncoder> enc =
-                fenc ? fenc : [cmd computeCommandEncoder];
+                fenc ? (g_stamp_on && g_cur_enc ? g_cur_enc : fenc)
+                     : [cmd computeCommandEncoder];
             if (fuse_all) {
                 int attn_did_op = 0;
                 if (use_wq) {
@@ -1199,15 +1374,35 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                     [enc setBuffer:g_wqctl offset:0 atIndex:18];
                     [enc setBuffer:g_fq offset:0 atIndex:20];
                     [enc setBuffer:g_fk offset:0 atIndex:21];
+                    { /* next layer's q/k/v for cross-layer prefetch;
+                       * last layer refetches its own (harmless) */
+                      const StratumMetalLayer* nl =
+                          (L + 1 < n_layers) ? &layers[L + 1] : ly;
+                      id<MTLBuffer> nq,nbk,nv; uint64_t noq,nok,nov;
+                      if (find_chunk(nl->q_off,nl->q_tb,&nq,&noq)!=0) return -1;
+                      if (find_chunk(nl->k_off,nl->k_tb,&nbk,&nok)!=0) return -1;
+                      if (find_chunk(nl->v_off,nl->v_tb,&nv,&nov)!=0) return -1;
+                      [enc setBuffer:nq offset:noq atIndex:22];
+                      [enc setBuffer:nbk offset:nok atIndex:23];
+                      [enc setBuffer:nv offset:nov atIndex:24]; }
                     struct wq_params_oc { uint32_t H,Hd,Nq,Nk,Ff,kvn,kvs,
                                           rope_dim,neox; float scale,eps;
-                                          uint32_t vq6,dq6,ntg,nstage; } wp;
+                                          uint32_t vq6,dq6,ntg,nstage,npf; } wp;
                     wp.H=Hu; wp.Hd=Hdu; wp.Nq=Nqu; wp.Nk=Nku; wp.Ff=Ffu;
                     wp.kvn=kvn; wp.kvs=(uint32_t)kv_slot;
                     wp.rope_dim=rdu; wp.neox=_rneox; wp.scale=scale;
                     wp.eps=rms_eps;
                     wp.vq6=(ly->v_ty==14)?1u:0u; wp.dq6=(ly->down_ty==14)?1u:0u;
                     wp.ntg=s_wq_ntg; wp.nstage=s_mega_st;
+                    { static uint s_wq_pf = 0;
+                      if (!s_wq_pf) { const char* e = getenv("STRATUM_GPU_WQP");
+                          /* measured net-negative on M4 Pro: prefetch TGs
+                           * steal compute slots and the extra stream does
+                           * not raise effective bandwidth — small-GEMV
+                           * stages are stream-pattern-limited, not
+                           * latency-limited.  Off by default. */
+                          s_wq_pf = e ? (uint)atoi(e) : 0u; }
+                      wp.npf = s_wq_pf; }
                     [enc setBytes:&wp length:sizeof(wp) atIndex:19];
                     [enc dispatchThreadgroups:MTLSizeMake(s_wq_ntg,1,1)
                         threadsPerThreadgroup:MTLSizeMake(256,1,1)];
@@ -1240,7 +1435,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBuffer:g_fk offset:0 atIndex:14];   /* raw current-k shadow */
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((_nt+15)/16),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
-                BAR;
+                ENC_CUT(enc, 2);   /* end qkv/tag1, open attn/tag2 */
                 { id<MTLBuffer> gq,gk; uint64_t goq,gok;
                 if (find_chunk(ly->qnorm_off,(size_t)Hd*4,&gq,&goq)!=0) return -1;
                 if (find_chunk(ly->knorm_off,(size_t)Hd*4,&gk,&gok)!=0) return -1;
@@ -1330,7 +1525,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 [enc setBuffer:g_fk offset:0 atIndex:17];
                 [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)Nq,1,1)
                     threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } }
-                BAR; }
+                ENC_CUT(enc, 3); }
                 if ((!use_wq || s_mega_st < 2u) && !attn_did_op) {
                 { id<MTLBuffer> wb; uint64_t wo;
                   if (find_chunk(ly->o_off,ly->o_tb,&wb,&wo)!=0) return -1;
@@ -1342,7 +1537,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&_K length:4 atIndex:3]; [enc setBytes:&_N length:4 atIndex:4];
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
-                BAR; }
+                ENC_CUT(enc, 4); }
                 if (!use_wq || s_mega_st < 3u) {
                 { id<MTLBuffer> wbg,wbu,gb; uint64_t wog,wou,go;
                   if (find_chunk(ly->gate_off,ly->gate_tb,&wbg,&wog)!=0) return -1;
@@ -1361,7 +1556,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&_nf length:4 atIndex:8];
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((2*Ff+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; } }
-                BAR;
+                ENC_CUT(enc, 5);
                 { id<MTLBuffer> wb; uint64_t wo;
                   if (find_chunk(ly->down_off,ly->down_tb,&wb,&wo)!=0) return -1;
                   [enc setComputePipelineState:(ly->down_ty == 14 ? g_q6k_swires : g_q4k_swires)];
@@ -1373,7 +1568,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                   [enc setBytes:&_K length:4 atIndex:4]; [enc setBytes:&_N length:4 atIndex:5];
                   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((H+31)/32),1,1)
                       threadsPerThreadgroup:MTLSizeMake(256,1,1)]; }
-                BAR;
+                ENC_CUT(enc, (L+1<n_layers)?1u:7u);   /* next qkv or lm_head */
                 continue;
             }
             /* layer input norm: layer 0 only — later layers' xn comes from
@@ -1495,8 +1690,10 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             ADDNORM(g_ftmp, nxt_gain);
             [enc endEncoding];
         }
-        { id<MTLComputeCommandEncoder> enc = fenc ? fenc : [cmd computeCommandEncoder];
-        if (fenc) BAR;
+        { id<MTLComputeCommandEncoder> enc =
+            fenc ? (g_stamp_on && g_cur_enc ? g_cur_enc : fenc)
+                 : [cmd computeCommandEncoder];
+        if (fenc && !g_stamp_on) BAR;
 
         /* V-opt: fused argmax on GPU — skip 128KB logits transfer to CPU.
          * Only when caller passes logits_out=NULL (greedy decode). */
@@ -1535,7 +1732,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
             const uint32_t ntl = (uint32_t)(V / 32u);
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)ntl,1,1)
                 threadsPerThreadgroup:MTLSizeMake(256,1,1)];
-            BAR;
+            ENC_CUT(enc, 8);
             [enc setComputePipelineState:g_top1_reduce_tiles];
             [enc setBuffer:g_fvals offset:0 atIndex:0];
             [enc setBuffer:g_fidxs offset:0 atIndex:1];
@@ -1550,7 +1747,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
                 threadsPerThreadgroup:MTLSizeMake(256,1,1)];
             }
             if (!use_top1 && (!logits_out || chain_slot >= 0) && g_argmax_b) {
-                BAR;
+                ENC_CUT(enc, 8);
                 if (g_argmax_tiles && g_top1_reduce_tiles && g_fvals && g_fidxs) {
                     uint32_t nt = 64u;
                     [enc setComputePipelineState:g_argmax_tiles];
@@ -1603,7 +1800,7 @@ int stratum_metal_forward(const StratumMetalLayer* layers, int n_layers,
         } else {
             MM(lm_is_q6 ? 14 : 12, lm_off, lm_tb, g_fxn, g_flog, 0, V, H);
         }
-        [enc endEncoding]; }
+        [enc endEncoding]; g_cur_enc = nil; }
 
         struct timespec _d0,_d1; clock_gettime(CLOCK_MONOTONIC,&_d0);
 
@@ -1662,6 +1859,60 @@ static id<MTLBuffer> g_btok=nil;
 static id<MTLBuffer> g_btile_vals=nil, g_btile_idxs=nil;
 static size_t g_bcap_h=0, g_bcap_ff=0, g_bcap_qh=0, g_bcap_kh=0,
               g_bcap_v=0, g_bkv_cap=0, g_bcap_idx=0, g_bcap_tiles=0;
+
+/* llama.cpp #29869: few-row Q4_K, dequant once, 8 output rows share the
+ * staged x tile. Kernel q4k_sgemv_rowtiled_batched. B=1 stays on GEMV. */
+static int q4k_fewrow_ok(int B) {
+    static int off = -1;
+    if (off < 0) {
+        const char* e = getenv("STRATUM_GPU_ROWTILED_OFF");
+        off = (e && atoi(e) != 0) ? 1 : 0;
+    }
+    return !off && B >= 2 && B <= 16 && g_q4k_rowtiled_b != nil;
+}
+
+static int q6k_fewrow_ok(int B) {
+    static int off = -1;
+    if (off < 0) {
+        const char* e = getenv("STRATUM_GPU_ROWTILED_OFF");
+        off = (e && atoi(e) != 0) ? 1 : 0;
+    }
+    return !off && B >= 2 && B <= 16 && g_q6k_rowtiled_b16 != nil;
+}
+
+static void dispatch_q6k_fewrow(id<MTLComputeCommandEncoder> enc,
+                                id<MTLBuffer> wbuf, uint64_t woff,
+                                id<MTLBuffer> xbuf, NSUInteger xoff,
+                                id<MTLBuffer> ybuf, NSUInteger yoff,
+                                int N, int K, int B) {
+    uint32_t K_u32 = (uint32_t)K, N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+    [enc setComputePipelineState:g_q6k_rowtiled_b16];
+    [enc setBuffer:wbuf offset:woff atIndex:0];
+    [enc setBuffer:xbuf offset:xoff atIndex:1];
+    [enc setBuffer:ybuf offset:yoff atIndex:2];
+    [enc setBytes:&K_u32 length:sizeof(uint32_t) atIndex:3];
+    [enc setBytes:&N_u32 length:sizeof(uint32_t) atIndex:4];
+    [enc setBytes:&B_u32 length:sizeof(uint32_t) atIndex:5];
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 7) / 8), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
+
+static void dispatch_q4k_fewrow(id<MTLComputeCommandEncoder> enc,
+                                id<MTLBuffer> wbuf, uint64_t woff,
+                                id<MTLBuffer> xbuf, NSUInteger xoff,
+                                id<MTLBuffer> ybuf, NSUInteger yoff,
+                                int N, int K, int B) {
+    uint32_t K_u32 = (uint32_t)K, N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+    [enc setComputePipelineState:g_q4k_rowtiled_b];
+    [enc setBuffer:wbuf offset:woff atIndex:0];
+    [enc setBuffer:xbuf offset:xoff atIndex:1];
+    [enc setBuffer:ybuf offset:yoff atIndex:2];
+    [enc setBytes:&K_u32 length:sizeof(uint32_t) atIndex:3];
+    [enc setBytes:&N_u32 length:sizeof(uint32_t) atIndex:4];
+    [enc setBytes:&B_u32 length:sizeof(uint32_t) atIndex:5];
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 7) / 8), 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+}
 
 int stratum_metal_forward_batched(const StratumMetalLayer* layers, int n_layers,
                           unsigned long long out_norm_off,
@@ -1816,6 +2067,19 @@ int stratum_metal_forward_batched(const StratumMetalLayer* layers, int n_layers,
         /* batched matmul: x[B][Kdim] -> y[B][Nrows], weight read once per row,
          * dequant amortized across B columns. */
         #define MMB(ty, woff, wtb, xbuf, ybuf, Nrows, Kdim) do { \
+            if ((ty)==12 && q4k_fewrow_ok(B)) { \
+                id<MTLBuffer> _wb; uint64_t _wo; \
+                if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
+                id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
+                dispatch_q4k_fewrow(_e, _wb, _wo, (xbuf), 0, (ybuf), 0, (Nrows), (Kdim), B); \
+                [_e endEncoding]; \
+            } else if ((ty)==14 && q6k_fewrow_ok(B)) { \
+                id<MTLBuffer> _wb; uint64_t _wo; \
+                if (find_chunk((woff),(wtb),&_wb,&_wo)!=0) return -1; \
+                id<MTLComputeCommandEncoder> _e=[cmd computeCommandEncoder]; \
+                dispatch_q6k_fewrow(_e, _wb, _wo, (xbuf), 0, (ybuf), 0, (Nrows), (Kdim), B); \
+                [_e endEncoding]; \
+            } else { \
             int _q4g2 = (ty)==12 && g_q4k_sgemv_bp_g2 && !getenv("STRATUM_GPU_BATCH_Q4_G2_DISABLE") && (B >= 5 || getenv("STRATUM_GPU_BATCH_Q4_G2")); \
             id<MTLComputePipelineState> _p=use_simdb ? PSO_SIMDB(ty) : (use_bparallel ? (_q4g2 ? g_q4k_sgemv_bp_g2 : PSO_BPAR(ty)) : PSO_TYB(ty)); if(!_p) return -1; \
             id<MTLBuffer> _wb; uint64_t _wo; \
@@ -1837,6 +2101,7 @@ int stratum_metal_forward_batched(const StratumMetalLayer* layers, int n_layers,
             else \
                 [_e dispatchThreadgroups:MTLSizeMake((NSUInteger)(Nrows),1,1) threadsPerThreadgroup:MTLSizeMake(64,1,1)]; \
             [_e endEncoding]; \
+            } \
         } while(0)
         #define MMB_DUAL_Q4(woff0, wtb0, woff1, wtb1, xbuf, ybuf0, ybuf1, Nrows, Kdim) do { \
             id<MTLComputePipelineState> _pdual = (getenv("STRATUM_GPU_BATCH_FFN_FUSED_V2") && g_q4k_dual_sgemv_bp_v2) ? g_q4k_dual_sgemv_bp_v2 : g_q4k_dual_sgemv_bp; \
@@ -2547,7 +2812,8 @@ int stratum_metal_q4k_sgemv_batched(uint64_t weight_offset,
                                     int N, int K, int B) {
     @autoreleasepool {
         if (B < 1 || B > 32) return -1;
-        id<MTLComputePipelineState> bpso = g_q4k_sgemv_b[B];
+        int use_few = q4k_fewrow_ok(B);
+        id<MTLComputePipelineState> bpso = use_few ? g_q4k_rowtiled_b : g_q4k_sgemv_b[B];
         if (!bpso) return -1;
         size_t tensor_bytes = ((size_t)N * (size_t)K / 256) * 144;
         id<MTLBuffer> wbuf; uint64_t woff;
@@ -2567,15 +2833,19 @@ int stratum_metal_q4k_sgemv_batched(uint64_t weight_offset,
         uint32_t K_u32 = (uint32_t)K, N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
         id<MTLCommandBuffer> cmd = [g_queue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-        [enc setComputePipelineState:bpso];
-        [enc setBuffer:wbuf   offset:woff atIndex:0];
-        [enc setBuffer:g_xbuf offset:0    atIndex:1];
-        [enc setBuffer:g_ybuf offset:0    atIndex:2];
-        [enc setBytes:&K_u32 length:sizeof(uint32_t) atIndex:3];
-        [enc setBytes:&N_u32 length:sizeof(uint32_t) atIndex:4];
-        [enc setBytes:&B_u32 length:sizeof(uint32_t) atIndex:5];
-        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
-              threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        if (use_few) {
+            dispatch_q4k_fewrow(enc, wbuf, woff, g_xbuf, 0, g_ybuf, 0, N, K, B);
+        } else {
+            [enc setComputePipelineState:bpso];
+            [enc setBuffer:wbuf   offset:woff atIndex:0];
+            [enc setBuffer:g_xbuf offset:0    atIndex:1];
+            [enc setBuffer:g_ybuf offset:0    atIndex:2];
+            [enc setBytes:&K_u32 length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32 length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&B_u32 length:sizeof(uint32_t) atIndex:5];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
+                  threadsPerThreadgroup:MTLSizeMake(64,1,1)];
+        }
         [enc endEncoding];
         [cmd commit];
         [cmd waitUntilCompleted];
@@ -3766,18 +4036,41 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
                     threadsPerThreadgroup:MTLSizeMake(bptg,1,1)];
             }
             [enc endEncoding];
+        } else if (gguf_type == 12 && q4k_fewrow_ok(B)) {
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            dispatch_q4k_fewrow(enc, wbuf, woff,
+                                xdirect ? xdirect : g_ncb_xbuf,
+                                xdirect ? 0 : (NSUInteger)xoff,
+                                ydirect ? ydirect : g_ncb_ybuf,
+                                ydirect ? 0 : (NSUInteger)yoff,
+                                N, K, B);
+            [enc endEncoding];
+        } else if (gguf_type == 14 && q6k_fewrow_ok(B)) {
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            dispatch_q6k_fewrow(enc, wbuf, woff,
+                                xdirect ? xdirect : g_ncb_xbuf,
+                                xdirect ? 0 : (NSUInteger)xoff,
+                                ydirect ? ydirect : g_ncb_ybuf,
+                                ydirect ? 0 : (NSUInteger)yoff,
+                                N, K, B);
+            [enc endEncoding];
         } else if (B > 1 && bpso) {
-            for (int b = 0; b < B; b++) {
-                id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
-                [enc setComputePipelineState:pso];
-                [enc setBuffer:wbuf      offset:woff atIndex:0];
-                [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf) offset:(xdirect ? (size_t)b*K*sizeof(float) : (size_t)xoff + (size_t)b*K*sizeof(float)) atIndex:1];
-                [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf) offset:(ydirect ? (size_t)b*N*sizeof(float) : (size_t)yoff + (size_t)b*N*sizeof(float)) atIndex:2];
-                [enc setBytes:&K_u32     length:sizeof(uint32_t) atIndex:3];
-                [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N,1,1)
-                    threadsPerThreadgroup:MTLSizeMake(64,1,1)];
-                [enc endEncoding];
-            }
+            /* One batched dispatch. The old path issued B single-row GEMVs
+             * (llama.cpp #29869: spec/batch then slower than serial). */
+            uint32_t N_u32 = (uint32_t)N, B_u32 = (uint32_t)B;
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            [enc setComputePipelineState:bpso];
+            [enc setBuffer:wbuf offset:woff atIndex:0];
+            [enc setBuffer:(xdirect ? xdirect : g_ncb_xbuf)
+                    offset:(xdirect ? 0 : (NSUInteger)xoff) atIndex:1];
+            [enc setBuffer:(ydirect ? ydirect : g_ncb_ybuf)
+                    offset:(ydirect ? 0 : (NSUInteger)yoff) atIndex:2];
+            [enc setBytes:&K_u32 length:sizeof(uint32_t) atIndex:3];
+            [enc setBytes:&N_u32 length:sizeof(uint32_t) atIndex:4];
+            [enc setBytes:&B_u32 length:sizeof(uint32_t) atIndex:5];
+            [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)N, 1, 1)
+                threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+            [enc endEncoding];
         }
         return 0;
     }
@@ -3900,6 +4193,16 @@ int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf
             [enc setBytes:&B_u32     length:sizeof(uint32_t) atIndex:5];
             [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)((N + 15) / 16),1,1)
                 threadsPerThreadgroup:MTLSizeMake(256,1,1)];
+            [enc endEncoding];
+        } else if (gguf_type == 12 && q4k_fewrow_ok(B)) {
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            dispatch_q4k_fewrow(enc, wbuf, woff, g_ncb_xbuf, (NSUInteger)xoff,
+                                g_ncb_ybuf, (NSUInteger)yoff, N, K, B);
+            [enc endEncoding];
+        } else if (gguf_type == 14 && q6k_fewrow_ok(B)) {
+            id<MTLComputeCommandEncoder> enc = [g_ncb_cmd computeCommandEncoder];
+            dispatch_q6k_fewrow(enc, wbuf, woff, g_ncb_xbuf, (NSUInteger)xoff,
+                                g_ncb_ybuf, (NSUInteger)yoff, N, K, B);
             [enc endEncoding];
         } else if (B > 1 && gguf_type == 12 && B >= 2 && B <= 8
                    && s_q4k_coal && g_q4k_coal_mb[B]

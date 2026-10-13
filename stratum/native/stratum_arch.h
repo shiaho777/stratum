@@ -16,8 +16,10 @@
 #define STRATUM_ARCH_H
 
 #include "stratum_gguf.h"
+#include "stratum_rope.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 /* ------------------------------------------------------------------ */
 /*  Generic model config — superset of all supported architectures     */
@@ -45,6 +47,7 @@ typedef struct {
 
     /* Context */
     int  context_length;    /* context_length (trained max positions; 0 = unknown) */
+    StratumRope rope;       /* unscaled unless the file or STRATUM_ROPE_SCALING says so */
 
     /* Attention type pattern (for hybrid architectures) */
     /* If full_attn_stride > 0: layer N is full-attention when (N+1)%stride==0
@@ -183,6 +186,79 @@ static inline const StratumArch* stratum_find_arch(const char* arch_name) {
     }
 
 /* ------------------------------------------------------------------ */
+/*  RoPE scaling — GGUF keys, then STRATUM_ROPE_* / STRATUM_YARN_*      */
+/* ------------------------------------------------------------------ */
+
+static inline int stratum_meta_f32(const Gguf* g, const char* key, float* out) {
+    if (gguf_get_f32(g, key, out) == 0) return 0;
+    const GgufKV* kv = gguf_find_kv(g, key);
+    if (!kv || kv->vtype != GGUF_VAL_FLOAT64 || !kv->bytes) return -1;
+    double d;
+    memcpy(&d, kv->bytes, 8);
+    *out = (float)d;
+    return 0;
+}
+
+static inline void stratum_rope_load(const Gguf* g, StratumConfig* c) {
+    char key[256];
+    stratum_rope_defaults(&c->rope, c->rope_theta);
+
+    snprintf(key, sizeof(key), "%s.rope.scaling.type", c->arch);
+    char* ty = gguf_get_string_dup(g, key);
+    if (ty) {
+        if (strcmp(ty, "yarn") == 0) c->rope.type = STRATUM_ROPE_YARN;
+        else if (strcmp(ty, "linear") == 0) c->rope.type = STRATUM_ROPE_LINEAR;
+        else c->rope.type = STRATUM_ROPE_NONE;
+        free(ty);
+    }
+    snprintf(key, sizeof(key), "%s.rope.scaling.factor", c->arch);
+    {
+        float f = 0.0f;
+        if (stratum_meta_f32(g, key, &f) == 0 && f > 0.0f) c->rope.factor = f;
+    }
+    snprintf(key, sizeof(key), "%s.rope.scaling.original_context_length", c->arch);
+    {
+        uint32_t u = 0;
+        if (gguf_get_u32(g, key, &u) != 0) {
+            snprintf(key, sizeof(key), "%s.rope.scaling.orig_ctx_len", c->arch);
+            gguf_get_u32(g, key, &u);
+        }
+        if (u > 0) c->rope.orig_ctx = (int)u;
+    }
+    snprintf(key, sizeof(key), "%s.rope.scaling.attn_factor", c->arch);
+    stratum_meta_f32(g, key, &c->rope.attn_factor);
+    snprintf(key, sizeof(key), "%s.rope.scaling.beta_fast", c->arch);
+    stratum_meta_f32(g, key, &c->rope.beta_fast);
+    snprintf(key, sizeof(key), "%s.rope.scaling.beta_slow", c->arch);
+    stratum_meta_f32(g, key, &c->rope.beta_slow);
+
+    const char* sc = getenv("STRATUM_ROPE_SCALING");
+    if (sc && sc[0]) {
+        if (strcmp(sc, "yarn") == 0) c->rope.type = STRATUM_ROPE_YARN;
+        else if (strcmp(sc, "linear") == 0) c->rope.type = STRATUM_ROPE_LINEAR;
+        else c->rope.type = STRATUM_ROPE_NONE;
+    }
+    const char* sf = getenv("STRATUM_ROPE_SCALE");
+    if (sf && sf[0]) {
+        float f = (float)atof(sf);
+        if (f > 0.0f) c->rope.factor = f;
+    }
+    const char* yo = getenv("STRATUM_YARN_ORIG");
+    if (yo && yo[0]) {
+        int v = atoi(yo);
+        if (v > 0) c->rope.orig_ctx = v;
+    }
+    const char* bf = getenv("STRATUM_YARN_BETA_FAST");
+    if (bf && bf[0]) c->rope.beta_fast = (float)atof(bf);
+    const char* bs = getenv("STRATUM_YARN_BETA_SLOW");
+    if (bs && bs[0]) c->rope.beta_slow = (float)atof(bs);
+    const char* ex = getenv("STRATUM_YARN_EXT");
+    if (ex && ex[0]) c->rope.ext_factor = (float)atof(ex);
+    const char* af = getenv("STRATUM_YARN_ATTN");
+    if (af && af[0]) c->rope.attn_factor = (float)atof(af);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Generic config loader — reads GGUF metadata into StratumConfig     */
 /* ------------------------------------------------------------------ */
 
@@ -311,6 +387,7 @@ static inline int stratum_load_config(const Gguf* g, StratumConfig* c) {
 #undef NEED_U32
 #undef OPT_U32
 #undef OPT_F32
+    stratum_rope_load(g, c);
     return 0;
 }
 

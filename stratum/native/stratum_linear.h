@@ -38,6 +38,7 @@
 #include <string.h>
 #include <math.h>
 #include <sys/sysctl.h>
+#include <ctype.h>
 
 #ifdef STRATUM_USE_METAL
 #include "stratum_metal.h"
@@ -57,6 +58,9 @@ typedef struct {
 
     /* SDOT (ARM dotprod) — default ON for Q4_K/Q6_K */
     int use_sdot;
+
+    /* i8mm/SMMLA (FEAT_I8MM) Q4_K multix — runtime-probed; STRATUM_I8MM_OFF disables */
+    int use_i8mm;
 
     /* AMX W16 multiseq path (type-43 tensors); STRATUM_AMX_W16_OFF=1 disables */
     int amx_w16_off;
@@ -90,8 +94,28 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
     /* CPU detection */
     int ncpu = 0; size_t l = sizeof(ncpu);
     if (sysctlbyname("hw.physicalcpu", &ncpu, &l, NULL, 0) != 0 || ncpu < 1) ncpu = 8;
-    int pcpu = 0; size_t pl = sizeof(pcpu);
-    if (sysctlbyname("hw.perflevel0.physicalcpu", &pcpu, &pl, NULL, 0) != 0 || pcpu < 1) pcpu = ncpu;
+    /* llama.cpp #29784: chips with two full-throughput clusters (M5 Max:
+     * "Super" 6 + "Performance" 12) need the sum over every perf level —
+     * reading only perflevel0 undercounts (their fix: PP +2.18x, TG
+     * +1.48x on M5 Max).  Sum all levels named super/performance; if none
+     * match, fall back to perflevel0 then physicalcpu. */
+    int pcpu = 0;
+    for (int i = 0; i < 8; i++) {
+        char key[64], nm[64] = {0}; size_t nl = sizeof(nm);
+        snprintf(key, sizeof key, "hw.perflevel%d.name", i);
+        if (sysctlbyname(key, nm, &nl, NULL, 0) != 0 || !nm[0]) break;
+        char lo[64]; size_t j = 0;
+        for (; nm[j] && j + 1 < sizeof lo; j++) lo[j] = (char)tolower((unsigned char)nm[j]);
+        lo[j] = 0;
+        if (!strstr(lo, "super") && !strstr(lo, "performance")) continue;
+        int c = 0; size_t cl = sizeof(c);
+        snprintf(key, sizeof key, "hw.perflevel%d.physicalcpu", i);
+        if (sysctlbyname(key, &c, &cl, NULL, 0) == 0) pcpu += c;
+    }
+    if (pcpu < 1) {
+        size_t pl = sizeof(pcpu);
+        if (sysctlbyname("hw.perflevel0.physicalcpu", &pcpu, &pl, NULL, 0) != 0 || pcpu < 1) pcpu = ncpu;
+    }
 
     const char* env_nc = getenv("STRATUM_NCHUNKS");
     if (env_nc) {
@@ -112,6 +136,10 @@ static inline void stratum_linear_init(const uint8_t* mmap_base, size_t mmap_siz
       const char* se  = getenv("STRATUM_SDOT");
       g_st.use_sdot = se ? (atoi(se) != 0) : (noe == NULL); }
     g_st.amx_w16_off = (getenv("STRATUM_AMX_W16_OFF") != NULL);
+    {   int i8 = 0; size_t i8l = sizeof(i8);
+        if (sysctlbyname("hw.optional.arm.FEAT_I8MM", &i8, &i8l, NULL, 0) != 0)
+            i8 = 0;
+        g_st.use_i8mm = i8 && getenv("STRATUM_I8MM_OFF") == NULL; }
 
     /* GPU */
     g_st.use_metal = (getenv("STRATUM_GPU") != NULL) ? 1 : 0;
@@ -255,7 +283,29 @@ static void* st_par_worker(void* a) {
 }
 
 static inline void st_par_run(int B, void (^blk)(int)) {
-    if (st_par_dead || B < 2 || st_par_tls ||
+    /* Tiny GGUFs lose to pool wake-up. Measured warm wall on the generated
+     * hybrid (mmap 0.6 MB), 8 tokens, argmax unchanged: pool median 0.0064s,
+     * STRATUM_PAR_OFF median 0.0049s, no overlap across 8 interleaved reps.
+     * The same split on the tiny llama was 0.0059s vs 0.0045s. Only mmaps
+     * at or under 4 MB take this path; larger models keep the pool.
+     * STRATUM_PAR_FORCE=1 restores the pool so the before-number stays
+     * runnable. STRATUM_PAR_OFF still forces serial at any size. */
+    static int force_pool = -1;
+    if (force_pool < 0) {
+        const char* f = getenv("STRATUM_PAR_FORCE");
+        force_pool = (f && atoi(f) != 0) ? 1 : 0;
+    }
+    int small_serial = !force_pool && g_st.mmap_size > 0
+                       && g_st.mmap_size <= (size_t)4 * 1024 * 1024;
+    if (small_serial) {
+        static int announced = 0;
+        if (!announced) {
+            announced = 1;
+            fprintf(stderr, "  small-model matmul: serial "
+                    "(mmap <= 4 MB; STRATUM_PAR_FORCE=1 restores the pool)\n");
+        }
+    }
+    if (st_par_dead || B < 2 || st_par_tls || small_serial ||
         !atomic_compare_exchange_strong_explicit(&st_par_busy, &(int){0}, 1,
                                                  memory_order_acquire,
                                                  memory_order_relaxed) ||
@@ -443,7 +493,15 @@ static inline void st_linear_f16(const GgufTensor* w, const float* x, float* y, 
     ST_PAR_ROWS(N, {
         const uint16_t* row = raw + (size_t)r * K;
         double acc = 0.0;
-        for (int c = 0; c < K; c++) acc += (double)q4k_fp16_to_fp32(row[c]) * x[c];
+        int c = 0;
+        for (; c + 3 < K; c += 4) {
+            acc += (double)q4k_fp16_to_fp32(row[c])     * (double)x[c];
+            acc += (double)q4k_fp16_to_fp32(row[c + 1]) * (double)x[c + 1];
+            acc += (double)q4k_fp16_to_fp32(row[c + 2]) * (double)x[c + 2];
+            acc += (double)q4k_fp16_to_fp32(row[c + 3]) * (double)x[c + 3];
+        }
+        for (; c < K; c++)
+            acc += (double)q4k_fp16_to_fp32(row[c]) * (double)x[c];
         y[r] = (float)acc;
     });
 }
@@ -503,6 +561,74 @@ static inline int st_linear_dispatch(const GgufTensor* w, const float* x, float*
         g_st.typecalls[_t]++;
     }
     return _rc;
+}
+
+/* llama.cpp MUL_MAT+ADD: y[r] = add[r] + Wx[r] in the same row loop.
+ * add and y must not alias. Metal still does two steps. */
+static inline int st_linear_dispatch_add(const GgufTensor* w, const float* x,
+                                         const float* add, float* y, int N, int K) {
+    if (!add) return st_linear_dispatch(w, x, y, N, K);
+#ifdef STRATUM_USE_METAL
+    if (g_st.use_metal && w->offset > 0) {
+        if (st_linear_dispatch(w, x, y, N, K) != 0) return -1;
+        for (int i = 0; i < N; i++) y[i] += add[i];
+        return 0;
+    }
+#endif
+    switch ((GgmlType)w->type) {
+        case GGML_TYPE_Q4_K:
+#if defined(__ARM_FEATURE_DOTPROD)
+            if (g_st.use_sdot) {
+                int nb = K / 32;
+                int8_t* xq = (int8_t*)alloca((size_t)K);
+                float*  xs = (float*)alloca((size_t)nb * sizeof(float));
+                int32_t* xsum = (int32_t*)alloca((size_t)nb * sizeof(int32_t));
+                q4k_quantize_x_q8(x, K, xq, xs);
+                for (int g = 0; g < nb; g++) xsum[g] = q4k_sum_i8_32(xq + (size_t)g * 32);
+                ST_PAR_ROWS(N, y[r] = add[r] + q4k_dot_row_sdot_f(st_q4k_row_ptr(w, K, r), K, xq, xs, xsum));
+                return 0;
+            }
+#endif
+            ST_PAR_ROWS(N, y[r] = add[r] + q4k_dot_row_neon(st_q4k_row_ptr(w, K, r), K, x));
+            return 0;
+        case GGML_TYPE_Q6_K:
+#if defined(__ARM_FEATURE_DOTPROD)
+            if (g_st.use_sdot) {
+                int ng = K / 16;
+                int8_t* xq = (int8_t*)alloca((size_t)K);
+                float*  xs = (float*)alloca((size_t)ng * sizeof(float));
+                int32_t* xs16 = (int32_t*)alloca((size_t)ng * sizeof(int32_t));
+                q6k_quantize_x_q8_g16(x, K, xq, xs);
+                q6k_xsum16_i8(xq, ng, xs16);
+                ST_PAR_ROWS(N, y[r] = add[r] + q6k_dot_row_sdot_f(st_q6k_row_ptr(w, K, r), K, xq, xs, xs16));
+                return 0;
+            }
+#endif
+            ST_PAR_ROWS(N, y[r] = add[r] + q6k_dot_row_neon(st_q6k_row_ptr(w, K, r), K, x));
+            return 0;
+        case GGML_TYPE_F16: {
+            const uint16_t* raw = (const uint16_t*)(g_st.mmap_base + w->offset);
+            ST_PAR_ROWS(N, {
+                const uint16_t* row = raw + (size_t)r * K;
+                double acc = 0.0;
+                int c = 0;
+                for (; c + 3 < K; c += 4) {
+                    acc += (double)q4k_fp16_to_fp32(row[c])     * (double)x[c];
+                    acc += (double)q4k_fp16_to_fp32(row[c + 1]) * (double)x[c + 1];
+                    acc += (double)q4k_fp16_to_fp32(row[c + 2]) * (double)x[c + 2];
+                    acc += (double)q4k_fp16_to_fp32(row[c + 3]) * (double)x[c + 3];
+                }
+                for (; c < K; c++)
+                    acc += (double)q4k_fp16_to_fp32(row[c]) * (double)x[c];
+                y[r] = add[r] + (float)acc;
+            });
+            return 0;
+        }
+        default:
+            if (st_linear_dispatch(w, x, y, N, K) != 0) return -1;
+            for (int i = 0; i < N; i++) y[i] += add[i];
+            return 0;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -590,6 +716,9 @@ static inline void st_linear_multix(const GgufTensor* w,
                                     const float* const* xs,
                                     float* const* ys,
                                     int B, int N, int K) {
+    int _tm = (getenv("STRATUM_TYPETIME") != NULL);
+    struct timespec _a = {0}, _b = {0};
+    if (_tm) clock_gettime(CLOCK_MONOTONIC, &_a);
     if (w->type == GGML_TYPE_Q4K_W16 || w->type == GGML_TYPE_Q6K_W16) {
 #if defined(__ARM_NEON) || defined(__aarch64__)
         if (!g_st.amx_w16_off && B >= 2 && (N % 32) == 0 && (K % 256) == 0
@@ -626,9 +755,16 @@ static inline void st_linear_multix(const GgufTensor* w,
             size_t need_x = (size_t)ng * (size_t)Bc_max * 32;
             int8_t*  st_xpack   = (int8_t*) alloca(need_x);
             /* Q6_K consumes per-16 activation scales (2*ng entries per
-             * stream); Q4_K uses per-32 (ng). Allocate for the max. */
-            float*   st_scpack  = (float*)  alloca((size_t)2 * ng * Bc_max * sizeof(float));
-            int32_t* st_sumpack = (int32_t*)alloca((size_t)ng * Bc_max * sizeof(int32_t));
+             * stream); Q4_K uses per-32 (ng). Allocate for the max.
+             * (+4 pad: the i8mm merge loads a full 4-wide tail vector.) */
+            float*   st_scpack  = (float*)  alloca((size_t)2 * ng * Bc_max * sizeof(float) + 32);
+            int32_t* st_sumpack = (int32_t*)alloca((size_t)ng * Bc_max * sizeof(int32_t) + 32);
+            /* i8mm/SMMLA path: activations repacked into the 2x2-operand
+             * colpair layout once per 16-stream chunk. Rows4 shares each
+             * 64B operand across 8 SMMLA accumulations. */
+            int8_t* st_xsm = NULL;
+            if (g_st.use_i8mm && is_q4)
+                st_xsm = (int8_t*)alloca((size_t)ng * ((Bc_max + 1) / 2) * 64);
             {
                 for (int s0 = 0; s0 < B; s0 += 16) {
                     int Bc = (B - s0 < 16) ? (B - s0) : 16;
@@ -658,7 +794,70 @@ static inline void st_linear_multix(const GgufTensor* w,
                                 st_scpack[(size_t)g * Bc + s] = xs_t[g];
                         }
                     }
+                    /* i8mm: repack this chunk's activations into the
+                     * SMMLA colpair layout and take the rows4 kernel. */
+                    int i8 = st_xsm && Bc >= 4;
+                    if (i8) {
+                        int ncp = (Bc + 1) / 2;
+                        for (int g = 0; g < ng; g++)
+                            for (int cp = 0; cp < ncp; cp++) {
+                                const int8_t* x0 = st_xpack
+                                    + ((size_t)g * Bc + cp * 2) * 32;
+                                const int8_t* x1 = (cp * 2 + 1 < Bc)
+                                    ? st_xpack + ((size_t)g * Bc + cp * 2 + 1) * 32
+                                    : NULL;
+                                int8_t* dst = st_xsm + ((size_t)g * ncp + cp) * 64;
+                                for (int kq = 0; kq < 4; kq++)
+                                    vst1q_s8(dst + kq * 16,
+                                        vcombine_s8(vld1_s8(x0 + kq * 8),
+                                                    x1 ? vld1_s8(x1 + kq * 8)
+                                                       : vdup_n_s8(0)));
+                            }
+                    }
                     int np = N / 2, tail = N & 1;
+                    if (i8) {
+                        int np4 = N / 4, rem = N - np4 * 4;
+                        int _T = g_st.nchunks; if (_T > np4) _T = np4; if (_T < 1) _T = 1;
+                        int _chunk = (np4 + _T - 1) / _T;
+                        st_par_run(_T, ^(int _t) {
+                                int _s = (int)_t * _chunk, _e = _s + _chunk;
+                                if (_e > np4) _e = np4;
+                                for (int p = _s; p < _e; p++) {
+                                    int r = p * 4;
+                                    float o0[ST_MS_BMAX], o1[ST_MS_BMAX],
+                                          o2[ST_MS_BMAX], o3[ST_MS_BMAX];
+                                    q4k_dot_rows4_i8mm_multix_pack(
+                                        st_q4k_row_ptr(w, K, r),     st_q4k_row_ptr(w, K, r + 1),
+                                        st_q4k_row_ptr(w, K, r + 2), st_q4k_row_ptr(w, K, r + 3),
+                                        K, st_xsm, st_scpack, st_sumpack, Bc,
+                                        o0, o1, o2, o3);
+                                    for (int s = 0; s < Bc; s++) {
+                                        ys[s0 + s][r]     = o0[s];
+                                        ys[s0 + s][r + 1] = o1[s];
+                                        ys[s0 + s][r + 2] = o2[s];
+                                        ys[s0 + s][r + 3] = o3[s];
+                                    }
+                                }
+                            });
+                        int r = np4 * 4;
+                        if (rem >= 2) {
+                            float o0[ST_MS_BMAX], o1[ST_MS_BMAX];
+                            q4k_dot_rows2_i8mm_multix_pack(
+                                st_q4k_row_ptr(w, K, r), st_q4k_row_ptr(w, K, r + 1), K,
+                                st_xsm, st_scpack, st_sumpack, Bc, o0, o1);
+                            for (int s = 0; s < Bc; s++) {
+                                ys[s0 + s][r] = o0[s];
+                                ys[s0 + s][r + 1] = o1[s];
+                            }
+                            r += 2;
+                        }
+                        if (r < N) {
+                            float out[ST_MS_BMAX];
+                            q4k_dot_row_sdot_multix_pack(st_q4k_row_ptr(w, K, r), K,
+                                                         st_xpack, st_scpack, st_sumpack, Bc, out);
+                            for (int s = 0; s < Bc; s++) ys[s0 + s][r] = out[s];
+                        }
+                    } else {
                     int _T = g_st.nchunks; if (_T > np) _T = np; if (_T < 1) _T = 1;
                     int _chunk = (np + _T - 1) / _T;
                     st_par_run(_T, ^(int _t) {
@@ -691,6 +890,15 @@ static inline void st_linear_multix(const GgufTensor* w,
                             q6k_dot_row_sdot_multix_pack(st_q6k_row_ptr(w, K, r), K,
                                                          st_xpack, st_scpack, Bc, out);
                         for (int s = 0; s < Bc; s++) ys[s0 + s][r] = out[s];
+                    }
+                    }
+                }
+                if (_tm) {  /* multix Q4_K/Q6_K totals under STRATUM_TYPETIME */
+                    clock_gettime(CLOCK_MONOTONIC, &_b);
+                    int _t = (int)w->type;
+                    if (_t >= 0 && _t < GGML_TYPE_COUNT) {
+                        g_st.typesecs[_t] += (_b.tv_sec-_a.tv_sec)+(_b.tv_nsec-_a.tv_nsec)/1e9;
+                        g_st.typecalls[_t] += B;   /* stream-tokens, not calls */
                     }
                 }
                 return;
@@ -751,6 +959,50 @@ static inline void st_linear_multix(const GgufTensor* w,
             }
         }
 #endif
+    }
+    /* llama.cpp #29869 idea on CPU: one weight-row convert, B independent
+     * dots. F16 single-stream keeps the existing double loop; this path
+     * is B>=2 only (MULTISEQ / spec verify). Per-stream acc is the same
+     * double sum, so it matches B serial dispatches. */
+    if (w->type == GGML_TYPE_F16 && B >= 2) {
+        const uint16_t* raw = (const uint16_t*)(g_st.mmap_base + w->offset);
+        for (int s0 = 0; s0 < B; s0 += 16) {
+            int Bc = (B - s0 < 16) ? (B - s0) : 16;
+            ST_PAR_ROWS(N, {
+                const uint16_t* row = raw + (size_t)r * K;
+                double acc[16];
+                for (int s = 0; s < Bc; s++) acc[s] = 0.0;
+                int c = 0;
+                for (; c + 3 < K; c += 4) {
+                    double w0 = (double)q4k_fp16_to_fp32(row[c]);
+                    double w1 = (double)q4k_fp16_to_fp32(row[c + 1]);
+                    double w2 = (double)q4k_fp16_to_fp32(row[c + 2]);
+                    double w3 = (double)q4k_fp16_to_fp32(row[c + 3]);
+                    for (int s = 0; s < Bc; s++) {
+                        acc[s] += w0 * (double)xs[s0 + s][c];
+                        acc[s] += w1 * (double)xs[s0 + s][c + 1];
+                        acc[s] += w2 * (double)xs[s0 + s][c + 2];
+                        acc[s] += w3 * (double)xs[s0 + s][c + 3];
+                    }
+                }
+                for (; c < K; c++) {
+                    double wv = (double)q4k_fp16_to_fp32(row[c]);
+                    for (int s = 0; s < Bc; s++)
+                        acc[s] += wv * (double)xs[s0 + s][c];
+                }
+                for (int s = 0; s < Bc; s++)
+                    ys[s0 + s][r] = (float)acc[s];
+            });
+        }
+        if (_tm) {
+            clock_gettime(CLOCK_MONOTONIC, &_b);
+            int _t = (int)w->type;
+            if (_t >= 0 && _t < GGML_TYPE_COUNT) {
+                g_st.typesecs[_t] += (_b.tv_sec-_a.tv_sec)+(_b.tv_nsec-_a.tv_nsec)/1e9;
+                g_st.typecalls[_t] += (uint64_t)B;
+            }
+        }
+        return;
     }
     for (int b = 0; b < B; b++)
         st_linear_dispatch(w, xs[b], ys[b], N, K);

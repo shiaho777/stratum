@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <errno.h>
 
 #include "stratum_arch.h"
 #include "stratum_linear.h"
@@ -67,12 +68,20 @@ static void moe_swiglu(const float* g, const float* u, int N, float* y) {
 }
 
 static int moe_g_rope_neox = 0;   /* NEOX half-split vs NORM adjacent pairs */
+static int moe_g_rope_hold_unscaled = 0;
 static void moe_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
     int n_pairs = rope_dim / 2;
+    const StratumRope* rp = &moe_g_cfg.rope;
     for (int k = 0; k < n_pairs; k++) {
-        float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)rope_dim);
-        float angle = (float)position * freq;
-        float c = cosf(angle), s = sinf(angle);
+        float c, s;
+        if (moe_g_rope_hold_unscaled || rp->type == STRATUM_ROPE_NONE || !(rp->factor > 1.0f)) {
+            float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)rope_dim);
+            float angle = (float)position * freq;
+            c = cosf(angle);
+            s = sinf(angle);
+        } else {
+            stratum_rope_cs(rp, k, n_pairs, position, &c, &s);
+        }
         if (moe_g_rope_neox) {
             float x0 = x[k], x1 = x[k + n_pairs];
             x[k]           = x0 * c - x1 * s;
@@ -109,11 +118,23 @@ static float* moe_g_ff_a    = NULL;
 static float* moe_g_ff_acc  = NULL;   /* weighted accumulator [H] */
 static float* moe_g_logits  = NULL;
 
-#define moe_MAX_KV 1024
+static int    moe_g_maxkv = 0;
 static float* moe_g_K_cache = NULL;
 static float* moe_g_V_cache = NULL;
 static int    moe_g_kv_len  = 0;
 static int    moe_g_kv_stride = 0;   /* allocated per-layer KV positions */
+
+static __thread float* moe_lg = NULL;
+static __thread size_t moe_lg_cap = 0;
+static float* moe_lg_need(int n) {
+    if (n < 1) n = 1;
+    if ((size_t)n > moe_lg_cap) {
+        free(moe_lg);
+        moe_lg = (float*)malloc((size_t)n * sizeof(float));
+        moe_lg_cap = moe_lg ? (size_t)n : 0;
+    }
+    return moe_lg;
+}
 
 /* multiseq/spec-verify state: per-slot KV when running independent streams */
 #define moe_B_MAX 64
@@ -224,7 +245,7 @@ static void moe_dispatch_slice(const GgufTensor* t, int e,
         fprintf(stderr, "moe: dispatch failed for expert %d\n", e);
 }
 
-static void moe_forward_block(int li, int position) {
+static int moe_forward_block(int li, int position) {
     moe_BlockTensors* b = &moe_g_blocks[li];
     int H  = moe_g_cfg.n_embed;
     int Hd = moe_g_cfg.head_dim;
@@ -240,10 +261,11 @@ static void moe_forward_block(int li, int position) {
         moe_rmsnorm(moe_g_x, gain, H, moe_g_cfg.rms_eps, moe_g_xn);
     }
 
-    /* dense attention — same as llama arch */
-    st_linear_dispatch(b->attn_q, moe_g_xn, moe_g_q_buf, Nq * Hd, H);
-    st_linear_dispatch(b->attn_k, moe_g_xn, moe_g_k_buf, Nk * Hd, H);
-    st_linear_dispatch(b->attn_v, moe_g_xn, moe_g_v_buf, Nk * Hd, H);
+    /* dense attention — QKV share xn; one x-quant, three weight rows */
+    st_q4k_group(moe_g_xn, H,
+                 b->attn_q, moe_g_q_buf, Nq * Hd,
+                 b->attn_k, moe_g_k_buf, Nk * Hd,
+                 b->attn_v, moe_g_v_buf, Nk * Hd);
 
     /* QK-norm (OLMoE/Qwen-MoE): one RMS norm over the WHOLE projected
      * vector, applied before the head split (llama.cpp olmoe semantics) */
@@ -278,7 +300,8 @@ static void moe_forward_block(int li, int position) {
         const float* K_layer = moe_g_K_cache + (size_t)li * per_layer;
         const float* V_layer = moe_g_V_cache + (size_t)li * per_layer;
 
-        float logits[moe_MAX_KV];
+        float* logits = moe_lg_need(kv_len_now);
+        if (!logits) { fprintf(stderr, "moe attn scratch alloc failed\n"); return -1; }
         for (int t = 0; t < kv_len_now; t++) {
             const float* kt = K_layer + (size_t)t * Nk * Hd + kv_h * Hd;
             float dot = 0.0f;
@@ -296,8 +319,8 @@ static void moe_forward_block(int li, int position) {
         }
     }
 
-    st_linear_dispatch(b->attn_output, moe_g_attn_out, moe_g_x, H, Nq * Hd);
-    for (int i = 0; i < H; i++) moe_g_x[i] += moe_g_x_resid[i];
+    st_linear_dispatch_add(b->attn_output, moe_g_attn_out, moe_g_x_resid, moe_g_x,
+                           H, Nq * Hd);
 
     /* ---- MoE FFN ---- */
     memcpy(moe_g_x_resid, moe_g_x, sizeof(float) * H);
@@ -376,19 +399,27 @@ static void moe_forward_block(int li, int position) {
             if (moe_g_sel[s] >= 0 && e / 64 < 256)
                 moe_stat_mask[e / 64] |= 1ULL << (e % 64);
         }
+    return 0;
 }
 
 /* ---- single-token forward --------------------------------------------- */
 
-static void moe_forward_one_token(int token_id, int position) {
+static int moe_forward_one_token(int token_id, int position) {
     int H = moe_g_cfg.n_embed;
     int V = moe_g_cfg.vocab_size;
+
+    if (moe_g_kv_len >= moe_g_kv_stride) {
+        fprintf(stderr, "moe: context %d exceeds KV capacity %d "
+                "(model context_length / STRATUM_MAX_KV)\n",
+                moe_g_kv_len + 1, moe_g_maxkv);
+        return -1;
+    }
 
     moe_embed_lookup(token_id, moe_g_x);
     moe_stats_begin_step();
 
     for (int li = 0; li < moe_g_cfg.n_layers; li++)
-        moe_forward_block(li, position);
+        if (moe_forward_block(li, position) != 0) return -1;
 
     {
         const float* gain = st_f32_tensor_ptr(moe_g_output_norm);
@@ -403,6 +434,7 @@ static void moe_forward_one_token(int token_id, int position) {
 
     moe_stats_end_step();
     moe_g_kv_len++;
+    return 0;
 }
 
 /* ---- batched / multiseq forward ----------------------------------------- *
@@ -511,6 +543,23 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
         free(mcnt); mcnt = malloc((size_t)E * 4);
         mcnt_cap = mcnt ? (size_t)E : 0;
         if (!mcnt_cap) return -1;
+    }
+
+    if (shared_kv) {
+        if (kvlen[0] + B > moe_g_kv_stride) {
+            fprintf(stderr, "moe: batched forward needs %d > KV capacity %d\n",
+                    kvlen[0] + B, moe_g_maxkv);
+            return -1;
+        }
+    } else {
+        for (int s = 0; s < B; s++) {
+            if (kvlen[s] + 1 > moe_g_ms_maxkv) {
+                fprintf(stderr, "moe: context %d exceeds KV capacity %d "
+                        "(model context_length / STRATUM_MAX_KV)\n",
+                        kvlen[s] + 1, moe_g_ms_maxkv);
+                return -1;
+            }
+        }
     }
 
     for (int s = 0; s < B; s++) moe_embed_lookup(tokens[s], x[s]);
@@ -623,6 +672,7 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
         }
         MOE_PROF_ACC(2, pt); pt = MOE_PROF_T();
 
+        volatile int _lgfail = 0;
         st_par_run(B, ^(int s) {
             int klen = shared_kv ? kvlen[0] + s + 1 : kvlen[s] + 1;
             const float* K_layer; const float* V_layer;
@@ -638,7 +688,8 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
             for (int h = 0; h < Nq; h++) {
                 int kv_h = h * Nk / Nq;
                 const float* qh = qb[s] + h * Hd;
-                float logits[moe_MAX_KV];
+                float* logits = moe_lg_need(klen);
+                if (!logits) { *(int*)&_lgfail = 1; return; }
                 for (int t = 0; t < klen; t++) {
                     const float* kt = K_layer + (size_t)t * Nk * Hd
                                     + kv_h * Hd;
@@ -657,6 +708,7 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                 }
             }
         });
+        if (_lgfail) { fprintf(stderr, "moe attn scratch alloc failed\n"); return -1; }
         MOE_PROF_ACC(3, pt); pt = MOE_PROF_T();
         for (int s = 0; s < B; s++) { cao[s] = ao[s]; cap[s] = ap[s]; }
         st_linear_multix(b->attn_output, (const float* const*)cao, cap,
@@ -936,9 +988,11 @@ static int moe_allocate_state(int kv_need) {
     moe_g_ff_acc   = (float*)calloc(H, sizeof(float));
     moe_g_logits   = (float*)calloc(V, sizeof(float));
 
-    /* KV sized to actual need (prompt+gen+spec slack), not the context
-     * ceiling — anonymous memory is the metric we compete on */
-    moe_g_kv_stride = kv_need < moe_MAX_KV ? kv_need : moe_MAX_KV;
+    /* KV sized to this request (prompt+gen+spec slack), clamped to the
+     * shared engine cap. calloc is demand-zero; unused positions stay free. */
+    if (kv_need < 1) kv_need = 1;
+    if (kv_need > moe_g_maxkv) kv_need = moe_g_maxkv;
+    moe_g_kv_stride = kv_need;
     size_t kv_floats = (size_t)L * moe_g_kv_stride * Nk * Hd;
     moe_g_K_cache = (float*)calloc(kv_floats, sizeof(float));
     moe_g_V_cache = (float*)calloc(kv_floats, sizeof(float));
@@ -946,8 +1000,9 @@ static int moe_allocate_state(int kv_need) {
     if (!moe_g_x || !moe_g_K_cache || !moe_g_logits || !moe_g_router ||
         !moe_g_ff_acc) return -1;
 
-    fprintf(stderr, "  KV cache: %.1f MB (anonymous)\n",
-            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0));
+    fprintf(stderr, "  KV cache: %.1f MB anonymous, %d positions (cap %d)\n",
+            (double)kv_floats * 2 * 4 / (1024.0 * 1024.0),
+            moe_g_kv_stride, moe_g_maxkv);
     fprintf(stderr,
             "  MoE: E=%d used=%d per layer — streaming slices via WILLNEED\n",
             moe_g_cfg.n_experts, moe_g_cfg.n_experts_used);
@@ -990,8 +1045,12 @@ int run_moe_arch(int argc, char** argv) {
     stratum_linear_init(moe_g_gguf.mmap_base, moe_g_gguf.mmap_size);
     stratum_engine_init(moe_g_gguf.mmap_size);
     if (stratum_load_config(&moe_g_gguf, &moe_g_cfg) != 0) return 1;
+    moe_g_maxkv = stratum_resolve_kv_cap(moe_g_cfg.context_length,
+                                        getenv("STRATUM_MAX_KV"));
+    stratum_rope_bind_context(&moe_g_cfg.rope, moe_g_cfg.context_length, moe_g_maxkv);
     fprintf(stderr, "\n");
     stratum_print_config(&moe_g_cfg);
+    stratum_rope_report(&moe_g_cfg.rope, moe_g_cfg.context_length, moe_g_maxkv);
     fprintf(stderr, "\n");
 
     if (moe_discover_blocks() != 0) return 1;
@@ -1012,11 +1071,39 @@ int run_moe_arch(int argc, char** argv) {
     stratum_vocab_init(&moe_g_gguf, moe_g_gguf.mmap_base, &moe_vocab);
 
     int n_gen = (argc > 2) ? atoi(argv[2]) : 4;
-    int prompt[2048];
+    int* prompt = (int*)malloc((size_t)(moe_g_maxkv + 2) * sizeof(int));
+    if (!prompt) { fprintf(stderr, "prompt alloc failed\n"); return 1; }
     int n_prompt = 0;
-    for (int i = 3; i < argc && n_prompt < 2048; i++)
-        prompt[n_prompt++] = atoi(argv[i]);
+    if (argc > 3 && argv[3][0] == '@') {
+        FILE* pf = fopen(argv[3] + 1, "r");
+        if (!pf) {
+            fprintf(stderr, "  prompt file %s: %s\n", argv[3] + 1, strerror(errno));
+            return 1;
+        }
+        int id;
+        while (fscanf(pf, "%d", &id) == 1) {
+            if (n_prompt >= moe_g_maxkv) {
+                fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                        moe_g_maxkv);
+                break;
+            }
+            prompt[n_prompt++] = id;
+        }
+        fclose(pf);
+    } else {
+        int more = 0;
+        for (int i = 3; i < argc; i++) {
+            if (n_prompt >= moe_g_maxkv) { more = 1; break; }
+            prompt[n_prompt++] = atoi(argv[i]);
+        }
+        if (more)
+            fprintf(stderr, "  prompt truncated at KV capacity %d\n",
+                    moe_g_maxkv);
+    }
     if (n_prompt == 0) prompt[n_prompt++] = 1;
+    fprintf(stderr, "  prompt length: %d\n", n_prompt);
+    moe_g_rope_hold_unscaled = stratum_rope_hold_unscaled(&moe_g_cfg.rope, n_prompt, n_gen);
+    stratum_rope_reach_report(&moe_g_cfg.rope, n_prompt, n_gen);
 
     int spec_k = 0;
     { const char* e = getenv("STRATUM_NGRAM_SPEC"); if (e) spec_k = atoi(e); }
@@ -1027,7 +1114,7 @@ int run_moe_arch(int argc, char** argv) {
     if (ms_B >= 1) {
         if (ms_B > moe_B_MAX) ms_B = moe_B_MAX;
         moe_g_ms_maxkv = n_prompt + n_gen + 2;
-        if (moe_g_ms_maxkv > moe_MAX_KV) moe_g_ms_maxkv = moe_MAX_KV;
+        if (moe_g_ms_maxkv > moe_g_maxkv) moe_g_ms_maxkv = moe_g_maxkv;
         size_t cells = (size_t)moe_g_cfg.n_layers * ms_B * moe_g_ms_maxkv
                      * moe_g_cfg.n_kv_heads * moe_g_cfg.head_dim;
         moe_g_msK = (float*)calloc(cells, sizeof(float));
@@ -1099,7 +1186,7 @@ int run_moe_arch(int argc, char** argv) {
         for (int t = 0; t < n_prompt; ) {
             int Bk = n_prompt - t; if (Bk > pf_B) Bk = pf_B;
             if (Bk == 1) {
-                moe_forward_one_token(prompt[t], position++);
+                if (moe_forward_one_token(prompt[t], position++) != 0) return 1;
                 t++; last_tok = prompt[t - 1]; continue;
             }
             for (int s = 0; s < Bk; s++) {
@@ -1168,7 +1255,7 @@ int run_moe_arch(int argc, char** argv) {
 
             if (B == 1) {
                 /* no draft: single-token step (KV-full falls here too) */
-                moe_forward_one_token(next_tok, position);
+                if (moe_forward_one_token(next_tok, position) != 0) return 1;
                 int argm = stratum_argmax(moe_g_logits, moe_g_cfg.vocab_size);
                 stratum_logits_dump_record(moe_g_logits, moe_g_cfg.vocab_size, argm);
                 fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",
@@ -1187,7 +1274,7 @@ int run_moe_arch(int argc, char** argv) {
             /* batched verify over shared KV: slot s attends 0..kv_len+s */
             if (moe_g_kv_len + B >= moe_g_kv_stride) {
                 /* KV full: fall back to single-token step */
-                moe_forward_one_token(next_tok, position);
+                if (moe_forward_one_token(next_tok, position) != 0) return 1;
                 int argm = stratum_argmax(moe_g_logits, moe_g_cfg.vocab_size);
                 hist[hlen++] = next_tok;
                 position++; g++;
@@ -1233,7 +1320,7 @@ int run_moe_arch(int argc, char** argv) {
     clock_gettime(CLOCK_MONOTONIC, &t_dec0);
     for (int g = 0; g < n_gen; g++) {
         last_tok = next_tok;
-        moe_forward_one_token(last_tok, position++);
+        if (moe_forward_one_token(last_tok, position++) != 0) return 1;
         next_tok = stratum_argmax(moe_g_logits, moe_g_cfg.vocab_size);
         stratum_logits_dump_record(moe_g_logits, moe_g_cfg.vocab_size, next_tok);
         fprintf(stderr, "  step %2d  in=%d  stratum_argmax=%d  logit=%g\n",

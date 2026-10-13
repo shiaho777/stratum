@@ -1059,6 +1059,231 @@ static inline void q4k_dot_row_neon_multix(
     for (int s = 0; s < B; s++) out[s] = (float)dot[s];
 }
 
+
+/* ------------------------------------------------------------------ */
+/*  i8mm / SMMLA Q4_K multix (FEAT_I8MM, Apple A15+/M2+ and later)      */
+/*                                                                      */
+/*  vmmlaq_s32 computes a 2x2 int8 MMA per instruction (32 MACs) vs    */
+/*  vdotq's 16 — measured ~1.8x on the packed multix path at B=16,     */
+/*  ~1.4x at B=8 (bench_q4k_smmla.c).  Identical int32 semantics and   */
+/*  merge order to q4k_dot_rows2_sdot_multix_pack (same per-group      */
+/*  terms accumulated as doubles), so results match the SDOT pack      */
+/*  path bit-for-bit under the same pack contents.                     */
+/*                                                                      */
+/*  Activations arrive in the SMMLA colpair layout instead of the      */
+/*  stream-major xpack layout: for each 32-elem group g and column     */
+/*  pair cp = {c0,c1}, one 64-byte block                               */
+/*      [ x[c0][kq*8 .. kq*8+7] | x[c1][kq*8 .. kq*8+7] ]   kq=0..3    */
+/*  so each vmmlaq B-operand is a single 16-byte load.  Callers must   */
+/*  pass B rounded up to a multiple of 4 (scpack/sumpack/xsm pad       */
+/*  streams zero-filled); only out[<Bc] is meaningful.                */
+/* ------------------------------------------------------------------ */
+
+__attribute__((target("i8mm"), unused))
+static void q4k_dot_rows2_i8mm_multix_pack(
+    const block_q4_K* row0, const block_q4_K* row1, int K,
+    const int8_t* xsm, const float* scpack, const int32_t* sumpack,
+    int B, float* out0, float* out1)
+{
+    const int nb = K / 256, ncp = (B + 1) / 2;
+    float64x2_t d0v[8], d1v[8];
+    for (int c = 0; c < 8; c++) { d0v[c] = vdupq_n_f64(0); d1v[c] = vdupq_n_f64(0); }
+    uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    int32_t is0[16], is1[16];
+
+    for (int i = 0; i < nb; i++) {
+        if (i + 1 < nb) {
+            __builtin_prefetch(row0 + i + 1, 0, 3);
+            __builtin_prefetch(row1 + i + 1, 0, 3);
+        }
+        const block_q4_K* b0 = row0 + i;
+        const block_q4_K* b1 = row1 + i;
+        float dA = q4k_fp16_to_fp32(b0->d), dmA = q4k_fp16_to_fp32(b0->dmin);
+        float dB = q4k_fp16_to_fp32(b1->d), dmB = q4k_fp16_to_fp32(b1->dmin);
+        const uint8_t* qA = b0->qs;
+        const uint8_t* qB = b1->qs;
+        int is = 0, blk32 = i * 8;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc1, m1, sc2, m2, sc3, m3, sc4, m4;
+            q4k_get_scale_min(is + 0, b0->scales, &sc1, &m1);
+            q4k_get_scale_min(is + 1, b0->scales, &sc2, &m2);
+            q4k_get_scale_min(is + 0, b1->scales, &sc3, &m3);
+            q4k_get_scale_min(is + 1, b1->scales, &sc4, &m4);
+            const float dsc[4] = { dA * sc1, dA * sc2, dB * sc3, dB * sc4 };
+            const float dmm[4] = { dmA * m1, dmA * m2, dmB * m3, dmB * m4 };
+
+            uint8x16_t w0 = vld1q_u8(qA), w1 = vld1q_u8(qA + 16);
+            uint8x16_t v0 = vld1q_u8(qB), v1 = vld1q_u8(qB + 16);
+            int8x16_t wl[4], vl[4];
+            wl[0] = vreinterpretq_s8_u8(vandq_u8(w0, mask4));
+            wl[1] = vreinterpretq_s8_u8(vandq_u8(w1, mask4));
+            wl[2] = vreinterpretq_s8_u8(vshrq_n_u8(w0, 4));
+            wl[3] = vreinterpretq_s8_u8(vshrq_n_u8(w1, 4));
+            vl[0] = vreinterpretq_s8_u8(vandq_u8(v0, mask4));
+            vl[1] = vreinterpretq_s8_u8(vandq_u8(v1, mask4));
+            vl[2] = vreinterpretq_s8_u8(vshrq_n_u8(v0, 4));
+            vl[3] = vreinterpretq_s8_u8(vshrq_n_u8(v1, 4));
+
+            for (int half = 0; half < 2; half++) {
+                const int8x16_t *wa = wl + half * 2, *vb = vl + half * 2;
+                const int g = blk32 + is + half;
+                int8x16_t aq[4];
+                aq[0] = vcombine_s8(vget_low_s8(wa[0]),  vget_low_s8(vb[0]));
+                aq[1] = vcombine_s8(vget_high_s8(wa[0]), vget_high_s8(vb[0]));
+                aq[2] = vcombine_s8(vget_low_s8(wa[1]),  vget_low_s8(vb[1]));
+                aq[3] = vcombine_s8(vget_high_s8(wa[1]), vget_high_s8(vb[1]));
+
+                const int8_t*  xg = xsm     + ((size_t)g * ncp) * 64;
+                const float*   sg = scpack  + (size_t)g * B;
+                const int32_t* mg = sumpack + (size_t)g * B;
+                for (int cp = 0; cp < ncp; cp++) {
+                    const int8_t* xb = xg + (size_t)cp * 64;
+                    int32x4_t acc = vdupq_n_s32(0);
+                    acc = vmmlaq_s32(acc, aq[0], vld1q_s8(xb));
+                    acc = vmmlaq_s32(acc, aq[1], vld1q_s8(xb + 16));
+                    acc = vmmlaq_s32(acc, aq[2], vld1q_s8(xb + 32));
+                    acc = vmmlaq_s32(acc, aq[3], vld1q_s8(xb + 48));
+                    vst1_s32(is0 + cp * 2, vget_low_s32(acc));
+                    vst1_s32(is1 + cp * 2, vget_high_s32(acc));
+                }
+                const float dsc0 = dsc[half],     dmm0 = dmm[half];
+                const float dsc1 = dsc[2 + half], dmm1 = dmm[2 + half];
+                for (int s4 = 0; s4 < B; s4 += 4) {
+                    float32x4_t scl = vld1q_f32(sg + s4);
+                    float32x4_t ms  = vmulq_f32(vcvtq_f32_s32(vld1q_s32(mg + s4)), scl);
+                    float32x4_t q0 = vcvtq_f32_s32(vld1q_s32(is0 + s4));
+                    float32x4_t q1 = vcvtq_f32_s32(vld1q_s32(is1 + s4));
+                    float32x4_t t0 = vsubq_f32(
+                        vmulq_f32(vmulq_f32(q0, scl), vdupq_n_f32(dsc0)),
+                        vmulq_f32(vdupq_n_f32(dmm0), ms));
+                    float32x4_t t1 = vsubq_f32(
+                        vmulq_f32(vmulq_f32(q1, scl), vdupq_n_f32(dsc1)),
+                        vmulq_f32(vdupq_n_f32(dmm1), ms));
+                    d0v[s4/2]     = vaddq_f64(d0v[s4/2],
+                                        vcvt_f64_f32(vget_low_f32(t0)));
+                    d0v[s4/2 + 1] = vaddq_f64(d0v[s4/2 + 1],
+                                        vcvt_high_f64_f32(t0));
+                    d1v[s4/2]     = vaddq_f64(d1v[s4/2],
+                                        vcvt_f64_f32(vget_low_f32(t1)));
+                    d1v[s4/2 + 1] = vaddq_f64(d1v[s4/2 + 1],
+                                        vcvt_high_f64_f32(t1));
+                }
+            }
+            qA += 32; qB += 32; is += 2;
+        }
+    }
+    for (int s = 0; s < B; s += 2) {
+        out0[s]     = (float)vgetq_lane_f64(d0v[s/2], 0);
+        out0[s + 1] = (float)vgetq_lane_f64(d0v[s/2], 1);
+        out1[s]     = (float)vgetq_lane_f64(d1v[s/2], 0);
+        out1[s + 1] = (float)vgetq_lane_f64(d1v[s/2], 1);
+    }
+}
+
+__attribute__((target("i8mm"), unused))
+static void q4k_dot_rows4_i8mm_multix_pack(
+    const block_q4_K* row0, const block_q4_K* row1,
+    const block_q4_K* row2, const block_q4_K* row3, int K,
+    const int8_t* xsm, const float* scpack, const int32_t* sumpack,
+    int B, float* out0, float* out1, float* out2, float* out3)
+{
+    const int nb = K / 256, ncp = (B + 1) / 2;
+    float64x2_t dv[4][8];
+    for (int t = 0; t < 4; t++)
+        for (int c = 0; c < 8; c++) dv[t][c] = vdupq_n_f64(0);
+    uint8x16_t mask4 = vdupq_n_u8(0x0F);
+    int32_t ism[4][16];
+
+    for (int i = 0; i < nb; i++) {
+        const block_q4_K* blk[4] = { row0 + i, row1 + i, row2 + i, row3 + i };
+        if (i + 1 < nb)
+            for (int t = 0; t < 4; t++) __builtin_prefetch(blk[t] + 1, 0, 3);
+        float dd[4], dm[4];
+        for (int t = 0; t < 4; t++) {
+            dd[t] = q4k_fp16_to_fp32(blk[t]->d);
+            dm[t] = q4k_fp16_to_fp32(blk[t]->dmin);
+        }
+        int is = 0, blk32 = i * 8;
+        for (int j = 0; j < 256; j += 64) {
+            float dsc[4][2], dmm[4][2];
+            for (int t = 0; t < 4; t++) {
+                uint8_t s1, m1, s2, m2;
+                q4k_get_scale_min(is + 0, blk[t]->scales, &s1, &m1);
+                q4k_get_scale_min(is + 1, blk[t]->scales, &s2, &m2);
+                dsc[t][0] = dd[t] * s1; dsc[t][1] = dd[t] * s2;
+                dmm[t][0] = dm[t] * m1; dmm[t][1] = dm[t] * m2;
+            }
+            /* unpack 4 rows x 64 elems fully in registers */
+            int8x16_t ul[4][2], uh[4][2];
+            for (int t = 0; t < 4; t++) {
+                const uint8_t* q = blk[t]->qs + j / 2;
+                uint8x16_t a = vld1q_u8(q), b = vld1q_u8(q + 16);
+                ul[t][0] = vreinterpretq_s8_u8(vandq_u8(a, mask4));
+                ul[t][1] = vreinterpretq_s8_u8(vandq_u8(b, mask4));
+                uh[t][0] = vreinterpretq_s8_u8(vshrq_n_u8(a, 4));
+                uh[t][1] = vreinterpretq_s8_u8(vshrq_n_u8(b, 4));
+            }
+            for (int half = 0; half < 2; half++) {
+                const int g = blk32 + is + half;
+                const int8x16_t (*w)[2] = half ? uh : ul;
+                int8x16_t aqa[4], aqb[4];
+                aqa[0] = vcombine_s8(vget_low_s8(w[0][0]),  vget_low_s8(w[1][0]));
+                aqa[1] = vcombine_s8(vget_high_s8(w[0][0]), vget_high_s8(w[1][0]));
+                aqa[2] = vcombine_s8(vget_low_s8(w[0][1]),  vget_low_s8(w[1][1]));
+                aqa[3] = vcombine_s8(vget_high_s8(w[0][1]), vget_high_s8(w[1][1]));
+                aqb[0] = vcombine_s8(vget_low_s8(w[2][0]),  vget_low_s8(w[3][0]));
+                aqb[1] = vcombine_s8(vget_high_s8(w[2][0]), vget_high_s8(w[3][0]));
+                aqb[2] = vcombine_s8(vget_low_s8(w[2][1]),  vget_low_s8(w[3][1]));
+                aqb[3] = vcombine_s8(vget_high_s8(w[2][1]), vget_high_s8(w[3][1]));
+
+                const int8_t*  xg = xsm     + ((size_t)g * ncp) * 64;
+                const float*   sg = scpack  + (size_t)g * B;
+                const int32_t* mg = sumpack + (size_t)g * B;
+                for (int cp = 0; cp < ncp; cp++) {
+                    const int8_t* xb = xg + (size_t)cp * 64;
+                    int8x16_t x0 = vld1q_s8(xb),      x1 = vld1q_s8(xb + 16);
+                    int8x16_t x2 = vld1q_s8(xb + 32), x3 = vld1q_s8(xb + 48);
+                    int32x4_t a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
+                    a0 = vmmlaq_s32(a0, aqa[0], x0);
+                    a0 = vmmlaq_s32(a0, aqa[1], x1);
+                    a0 = vmmlaq_s32(a0, aqa[2], x2);
+                    a0 = vmmlaq_s32(a0, aqa[3], x3);
+                    a1 = vmmlaq_s32(a1, aqb[0], x0);
+                    a1 = vmmlaq_s32(a1, aqb[1], x1);
+                    a1 = vmmlaq_s32(a1, aqb[2], x2);
+                    a1 = vmmlaq_s32(a1, aqb[3], x3);
+                    vst1_s32(ism[0] + cp * 2, vget_low_s32(a0));
+                    vst1_s32(ism[1] + cp * 2, vget_high_s32(a0));
+                    vst1_s32(ism[2] + cp * 2, vget_low_s32(a1));
+                    vst1_s32(ism[3] + cp * 2, vget_high_s32(a1));
+                }
+                for (int s4 = 0; s4 < B; s4 += 4) {
+                    /* shared across rows: activation scale + min-sum operand */
+                    float32x4_t scl = vld1q_f32(sg + s4);
+                    float32x4_t ms  = vmulq_f32(vcvtq_f32_s32(vld1q_s32(mg + s4)), scl);
+                    for (int t = 0; t < 4; t++) {
+                        float32x4_t qv = vcvtq_f32_s32(vld1q_s32(ism[t] + s4));
+                        float32x4_t tv = vsubq_f32(
+                            vmulq_f32(vmulq_f32(qv, scl), vdupq_n_f32(dsc[t][half])),
+                            vmulq_f32(vdupq_n_f32(dmm[t][half]), ms));
+                        dv[t][s4/2]     = vaddq_f64(dv[t][s4/2],
+                                            vcvt_f64_f32(vget_low_f32(tv)));
+                        dv[t][s4/2 + 1] = vaddq_f64(dv[t][s4/2 + 1],
+                                            vcvt_high_f64_f32(tv));
+                    }
+                }
+            }
+            is += 2;
+        }
+    }
+    float* outs[4] = { out0, out1, out2, out3 };
+    for (int t = 0; t < 4; t++)
+        for (int s = 0; s < B; s += 2) {
+            outs[t][s]     = (float)vgetq_lane_f64(dv[t][s/2], 0);
+            outs[t][s + 1] = (float)vgetq_lane_f64(dv[t][s/2], 1);
+        }
+}
+
 #endif
 
 #endif
