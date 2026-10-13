@@ -5,6 +5,8 @@
 #include "stratum_linear.h"
 #include "stratum_engine.h"
 #include "stratum_tokenize.h"
+#include "stratum_axpy.h"
+#include "stratum_attn_lg.h"
 
 #include <Accelerate/Accelerate.h>
 #include <dispatch/dispatch.h>
@@ -84,62 +86,70 @@ static void la_swiglu(const float* g, const float* u, int N, float* y) {
  * file's general.architecture — no model names, just arch ids. */
 static int la_g_rope_neox = 0;
 
-/* P2: cos/sin tables — powf/cosf/sinf were recomputed for every pair of
- * every head of every layer per token (756 rope calls x 64 powf on a
- * 42-layer model). The table caches cosf/sinf of the SAME angles, so the
- * rotated values are bit-identical to the scalar path. Positions grow
- * lazily up to the KV cap; memory is 2 * pos * n_pairs floats (<= 512 KB
- * at the 1024-token cap) — activation-scale, not weight-scale. */
-static float*  la_g_rope_cos   = NULL;
-static float*  la_g_rope_sin   = NULL;
-static int     la_g_rope_pos_cap = 0;
-static int     la_g_rope_npair = 0;
-static float   la_g_rope_theta = -1.0f;
+/* Inv-freq only. A per-position cos/sin table doubles up to the KV cap:
+ * 32 pairs at 1048576 positions is 256 MB, filled for positions never
+ * read. The frequency of each pair does not depend on position, so the
+ * cache is n_pairs floats. cos/sin are the same expressions as before.
+ * Built on the main thread; workers only read it. */
+static float* la_g_rope_inv = NULL;
+static int    la_g_rope_npair = 0;
+static float  la_g_rope_theta = -1.0f;
+static int    la_g_rope_type = -1;
+static float  la_g_rope_factor = 0.0f;
+static int    la_g_rope_orig = -1;
+static float  la_g_rope_mscale = 1.0f;
+static int    la_g_rope_hold_unscaled = 0;
+static int    la_g_rope_held = -1;
 
-static void la_rope_tables_grow(int position, int n_pairs, float theta) {
-    if (la_g_rope_theta != theta || la_g_rope_npair != n_pairs) {
-        free(la_g_rope_cos); free(la_g_rope_sin);
-        la_g_rope_cos = la_g_rope_sin = NULL;
-        la_g_rope_pos_cap = 0;
-        la_g_rope_theta = theta;
-        la_g_rope_npair = n_pairs;
+static void la_rope_freq_prepare(int n_pairs, float theta) {
+    if (n_pairs < 1) return;
+    const StratumRope* rp = &la_g_cfg.rope;
+    int same = la_g_rope_inv && la_g_rope_npair == n_pairs
+        && la_g_rope_theta == theta && la_g_rope_type == rp->type
+        && la_g_rope_factor == rp->factor && la_g_rope_orig == rp->orig_ctx
+        && la_g_rope_held == la_g_rope_hold_unscaled;
+    if (same) return;
+    float* inv = (float*)malloc(sizeof(float) * (size_t)n_pairs);
+    if (!inv) return;
+    int scaled = stratum_rope_scales(rp) && !la_g_rope_hold_unscaled;
+    for (int k = 0; k < n_pairs; k++) {
+        if (!scaled)
+            inv[k] = 1.0f / powf(theta, (float)(2 * k) / (float)(n_pairs * 2));
+        else
+            inv[k] = stratum_rope_inv_freq(rp, k, n_pairs);
     }
-    if (position < la_g_rope_pos_cap) return;
-    int newcap = la_g_rope_pos_cap ? la_g_rope_pos_cap * 2 : 256;
-    while (newcap <= position) newcap *= 2;
-    float* nc = malloc(sizeof(float) * (size_t)newcap * n_pairs);
-    float* ns = malloc(sizeof(float) * (size_t)newcap * n_pairs);
-    for (int p = 0; p < newcap; p++) {
-        for (int k = 0; k < n_pairs; k++) {
-            float freq  = 1.0f / powf(theta, (float)(2 * k) / (float)(n_pairs * 2));
-            float angle = (float)p * freq;
-            nc[(size_t)p * n_pairs + k] = cosf(angle);
-            ns[(size_t)p * n_pairs + k] = sinf(angle);
-        }
-    }
-    if (la_g_rope_cos) {  /* copy overlapping prefix (bit-identical) */
-        memcpy(nc, la_g_rope_cos, sizeof(float) * (size_t)la_g_rope_pos_cap * n_pairs);
-        memcpy(ns, la_g_rope_sin, sizeof(float) * (size_t)la_g_rope_pos_cap * n_pairs);
-        free(la_g_rope_cos); free(la_g_rope_sin);
-    }
-    la_g_rope_cos = nc; la_g_rope_sin = ns; la_g_rope_pos_cap = newcap;
+    free(la_g_rope_inv);
+    la_g_rope_inv = inv;
+    la_g_rope_npair = n_pairs;
+    la_g_rope_theta = theta;
+    la_g_rope_type = rp->type;
+    la_g_rope_factor = rp->factor;
+    la_g_rope_orig = rp->orig_ctx;
+    la_g_rope_held = la_g_rope_hold_unscaled;
+    la_g_rope_mscale = scaled ? stratum_rope_mscale(rp) : 1.0f;
 }
 
 static void la_rope(float* x, int head_dim, int rope_dim, int position, float theta) {
     int n_pairs = rope_dim / 2;
-    la_rope_tables_grow(position, n_pairs, theta);
-    const float* cs = la_g_rope_cos + (size_t)position * n_pairs;
-    const float* sn = la_g_rope_sin + (size_t)position * n_pairs;
+    la_rope_freq_prepare(n_pairs, theta);
+    if (!la_g_rope_inv || n_pairs > la_g_rope_npair) {
+        (void)head_dim;
+        return;
+    }
     if (la_g_rope_neox) {
         for (int k = 0; k < n_pairs; k++) {
-            float c = cs[k], s = sn[k];
+            float angle = (float)position * la_g_rope_inv[k];
+            float c = cosf(angle), s = sinf(angle);
+            if (la_g_rope_mscale != 1.0f) { c *= la_g_rope_mscale; s *= la_g_rope_mscale; }
             float x0 = x[k], x1 = x[k + n_pairs];
             x[k]           = x0 * c - x1 * s;
             x[k + n_pairs] = x0 * s + x1 * c;
         }
     } else {
         for (int k = 0; k < n_pairs; k++) {
-            float c = cs[k], s = sn[k];
+            float angle = (float)position * la_g_rope_inv[k];
+            float c = cosf(angle), s = sinf(angle);
+            if (la_g_rope_mscale != 1.0f) { c *= la_g_rope_mscale; s *= la_g_rope_mscale; }
             float x0 = x[2 * k], x1 = x[2 * k + 1];
             x[2 * k]     = x0 * c - x1 * s;
             x[2 * k + 1] = x0 * s + x1 * c;
@@ -150,6 +160,80 @@ static void la_rope(float* x, int head_dim, int rope_dim, int position, float th
 
 static void la_softmax_inplace(float* x, int N) {
     stratum_softmax_inplace(x, N);
+}
+
+/* NEON dot / weighted-accumulate for the batched attention loops — same
+ * pattern as the single-token path (la_forward_block).  The d-order fma
+ * reduction changes accumulation order vs scalar (batch path is greedy-
+ * equal class, same as the SDOT pack path); the axpy preserves per-element
+ * order exactly. */
+static inline float la_dot_hd(const float* a, const float* b, int n) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    float32x4_t acc = vdupq_n_f32(0.0f);
+    int d = 0;
+    for (; d + 16 <= n; d += 16) {
+        acc = vfmaq_f32(acc, vld1q_f32(a + d),      vld1q_f32(b + d));
+        acc = vfmaq_f32(acc, vld1q_f32(a + d + 4),  vld1q_f32(b + d + 4));
+        acc = vfmaq_f32(acc, vld1q_f32(a + d + 8),  vld1q_f32(b + d + 8));
+        acc = vfmaq_f32(acc, vld1q_f32(a + d + 12), vld1q_f32(b + d + 12));
+    }
+    for (; d + 4 <= n; d += 4)
+        acc = vfmaq_f32(acc, vld1q_f32(a + d), vld1q_f32(b + d));
+    float r = vaddvq_f32(acc);
+    for (; d < n; d++) r += a[d] * b[d];
+    return r;
+#else
+    float r = 0.0f;
+    for (int d = 0; d < n; d++) r += a[d] * b[d];
+    return r;
+#endif
+}
+static __thread float* la_blg_tls = NULL;
+static __thread size_t  la_blg_tls_cap = 0;
+
+/* two dots on a shared row stream: halves K-load traffic and gives two
+ * independent fma chains to hide the vaddvq latency (bgs=2 GQA groups). */
+static inline void la_dot2_hd(const float* a0, const float* a1,
+                              const float* b, int n, float* r0, float* r1) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    float32x4_t c0 = vdupq_n_f32(0.0f), c1 = vdupq_n_f32(0.0f);
+    int d = 0;
+    for (; d + 16 <= n; d += 16) {
+        float32x4_t b0 = vld1q_f32(b + d),      b1 = vld1q_f32(b + d + 4);
+        float32x4_t b2 = vld1q_f32(b + d + 8),  b3 = vld1q_f32(b + d + 12);
+        c0 = vfmaq_f32(c0, vld1q_f32(a0 + d),      b0);
+        c1 = vfmaq_f32(c1, vld1q_f32(a1 + d),      b0);
+        c0 = vfmaq_f32(c0, vld1q_f32(a0 + d + 4),  b1);
+        c1 = vfmaq_f32(c1, vld1q_f32(a1 + d + 4),  b1);
+        c0 = vfmaq_f32(c0, vld1q_f32(a0 + d + 8),  b2);
+        c1 = vfmaq_f32(c1, vld1q_f32(a1 + d + 8),  b2);
+        c0 = vfmaq_f32(c0, vld1q_f32(a0 + d + 12), b3);
+        c1 = vfmaq_f32(c1, vld1q_f32(a1 + d + 12), b3);
+    }
+    for (; d + 4 <= n; d += 4) {
+        float32x4_t bv = vld1q_f32(b + d);
+        c0 = vfmaq_f32(c0, vld1q_f32(a0 + d), bv);
+        c1 = vfmaq_f32(c1, vld1q_f32(a1 + d), bv);
+    }
+    float s0 = vaddvq_f32(c0), s1 = vaddvq_f32(c1);
+    for (; d < n; d++) { s0 += a0[d] * b[d]; s1 += a1[d] * b[d]; }
+    *r0 = s0; *r1 = s1;
+#else
+    *r0 = la_dot_hd(a0, b, n);
+    *r1 = la_dot_hd(a1, b, n);
+#endif
+}
+
+static inline void la_axpy_hd(float* acc, float p, const float* v, int n) {
+#if defined(__ARM_NEON) || defined(__aarch64__)
+    float32x4_t vp = vdupq_n_f32(p);
+    int d = 0;
+    for (; d + 4 <= n; d += 4)
+        vst1q_f32(acc + d, vfmaq_f32(vld1q_f32(acc + d), vp, vld1q_f32(v + d)));
+    for (; d < n; d++) acc[d] += p * v[d];
+#else
+    for (int d = 0; d < n; d++) acc[d] += p * v[d];
+#endif
 }
 
 static float* la_g_x       = NULL;
@@ -323,6 +407,8 @@ static void la_forward_block(int li, int position) {
      * optional — NULL for plain Llama-family files, which skip it. */
     const float* qng = b->attn_q_norm ? st_f32_tensor_ptr(b->attn_q_norm) : NULL;
     const float* kng = b->attn_k_norm ? st_f32_tensor_ptr(b->attn_k_norm) : NULL;
+    /* Inv-freq is one malloc. Build it before the pool so workers only read. */
+    la_rope_freq_prepare(la_g_cfg.rope_dim / 2, la_g_cfg.rope_theta);
     st_par_run(Nq + Nk, ^(int h) {
         if (h < Nq) {
             float* qb = la_g_q_buf + (size_t)h * Hd;
@@ -423,21 +509,7 @@ static void la_forward_block(int li, int position) {
             for (int h = h0; h < h1; h++) {
                 float* head_out = la_g_attn_out + h * Hd;
                 float p = la_lgbuf[(size_t)h * kv_len_now + t];
-#if defined(__ARM_NEON) || defined(__aarch64__)
-                /* element-wise accumulate, same t order — bit-exact vs scalar */
-                float32x4_t vp = vdupq_n_f32(p);
-                int d = 0;
-                for (; d + 16 <= Hd; d += 16) {
-                    vst1q_f32(head_out + d, vfmaq_f32(vld1q_f32(head_out + d),      vp, vld1q_f32(vt + d)));
-                    vst1q_f32(head_out + d + 4, vfmaq_f32(vld1q_f32(head_out + d + 4),  vp, vld1q_f32(vt + d + 4)));
-                    vst1q_f32(head_out + d + 8, vfmaq_f32(vld1q_f32(head_out + d + 8),  vp, vld1q_f32(vt + d + 8)));
-                    vst1q_f32(head_out + d + 12, vfmaq_f32(vld1q_f32(head_out + d + 12), vp, vld1q_f32(vt + d + 12)));
-                }
-                for (; d + 4 <= Hd; d += 4) head_out[d] += p * vt[d];
-                for (; d < Hd; d++) head_out[d] += p * vt[d];
-#else
-                for (int d = 0; d < Hd; d++) head_out[d] += p * vt[d];
-#endif
+                stratum_axpy_f32(head_out, p, vt, Hd);
             }
         }
     };
@@ -446,12 +518,10 @@ static void la_forward_block(int li, int position) {
     else
         for (int w = 0; w < nwork; w++) attn_grp(w);
 
-    static float attn_proj[8192];
     if (H > 8192) { fprintf(stderr, "H exceeds buffer\n"); exit(2); }
     if (dbg && li == 0)
         fprintf(stderr, "  [cL0] ao0=%.5f ao1=%.5f\n", la_g_attn_out[0], la_g_attn_out[1]);
-    st_linear_dispatch(b->attn_output, la_g_attn_out, attn_proj, H, Nq * Hd);
-    for (int i = 0; i < H; i++) la_g_x[i] = la_g_x_resid[i] + attn_proj[i];
+    st_linear_dispatch_add(b->attn_output, la_g_attn_out, la_g_x_resid, la_g_x, H, Nq * Hd);
     if (dbg && li == 0)
         fprintf(stderr, "  [cL0] x0=%.5f x1=%.5f (post-attn)\n", la_g_x[0], la_g_x[1]);
 
@@ -460,8 +530,8 @@ static void la_forward_block(int li, int position) {
         const float* gain = st_f32_tensor_ptr(b->ffn_norm);
         la_rmsnorm(la_g_x, gain, H, la_g_cfg.rms_eps, la_g_xn);
     }
-    static float ff_out[8192];
 #ifdef STRATUM_USE_METAL
+    static float ff_out[8192];
     int ffn_gpu = 0;
     if (g_st.use_metal
         && b->ffn_gate->type == GGML_TYPE_Q4_K && b->ffn_gate->offset
@@ -472,7 +542,9 @@ static void la_forward_block(int li, int position) {
                               b->ffn_down->offset, b->ffn_down->nbytes,
                               la_g_xn, ff_out, H, Ff) == 0) ffn_gpu = 1;
     }
-    if (!ffn_gpu)
+    if (ffn_gpu) {
+        for (int i = 0; i < H; i++) la_g_x[i] = la_g_x_resid[i] + ff_out[i];
+    } else
 #endif
     {
         st_q4k_group(la_g_xn, H,
@@ -480,9 +552,8 @@ static void la_forward_block(int li, int position) {
                      b->ffn_up,   la_g_ff_u, Ff,
                      NULL, NULL, 0);
         la_swiglu(la_g_ff_g, la_g_ff_u, Ff, la_g_ff_a);
-        st_linear_dispatch(b->ffn_down, la_g_ff_a, ff_out, H, Ff);
+        st_linear_dispatch_add(b->ffn_down, la_g_ff_a, la_g_x_resid, la_g_x, H, Ff);
     }
-    for (int i = 0; i < H; i++) la_g_x[i] = la_g_x_resid[i] + ff_out[i];
 
     if (li == la_hidden_dump_layer && la_hidden_dump_fp) {
         fwrite(la_g_x, sizeof(float), H, la_hidden_dump_fp);
@@ -583,13 +654,19 @@ static int la_allocate_state(void) {
     la_g_ff_a     = (float*)calloc(Ff, sizeof(float));
     la_g_logits   = (float*)calloc(V, sizeof(float));
 
-    int mk = la_g_cfg.context_length > 0 ? la_g_cfg.context_length : 4096;
-    const char* mke = getenv("STRATUM_MAX_KV");
-    if (mke) mk = atoi(mke);
-    if (mk < 256) mk = 256;
-    if (mk > (1 << 20)) mk = 1 << 20;   /* VA-only reservation until touched */
+    /* Floor 32 matches qwen35. A floor of 256 silently raised
+     * STRATUM_MAX_KV=32 and the run never reached the hard stop.
+     * The upper clamp is 1<<20 (1048576). */
+    int mk = stratum_resolve_kv_cap(la_g_cfg.context_length, getenv("STRATUM_MAX_KV"));
     la_g_maxkv = mk;
     la_g_kvbound = mk;
+    stratum_rope_bind_context(&la_g_cfg.rope, la_g_cfg.context_length, mk);
+    stratum_rope_report(&la_g_cfg.rope, la_g_cfg.context_length, mk);
+    {
+        int pairs = la_g_cfg.rope_dim > 0 ? la_g_cfg.rope_dim / 2 : 0;
+        fprintf(stderr, "  rope freq: %d bytes (inv-freq only)\n",
+                pairs * (int)sizeof(float));
+    }
 
     size_t kv_floats = (size_t)L * la_g_maxkv * Nk * Hd;
     la_g_K_cache = (float*)calloc(kv_floats, sizeof(float));
@@ -698,7 +775,7 @@ static int la_forward_one_token_gpu(int token_id, int position) {
 #endif
 
 static int la_forward_batch_ex(const int* tokens, const int* positions,
-                               const int* parents, int B) {
+                               const int* parents, int B, int lm_all) {
     if (la_g_kv_len + B > la_g_kvbound) {
         fprintf(stderr, "llama: batched forward needs %d > KV capacity %d\n",
                 la_g_kv_len + B, la_g_kvbound);
@@ -779,6 +856,7 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
         la_linear_multix(b->attn_v, cxn, cvb, B, Nk*Hd, H);
         }
 
+        la_rope_freq_prepare(la_g_cfg.rope_dim / 2, la_g_cfg.rope_theta);
         for (int s = 0; s < B; s++) {
             /* Qwen3-style per-head q/k RMSNorm — optional, pre-rope (same
              * as the single-token path in la_forward_block) */
@@ -804,94 +882,105 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
         }
         const float* K_layer = la_g_K_cache + (size_t)li*per_layer;
         const float* V_layer = la_g_V_cache + (size_t)li*per_layer;
-        for (int s = 0; s < B; s++) {
-            /* GQA-grouped: siblings of one kv head share each K/V row —
-             * identical per-head math/order, ~gs-fold less cache traffic.
-             * lg scratch is [h][ti], sized kv_len+B (heap: unbounded ctx). */
-            static float* la_blgs = NULL; static size_t la_blgs_cap = 0;
-            size_t blg_row = (size_t)la_g_kv_len + B;
-            size_t blg_need = (size_t)Nq * blg_row;
-            if (blg_need > la_blgs_cap) {
-                free(la_blgs);
-                la_blgs = (float*)malloc(blg_need * sizeof(float));
-                la_blgs_cap = la_blgs ? blg_need : 0;
-            }
-            if (!la_blgs) { fprintf(stderr, "attn batch scratch alloc failed\n"); return -1; }
+        /* Parallel batch attention: job = (s, kv-group).  Each job's score
+         * scratch is a per-thread buffer (bgs x blg_row floats); jobs write
+         * disjoint ao[s][h0:h1] regions and only read shared qb/K/V — safe.
+         * Same math and per-element order as the serial loop it replaces;
+         * work that ran serially on the main thread now uses the pool. */
+        {
             int bgs = (Nk > 0 && Nq % Nk == 0) ? Nq / Nk : 1;
-            for (int kv = 0; kv < Nk; kv++) {
+            size_t blg_row = (size_t)la_g_kv_len + B;
+            size_t blg_need = (size_t)bgs * blg_row;
+            volatile int blg_fail = 0;
+            int _nk = Nk, _kvl = la_g_kv_len;
+            st_par_run(B * _nk, ^(int j) {
+                int s = j / _nk, kv = j - s * _nk;
                 int h0 = kv * bgs, h1 = h0 + bgs; if (h1 > Nq) h1 = Nq;
-            if (parents) {
-                /* tree-verify: slot s attends the committed prefix plus its
-                 * ancestor draft slots in path order plus itself. The visited
-                 * sequence of KV entries is identical to sequential greedy
-                 * for whichever path gets accepted (bit-exact). */
-                int path[la_B_MAX]; int pn = 0;
-                for (int a = s; a >= 0; a = parents[a]) { path[pn++] = a; }
-                int nl = la_g_kv_len + pn;
-                for (int t = 0; t < la_g_kv_len; t++) {
-                    const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
-                    for (int h = h0; h < h1; h++) {
-                        const float* qh = qb[s] + h*Hd;
-                        float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                        la_blgs[(size_t)h*blg_row + t]=dot*scale;
+                if (blg_need > la_blg_tls_cap) {
+                    free(la_blg_tls);
+                    la_blg_tls = (float*)malloc(blg_need * sizeof(float));
+                    la_blg_tls_cap = la_blg_tls ? blg_need : 0;
+                }
+                float* blg = la_blg_tls;
+                if (!blg) { *(int*)&blg_fail = 1; return; }
+                float* lg[STRATUM_ATTN_LG_SLOTS];
+                if (stratum_attn_bind_lg(lg, STRATUM_ATTN_LG_SLOTS, blg, blg_row,
+                                         h0, h1) != 0) {
+                    *(int*)&blg_fail = 1;
+                    return;
+                }
+                if (parents) {
+                    /* tree-verify: slot s attends the committed prefix plus
+                     * its ancestor draft slots in path order plus itself. */
+                    int path[la_B_MAX]; int pn = 0;
+                    for (int a = s; a >= 0; a = parents[a]) { path[pn++] = a; }
+                    int nl = _kvl + pn;
+                    for (int t = 0; t < _kvl; t++) {
+                        const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
+                        if (h1 - h0 == 2) {
+                            la_dot2_hd(qb[s] + h0*Hd, qb[s] + (h0+1)*Hd, kt, Hd,
+                                       &lg[0][t], &lg[1][t]);
+                            lg[0][t] *= scale; lg[1][t] *= scale;
+                        } else {
+                            for (int h = h0; h < h1; h++)
+                                lg[h - h0][t] = la_dot_hd(qb[s] + h*Hd, kt, Hd) * scale;
+                        }
+                    }
+                    for (int a = pn - 1; a >= 0; a--) {
+                        const float* kt = K_layer
+                            + (size_t)(_kvl + path[a])*Nk*Hd + kv*Hd;
+                        int ti = _kvl + (pn - 1 - a);
+                        if (h1 - h0 == 2) {
+                            la_dot2_hd(qb[s] + h0*Hd, qb[s] + (h0+1)*Hd, kt,
+                                       Hd, &lg[0][ti], &lg[1][ti]);
+                            lg[0][ti] *= scale; lg[1][ti] *= scale;
+                        } else {
+                            for (int h = h0; h < h1; h++)
+                                lg[h - h0][ti] = la_dot_hd(qb[s] + h*Hd, kt, Hd)
+                                            * scale;
+                        }
+                    }
+                    for (int h = h0; h < h1; h++)
+                        la_softmax_inplace(lg[h - h0], nl);
+                    for (int h = h0; h < h1; h++)
+                        memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
+                    for (int t = 0; t < _kvl; t++) {
+                        const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
+                        for (int h = h0; h < h1; h++)
+                            la_axpy_hd(ao[s] + h*Hd, lg[h - h0][t], vt, Hd);
+                    }
+                    for (int a = pn - 1; a >= 0; a--) {
+                        const float* vt = V_layer
+                            + (size_t)(_kvl + path[a])*Nk*Hd + kv*Hd;
+                        int ti = _kvl + (pn - 1 - a);
+                        for (int h = h0; h < h1; h++)
+                            la_axpy_hd(ao[s] + h*Hd, lg[h - h0][ti], vt, Hd);
+                    }
+                } else {
+                    int klen = _kvl + s + 1;
+                    for (int t = 0; t < klen; t++) {
+                        const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
+                        if (h1 - h0 == 2) {
+                            la_dot2_hd(qb[s] + h0*Hd, qb[s] + (h0+1)*Hd, kt, Hd,
+                                       &lg[0][t], &lg[1][t]);
+                            lg[0][t] *= scale; lg[1][t] *= scale;
+                        } else {
+                            for (int h = h0; h < h1; h++)
+                                lg[h - h0][t] = la_dot_hd(qb[s] + h*Hd, kt, Hd) * scale;
+                        }
+                    }
+                    for (int h = h0; h < h1; h++)
+                        la_softmax_inplace(lg[h - h0], klen);
+                    for (int h = h0; h < h1; h++)
+                        memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
+                    for (int t = 0; t < klen; t++) {
+                        const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
+                        for (int h = h0; h < h1; h++)
+                            la_axpy_hd(ao[s] + h*Hd, lg[h - h0][t], vt, Hd);
                     }
                 }
-                for (int a = pn - 1; a >= 0; a--) {
-                    const float* kt = K_layer
-                        + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv*Hd;
-                    int ti = la_g_kv_len + (pn - 1 - a);
-                    for (int h = h0; h < h1; h++) {
-                        const float* qh = qb[s] + h*Hd;
-                        float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                        la_blgs[(size_t)h*blg_row + ti]=dot*scale;
-                    }
-                }
-                for (int h = h0; h < h1; h++)
-                    la_softmax_inplace(la_blgs + (size_t)h*blg_row, nl);
-                for (int h = h0; h < h1; h++)
-                    memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
-                for (int t = 0; t < la_g_kv_len; t++) {
-                    const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
-                    for (int h = h0; h < h1; h++) {
-                        float* hd = ao[s] + h*Hd;
-                        float p = la_blgs[(size_t)h*blg_row + t];
-                        for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
-                    }
-                }
-                for (int a = pn - 1; a >= 0; a--) {
-                    const float* vt = V_layer
-                        + (size_t)(la_g_kv_len + path[a])*Nk*Hd + kv*Hd;
-                    int ti = la_g_kv_len + (pn - 1 - a);
-                    for (int h = h0; h < h1; h++) {
-                        float* hd = ao[s] + h*Hd;
-                        float p = la_blgs[(size_t)h*blg_row + ti];
-                        for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
-                    }
-                }
-            } else {
-            int klen = la_g_kv_len + s + 1;
-            for (int t = 0; t < klen; t++) {
-                const float* kt = K_layer + (size_t)t*Nk*Hd + kv*Hd;
-                for (int h = h0; h < h1; h++) {
-                    const float* qh = qb[s] + h*Hd;
-                    float dot=0; for (int d=0;d<Hd;d++) dot+=qh[d]*kt[d];
-                    la_blgs[(size_t)h*blg_row + t]=dot*scale;
-                }
-            }
-            for (int h = h0; h < h1; h++)
-                la_softmax_inplace(la_blgs + (size_t)h*blg_row, klen);
-            for (int h = h0; h < h1; h++)
-                memset(ao[s] + h*Hd, 0, sizeof(float)*Hd);
-            for (int t = 0; t < klen; t++) {
-                const float* vt = V_layer + (size_t)t*Nk*Hd + kv*Hd;
-                for (int h = h0; h < h1; h++) {
-                    float* hd = ao[s] + h*Hd;
-                    float p = la_blgs[(size_t)h*blg_row + t];
-                    for(int d=0;d<Hd;d++) hd[d]+=p*vt[d];
-                }
-            }
-            }
-            }
+            });
+            if (blg_fail) { fprintf(stderr, "attn batch scratch alloc failed\n"); return -1; }
         }
         la_linear_multix(b->attn_output, (const float* const*)cao, cap, B, H, Nq*Hd);
         for (int s=0;s<B;s++) for(int i=0;i<H;i++) x[s][i]=xr[s][i]+ap[s][i];
@@ -935,14 +1024,25 @@ static int la_forward_batch_ex(const int* tokens, const int* positions,
     const float* gain = st_f32_tensor_ptr(la_g_output_norm);
     for (int s=0;s<B;s++) la_rmsnorm(x[s], gain, H, la_g_cfg.rms_eps, xn[s]);
     const GgufTensor* lm = la_g_output_w ? la_g_output_w : la_g_token_embd;
-    float* clog[la_B_MAX];
-    for (int s=0;s<B;s++) clog[s]=la_gb_logits[s];
-    la_linear_multix(lm, cxn, clog, B, V, H);
+    /* lm_mode: 2 = all positions (tree/ngram verify reads every slot),
+     *          1 = last position only (final prefill chunk),
+     *          0 = none (intermediate prefill chunks — logits discarded).
+     * The vocab GEMM is ~30% of prefill MACs at V=152k; modes 0/1 skip
+     * (B)/B and (B-1)/B of it respectively.
+     * STRATUM_LM_ALL=1 forces mode 2 (debug/A-B). */
+    if (getenv("STRATUM_LM_ALL")) lm_all = 2;
+    if (lm_all >= 2) {
+        float* clog[la_B_MAX];
+        for (int s=0;s<B;s++) clog[s]=la_gb_logits[s];
+        la_linear_multix(lm, cxn, clog, B, V, H);
+    } else if (lm_all == 1) {
+        st_linear_dispatch(lm, xn[B-1], la_gb_logits[B-1], V, H);
+    }
     return 0;
 }
 
 static int la_forward_batch(const int* tokens, const int* positions, int B) {
-    return la_forward_batch_ex(tokens, positions, NULL, B);
+    return la_forward_batch_ex(tokens, positions, NULL, B, 2);
 }
 
 
@@ -1002,8 +1102,7 @@ static int la_forward_multiseq(const int* tokens, const int* pos,
         const float* qng = b->attn_q_norm ? st_f32_tensor_ptr(b->attn_q_norm) : NULL;
         const float* kng = b->attn_k_norm ? st_f32_tensor_ptr(b->attn_k_norm) : NULL;
         double rpT=0; if(_mt){struct timespec ts;clock_gettime(CLOCK_MONOTONIC,&ts);rpT=ts.tv_sec*1e6+ts.tv_nsec/1e3;}
-        { int mp=0; for(int s=0;s<B;s++) if(pos[s]>mp) mp=pos[s];
-          la_rope_tables_grow(mp, la_g_cfg.rope_dim/2, la_g_cfg.rope_theta); }
+        la_rope_freq_prepare(la_g_cfg.rope_dim/2, la_g_cfg.rope_theta);
         la_par_run(B, ^(int s){
             if (qng) for (int h=0;h<Nq;h++)
                 la_rmsnorm(qb[s]+h*Hd, qng, Hd, la_g_cfg.rms_eps, qb[s]+h*Hd);
@@ -1268,16 +1367,18 @@ int run_llama_arch(int argc, char** argv) {
             }
             fprintf(stderr, "  Metal GPU acceleration: ENABLED for Q4_K matmul\n\n");
             if (getenv("STRATUM_GPU_FULL")) {
-                la_g_gpu_full = 1;
-                /* GPU KV buffer is allocated eagerly (n_layers*max_kv*Nk*Hd),
-                 * unlike the lazy-committed calloc CPU cache — cap the bound
-                 * passed to Metal so a large context_length can't blow it. */
-                if (la_g_kvbound > 8192) {
-                    fprintf(stderr, "  GPU-full KV cap: 8192 positions "
-                            "(CPU capacity %d)\n", la_g_kvbound);
-                    la_g_kvbound = 8192;
+                /* Do not shrink la_g_kvbound. A long reservation stays on
+                 * the lazy CPU cache; the GPU slab would be eager and its
+                 * rope kernel has no YaRN. */
+                if (!stratum_gpu_full_ok(&la_g_cfg.rope, la_g_kvbound)) {
+                    fprintf(stderr,
+                            "  Metal GPU: FULL forward left on CPU "
+                            "(KV capacity %d; GPU rope is unscaled and its KV buffer is eager, cap %d)\n",
+                            la_g_kvbound, STRATUM_GPU_ROPE_MAX_KV);
+                } else {
+                    la_g_gpu_full = 1;
+                    fprintf(stderr, "  Metal GPU: FULL forward on-GPU (1 sync/token, KV cache on GPU)\n\n");
                 }
-                fprintf(stderr, "  Metal GPU: FULL forward on-GPU (1 sync/token, KV cache on GPU)\n\n");
             }
             if (getenv("STRATUM_GPU_BATCH_FULL")) {
                 la_g_gpu_batch_full = 1;
@@ -1333,9 +1434,13 @@ int run_llama_arch(int argc, char** argv) {
     stratum_vocab_init(&la_g_gguf, la_g_gguf.mmap_base, &la_vocab);
     if (la_vocab.available)
         fprintf(stderr, "  tokenizer: %u tokens loaded (text output enabled)\n", la_vocab.count);
+    fprintf(stderr, "  prompt length: %d\n", n_prompt);
     fprintf(stderr, "  prompt ids:");
-    for (int i = 0; i < n_prompt; i++) fprintf(stderr, " %d", prompt[i]);
+    for (int i = 0; i < n_prompt && i < 32; i++) fprintf(stderr, " %d", prompt[i]);
+    if (n_prompt > 32) fprintf(stderr, " ...");
     fprintf(stderr, "\n  generating %d tokens\n\n", n_gen);
+    la_g_rope_hold_unscaled = stratum_rope_hold_unscaled(&la_g_cfg.rope, n_prompt, n_gen);
+    stratum_rope_reach_report(&la_g_cfg.rope, n_prompt, n_gen);
 
     /* Multi-sequence throughput mode: run B independent streams (here B
      * copies of the prompt) in lockstep. Each sweep commits B tokens.
@@ -1445,7 +1550,11 @@ int run_llama_arch(int argc, char** argv) {
     int _timing = (getenv("STRATUM_TIMING") != NULL);
     struct timespec _tp0, _tp1, _tg0, _tg1;
     if (_timing) clock_gettime(CLOCK_MONOTONIC, &_tp0);
-    int pf_B = 8;   /* batched prefill default (~3x on long prompts). Greedy-equal
+    int pf_B = 32;  /* batched prefill default.  With lm_mode eliminating the
+                     * per-position lm_head and attention parallelized over
+                     * (s,kv) jobs, bigger chunks amortize weight streaming:
+                     * measured 512-tok prefill 1.39s@8 -> 1.26s@32 -> 0.96s@64
+                     * (load-affected).  Greedy-equal
                      * to per-token prefill, not bit-exact: B>=2 takes the SDOT
                      * pack path whose accumulation order differs from the
                      * single-stream kernels (~0.2 max logit drift on Qwen3-0.6B,
@@ -1469,7 +1578,7 @@ int run_llama_arch(int argc, char** argv) {
             if (Bk == 1) { if (la_forward_one_token(prompt[t], position++) != 0) return 1; t++; continue; }
             int btok[la_B_MAX], bpos[la_B_MAX];
             for (int s = 0; s < Bk; s++) { btok[s]=prompt[t+s]; bpos[s]=position+s; }
-            if (la_forward_batch(btok, bpos, Bk) != 0) return 1;
+            if (la_forward_batch_ex(btok, bpos, NULL, Bk, (t + Bk == n_prompt) ? 1 : 0) != 0) return 1;
             /* last slot's logits become the prefill output */
             memcpy(la_g_logits, la_gb_logits[Bk-1], sizeof(float)*la_g_cfg.vocab_size);
             la_g_kv_len += Bk;
@@ -1618,7 +1727,7 @@ int run_llama_arch(int argc, char** argv) {
                         bpos[s] = position + n_dep[s];
                         bpar[s] = n_par[s];
                     }
-                    if (la_forward_batch_ex(btok, bpos, bpar, B) != 0)
+                    if (la_forward_batch_ex(btok, bpos, bpar, B, 2) != 0)
                         return 1;
                     spec_calls++;
                     spec_nodes += B;

@@ -54,6 +54,13 @@ SANCTIONED = {
     "STRATUM_TREE_EXTEND_K": "tree chain depth (cap 12)",
     "STRATUM_Q2K_SDOT": "int8 SDOT for Q2K (opt-in)",
     "STRATUM_ADAPTIVE": "startup bandwidth calibration probe (measurement only)",
+    "STRATUM_ROPE_SCALING": "opt-in RoPE scaling none|linear|yarn; default none keeps unscaled angles",
+    "STRATUM_ROPE_SCALE": "RoPE scale factor for yarn or linear",
+    "STRATUM_YARN_ORIG": "YaRN original context length",
+    "STRATUM_YARN_BETA_FAST": "YaRN beta_fast (default 32)",
+    "STRATUM_YARN_BETA_SLOW": "YaRN beta_slow (default 1)",
+    "STRATUM_YARN_EXT": "YaRN extrapolation mix (default 1)",
+    "STRATUM_YARN_ATTN": "YaRN attention mscale override",
 }
 
 
