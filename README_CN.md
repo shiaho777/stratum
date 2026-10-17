@@ -14,7 +14,7 @@
 | 27B 的匿名（wired）内存 | **~77 MB**（含 KV/SSM 状态） |
 | 0.5–1B 模型的匿名内存 | ~7 MB |
 | 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |
-| 对比 llama.cpp GPU 解码（Qwen3-0.6B） | **链式 ~199–215 tok/s** 对 ~190（2026-10-17，swap 占用中；融合路径需要 `STRATUM_MAX_KV=8192`） |
+| 对比 llama.cpp GPU 解码（Qwen3-0.6B） | **融合流式 ~247–252 tok/s** 对 ~224–231（贪心，在回合结束处停下；融合路径需要 `STRATUM_MAX_KV=8192`） |
 | 引擎体积 | ~752 KB 二进制 · ≈4.6 万行 C/Metal/工具（引擎核心 ≈2.6 万行） |
 | GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
 | 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`）+ MoE（`llama-moe`，实验性）+ 视频 DiT/H3 探针（独立程序，不属于 `stratum` 二进制） |
@@ -195,7 +195,7 @@ GPU 可选且严格有界：
 - **逐 tensor NoCopy**（`STRATUM_GPU_NC=1`）——每个 matmul 只把自己的 tensor（<100 MB）用 `newBufferWithBytesNoCopy` 视图包住 mmap，分发，释放。wired 内存保持平稳（实测 11.98 GB 顺序 GPU 读取仅 +0.04 GB）。
 - **批量提交**（`stratum_metal_nc_batch_*`）——多个独立 matmul 共享一个 command buffer：**比逐 matmul 等待快 17.3×**（480 个 matmul：3.71 s → 0.21 s）。
 - **失败模式是整模型注册**——对整个 mmap（或 >~1 GB 的块）建一个 NoCopy 缓冲会把整个模型 wire 住并 OOM。这正是逐 tensor 粒度要避免的。此外任何地方都不锁页缓存：`keep_resident` 被禁止，`STRATUM_HOT_FAST` 是不锁页缓存的热模式调度器。
-- **融合全前向解码**（`STRATUM_GPU=1 STRATUM_GPU_FULL=1`，小模型）——整个 Transformer 层每 token 走一遍融合 Metal 路径：单个 compute encoder 横跨全部 28 层、dispatch 之间用 buffer barrier 分隔、激活暂存在 threadgroup 内存；可选链式解码（`STRATUM_GPU_CHAIN=1`）让 token ring + embedding gather 留在 GPU 上，token 背靠背解码、无宿主往返。Qwen3-0.6B Q4_K_M 的 `context_length` 是 40960，而全 GPU 的 rope/KV 上限是 8192，所以只设 `STRATUM_GPU_FULL=1` 时前向留在 CPU。加上 `STRATUM_MAX_KV=8192`（192 token 的跑测放得下）后，2026-10-17 实测融合路径 **~203–215 tok/s**，链式生成 **~199–215 tok/s**，同一次测量里 llama.cpp Metal **~190 tok/s**。8192 上限对应的 GPU KV 是急切分配，物理占用 **~1.84 GB**；权重仍是文件态。不支持的架构自动回退通用路径（MiniCPM5 已验证）。
+- **融合全前向解码**（`STRATUM_GPU=1 STRATUM_GPU_FULL=1`，小模型）——整个 Transformer 层每 token 走一遍融合 Metal 路径：单个 compute encoder 横跨全部 28 层、dispatch 之间用 buffer barrier 分隔、激活暂存在 threadgroup 内存；可选链式解码（`STRATUM_GPU_CHAIN=1`）让 token ring + embedding gather 留在 GPU 上，token 背靠背解码、无宿主往返。Qwen3-0.6B Q4_K_M 的 `context_length` 是 40960，而全 GPU 的 rope/KV 上限是 8192，所以只设 `STRATUM_GPU_FULL=1` 时前向留在 CPU。加上 `STRATUM_MAX_KV=8192`，在第一个回合结束符处停下，融合路径实测 **~247–252 tok/s**，llama.cpp Metal **~224–231 tok/s**。两边都先写 `<think>`，再写答案 “The capital of France is Paris.”。8192 上限对应的 GPU KV 是急切分配，物理占用 **~1.84 GB**；权重仍是文件态。不支持的架构自动回退通用路径（MiniCPM5 已验证）。
 
 既然 CPU 能跑，为什么还要 GPU？内存层面的答案才是重点：GPU 加速是*有界*资源，所以它永远不会改变内存故事——在一个带宽受限的流水线里，它只能加速计算部分。
 
@@ -289,12 +289,12 @@ STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prom
 
 **测量规则（全部视频）：**
 
-- **2026-10-17** 在 Apple M4 Pro、24 GB 上重测。引擎是 commit `5f72757`，`USE_METAL=1 USE_MEMX=0`。llama.cpp 是 Homebrew 原版 `llama-completion` b9180。
-- 两个引擎消费**字节级相同的 GGUF 文件**与同一 prompt token 序列（Qwen3 chat 模板，"What is the capital of France? Answer in one short sentence."），temperature 0，192 个生成 token。llama.cpp 加 `--ignore-eos`，两边都不会提前停；每次运行先用 `-n 0` 校准精确的 prompt 回显长度。
-- 内存记账：`vmmap --summary` 每 0.2 s 轮询——**physical footprint**（有约束力的成本，与 `stratum/benchmarks/headtohead.sh` 同方法），**页缓存 = mapped-file resident**（可回收，永不成约束）。
-- **两遍测量**：无采样器的速度 pass（vmmap 会挂起目标进程，扭曲 <5s 的短跑）+ 单独带采样的内存 pass。每例跑两遍。视频用的是下面点名的那份 JSON。这一天第二遍往往比第一遍慢：一开始 swap 大约 1.2 GB，GPU 驻留跑完后爬到大约 3 GB，所以第二遍不是更热的页缓存。
-- CPU pass：`STRATUM_NO_GPU=1` 对 `-ngl 0`。GPU pass：stratum 融合全前向（`STRATUM_GPU=1 STRATUM_GPU_FULL=1` 再加 `STRATUM_MAX_KV=8192`，可选 `STRATUM_GPU_CHAIN=1`）对 `-ngl 99`。这份 GGUF 的 `context_length` 是 40960；不加 KV 上限时，全 GPU rope 路径留在 CPU（`STRATUM_GPU_ROPE_MAX_KV` 为 8192）。同一次窗口里不加上限的 Metal matmul 只有约 37 tok/s（流式），记录在 `results/q4km_stratum_gpu_nocap_*`。
-- llama-bench 交叉验证（同一下午，Qwen3-0.6B Q4_K_M，tg192，2 次，swap 约 3 GB）：**`-ngl 0` 133.3 ± 13.6 tok/s，`-ngl 99` 186.5 ± 0.6 tok/s**。CPU 数字与上次交叉验证（133.9 ± 17.5）一致。上次的 Metal 数字（252.5 ± 2.7）这次没有复现。
+- 输出修正之后重录。Apple M4 Pro、24 GB，`USE_METAL=1 USE_MEMX=0`。llama.cpp 是 Homebrew 原版 `llama-completion` b9180。
+- 同一个 GGUF、同一段 chat prompt。llama.cpp 用原始补全模式（`-no-cnv`）。它默认会在模型带 chat 模板时打开对话模式，把已经套好模板的 prompt 再包一层。贪心是 `--temp 0 --top-k 1`。这个二进制默认温度是 0.80，所以早先两边的思考写的不是同一段话。
+- stratum 会把预填后采到的第一个 token 打出来。在这条 prompt 上它是 `<think>`。旧循环只打印喂进去之后的下一个 token，所以画面从思考正文中间开始。
+- 记录下来的回答停在第一个 `<|im_end|>`。生成上限只是天花板。回合结束之后的 token 不进视频。
+- 内存仍用 `vmmap --summary`。速度 pass 不挂采样器。
+- CPU：`STRATUM_NO_GPU=1` 对 `-ngl 0`。GPU：融合全前向加 `STRATUM_MAX_KV=8192` 对 `-ngl 99`。这份文件的 `context_length` 是 40960，不加这个上限，全 GPU rope 路径留在 CPU。
 
 #### 视频 — Qwen3-0.6B Q4_K_M（462 MB）CPU
 
@@ -303,12 +303,13 @@ STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prom
 
 | | stratum | llama.cpp |
 |---|---|---|
-| 解码吞吐（流式，两遍） | **164–176 tok/s** | 119–125 tok/s |
-| wall（加载 + prefill + 192 tok，第 2 遍） | 1.29 s | 3.11 s |
-| **物理占用（峰值）** | **52 MB** | **4915 MB** |
+| 回合（到结束符） | 81 token | 93 token |
+| 解码吞吐（流式） | **247–255 tok/s** | 171–184 tok/s |
+| wall，第 2 遍 | 0.76 s | 1.57 s |
+| **物理占用（峰值）** | **46 MB** | **4915 MB** |
 | 页缓存（可回收，峰值） | 462 MB | 542 MB |
 
-同一天更早的一次，swap 大约 1.2 GB、还没跑 Metal 驻留时，这组 CPU 对比是 stratum **211 tok/s**（wall 1.00 s）、llama.cpp **185 tok/s**（wall 2.10 s）。视频是后来那一次，和下面的 GPU 跑在同一次测量里。
+两边都先写 `<think>`，再回答 “The capital of France is Paris.”。思考段落并不逐字相同：llama-completion 会丢掉 `assistant` 后面的换行，prompt 少一个 token，CPU 内核也不是同一份代码。答案那一句是一样的。
 
 #### 视频 — Qwen3-0.6B Q4_K_M — GPU（Metal）
 
@@ -317,13 +318,14 @@ STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prom
 
 | | stratum GPU | llama.cpp GPU（-ngl 99） |
 |---|---|---|
-| 解码吞吐（流式，两遍） | **205–206 tok/s** | 190–194 tok/s |
-| — 链式解码（`STRATUM_GPU_CHAIN`） | **199–215 tok/s**（生成阶段，4.6–5.0 ms/tok） | — |
-| wall（加载 + prefill + 192 tok） | 1.24 s | 2.09 s |
+| 回合（到结束符） | 81 token | 81 token |
+| 解码吞吐（流式） | **247–252 tok/s** | 224–231 tok/s |
+| — 链式解码（`STRATUM_GPU_CHAIN`） | **258 tok/s**（3.9 ms/tok） | — |
+| wall，第 2 遍 | 0.92 s | 1.58 s |
 | **物理占用（峰值，并保持）** | **1843 MB** | **4608 MB** |
 | 页缓存（可回收，峰值） | 552 MB | 562 MB |
 
-1843 MB 是 8192 上限下急切分配的 GPU KV，跑完前都在。权重仍是文件态（页缓存 552 MB），包成一个不到 1 GB 的 NoCopy 视图。llama.cpp 的 4.6 GB 是 Metal residency set。2026 年 10 月写过的链式 ~304–310 tok/s 在 `5f72757` 上没有复现。生成阶段计时见 `results/q4km_stratum_gpu_chain_timing.txt`。
+这一遍两个 GPU 面板的正文相同，包括思考。1843 MB 是 8192 上限下急切分配的 GPU KV。CPU 上 stratum 的思考以 “that's all” 收尾，GPU 这一对以 “that's it” 收尾。答案那一句每个面板都一样。
 
 #### 视频 — MiniCPM5-2B（官方 GGUF，llama.cpp 拒载）
 
@@ -332,11 +334,12 @@ STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prom
 
 | | stratum | llama.cpp |
 |---|---|---|
-| 解码吞吐（流式） | Q4_K_M 72.0，随后 54.3 · F16 13.5–13.9 tok/s | — |
-| **物理占用（峰值）** | **Q4 32–33 MB · F16 34 MB** | — |
+| 回合 | Q4 53 token，答 “Paris.” · F16 45 token，答完整的一句 | — |
+| 解码吞吐（流式） | Q4 **89–92 tok/s** · F16 **19.0–19.9 tok/s** | — |
+| **物理占用（峰值）** | **Q4 29 MB · F16 32 MB** | — |
 | 页缓存（可回收，峰值） | Q4 1536 MB · F16 4813 MB | — |
 
-两个引擎消费**官方未改动的 `openbmb/MiniCPM5-2B-GGUF`** 发布版。Homebrew llama.cpp（b9180）在加载时直接拒绝（`unknown pre-tokenizer type: 'minicpm5'`），所以右侧渲染为 CANNOT-RUN 卡片。Q4 视频用的是第一遍速度 pass（72.0 tok/s）；同一轮第二遍是 54.3。F16 速度 pass 在大约 3 GB swap 下是 13.5–13.9 tok/s（wall 16.5–18.3 s），带 vmmap 的内存 pass 掉到约 3.6 tok/s。占用仍然是 34 MB，4.7 GB 文件走页缓存。
+两边都指向**官方未改动的 `openbmb/MiniCPM5-2B-GGUF`**。Homebrew llama.cpp（b9180）加载时直接拒绝（`unknown pre-tokenizer type: 'minicpm5'`），右侧是 CANNOT-RUN。stratum 写出 `<think>`，答完就停。Q4 和 F16 的答案长短不同，这是量化本身的差别，不是视频被截断。
 
 ---
 

@@ -2,8 +2,10 @@
 # run_all_cases.sh — measured head-to-head: stratum vs llama.cpp.
 # Each (model x engine) case runs twice; run 2 (hot page cache) is kept.
 # Results -> results/<model>_<engine>_run{1,2}.json
-# 2026-refresh: llama side uses stock `llama-completion` (b9180, honors
-# --ignore-eos natively, non-interactive). stratum GPU pass added.
+# llama side is stock llama-completion in raw completion mode (-no-cnv):
+# conversation mode would re-wrap this already-templated prompt. The run
+# stops the recorded answer at the first end-of-turn marker. GPU fused
+# forward needs STRATUM_MAX_KV=8192 on this 40960-context file.
 set -u
 cd "$(dirname "$0")"
 

@@ -1606,6 +1606,15 @@ int run_llama_arch(int argc, char** argv) {
     }
     fprintf(stderr, "  after prefill, stratum_argmax = %d  (logit=%g)\n",
             next_tok, la_g_logits[next_tok]);
+    /* The step loops print the token sampled AFTER feeding the previous
+     * one. The prefill sample itself (often the opening <think>) has to
+     * be emitted here or it never appears in the text. */
+    if (n_gen > 0 && la_vocab.available) {
+        char tok_text[256];
+        stratum_decode_token(&la_vocab, (uint32_t)next_tok, tok_text, sizeof(tok_text));
+        fprintf(stdout, "%s", tok_text);
+        fflush(stdout);
+    }
     if (_timing) clock_gettime(CLOCK_MONOTONIC, &_tg0);
 
     if (getenv("STRATUM_DEBUG")) {
