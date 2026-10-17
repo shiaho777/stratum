@@ -1,1559 +1,1264 @@
 {
  "engine": "stratum",
- "model_path": "/Users/shiaho/Desktop/0-/MiniCPM5-2B/MiniCPM5-2B-F16.gguf",
+ "model_path": "<models>/MiniCPM5-2B/MiniCPM5-2B-F16.gguf",
  "model_size_mb": 4805.6,
  "n_prompt_tokens": 21,
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1790857272.736578,
+ "t0": 1792216168.0942101,
  "stdout_events": [
   {
-   "t": 10.7538,
+   "t": 6.4894,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 10.7902,
+   "t": 6.5633,
    "bytes": 5,
    "text": "First"
   },
   {
-   "t": 10.8271,
+   "t": 6.6451,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 10.865,
+   "t": 7.5061,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 10.9084,
+   "t": 7.5832,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 10.954,
+   "t": 7.6535,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 11.7695,
+   "t": 7.7311,
    "bytes": 5,
    "text": " make"
   },
   {
-   "t": 11.8054,
+   "t": 8.6143,
    "bytes": 5,
    "text": " sure"
   },
   {
-   "t": 11.8409,
+   "t": 8.7044,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 11.8793,
+   "t": 8.7757,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 11.9163,
+   "t": 9.6403,
    "bytes": 2,
    "text": "'m"
   },
   {
-   "t": 11.9547,
+   "t": 9.719,
    "bytes": 10,
    "text": " answering"
   },
   {
-   "t": 11.9998,
+   "t": 9.7905,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 12.7985,
+   "t": 9.8752,
    "bytes": 9,
    "text": " question"
   },
   {
-   "t": 12.834,
+   "t": 9.9569,
    "bytes": 6,
    "text": " about"
   },
   {
-   "t": 12.869,
+   "t": 10.8161,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 12.9041,
+   "t": 10.8879,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 12.9397,
+   "t": 10.9681,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 12.9743,
+   "t": 11.0408,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 13.0094,
+   "t": 11.8983,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 13.0547,
+   "t": 11.9794,
    "bytes": 4,
    "text": "Next"
   },
   {
-   "t": 13.8626,
+   "t": 12.0561,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 13.9034,
+   "t": 12.9304,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 13.9406,
+   "t": 13.0273,
    "bytes": 5,
    "text": " have"
   },
   {
-   "t": 13.9797,
+   "t": 13.117,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 14.0185,
+   "t": 13.2003,
    "bytes": 5,
    "text": " keep"
   },
   {
-   "t": 14.0567,
+   "t": 14.0819,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 14.1024,
+   "t": 14.1657,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 14.1426,
+   "t": 14.2481,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 14.9402,
+   "t": 15.1333,
    "bytes": 4,
    "text": " and"
   },
   {
-   "t": 14.9795,
+   "t": 15.2054,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 15.0188,
+   "t": 15.2871,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 15.0586,
+   "t": 15.3663,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 15.101,
+   "t": 16.2493,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 15.1454,
+   "t": 16.338,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 15.1965,
+   "t": 16.5083,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 16.0105,
+   "t": 17.4348,
    "bytes": 3,
    "text": "The"
   },
   {
-   "t": 16.0505,
+   "t": 17.5115,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 16.0885,
+   "t": 17.588,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 16.1299,
+   "t": 17.6898,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 16.1698,
+   "t": 18.5738,
    "bytes": 3,
    "text": " is"
   },
   {
-   "t": 16.209,
+   "t": 18.6564,
    "bytes": 6,
    "text": " Paris"
   },
   {
-   "t": 16.2565,
+   "t": 18.7494,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 17.0656,
+   "t": 19.668,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 17.1018,
+   "t": 19.7577,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.138,
+   "t": 19.8315,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.1822,
+   "t": 19.9205,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.2278,
+   "t": 20.8221,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.2791,
+   "t": 20.9012,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 17.3553,
+   "t": 21.0064,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.1917,
+   "t": 21.898,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.2414,
+   "t": 21.9857,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.2825,
+   "t": 22.0691,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.3236,
+   "t": 22.1585,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.3648,
+   "t": 23.0314,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.4126,
+   "t": 23.1093,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.2305,
+   "t": 23.1877,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.2716,
+   "t": 24.0647,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.3116,
+   "t": 24.1578,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.3494,
+   "t": 24.2904,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.3881,
+   "t": 25.2228,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.4259,
+   "t": 25.3064,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.4729,
+   "t": 25.3827,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.5152,
+   "t": 25.4674,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.3255,
+   "t": 26.3499,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.3648,
+   "t": 26.4318,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.4025,
+   "t": 26.5094,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.442,
+   "t": 27.3749,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.481,
+   "t": 27.4572,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.5235,
+   "t": 27.537,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.5661,
+   "t": 27.6107,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 21.3753,
+   "t": 28.4928,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 21.4171,
+   "t": 28.5724,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 21.4578,
+   "t": 28.6495,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 21.4988,
+   "t": 28.7311,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 21.5395,
+   "t": 29.5931,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 21.5926,
+   "t": 29.6641,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 21.6462,
+   "t": 29.7386,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.4547,
+   "t": 30.6209,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.4922,
+   "t": 30.7052,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.5298,
+   "t": 30.7904,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.5685,
+   "t": 30.8914,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.6045,
+   "t": 31.7423,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.6432,
+   "t": 31.8163,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.6847,
+   "t": 31.8939,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.4898,
+   "t": 32.7655,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.5314,
+   "t": 32.8304,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.5782,
+   "t": 32.8946,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.62,
+   "t": 32.9624,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.6588,
+   "t": 33.0398,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.7179,
+   "t": 33.9147,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.7644,
+   "t": 33.979,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.5749,
+   "t": 34.0429,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.6178,
+   "t": 34.1132,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.661,
+   "t": 34.9577,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.7021,
+   "t": 35.0218,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.7681,
+   "t": 35.0874,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.8457,
+   "t": 35.1556,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.6864,
+   "t": 36.0037,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.7247,
+   "t": 36.0689,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.7614,
+   "t": 36.135,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.799,
+   "t": 36.2145,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.835,
+   "t": 37.0551,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.8706,
+   "t": 37.1214,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.9109,
+   "t": 37.1869,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.9518,
+   "t": 37.2517,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.7416,
+   "t": 37.3244,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.7797,
+   "t": 38.1572,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.8149,
+   "t": 38.2239,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.8506,
+   "t": 38.29,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.8853,
+   "t": 38.3612,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.9208,
+   "t": 39.1968,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.961,
+   "t": 39.263,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.9991,
+   "t": 39.3288,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 27.8719,
+   "t": 39.3944,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 27.9397,
+   "t": 39.4704,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 29.0868,
+   "t": 40.3351,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 29.2128,
+   "t": 40.4034,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 29.2499,
+   "t": 40.5119,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 29.2892,
+   "t": 40.5879,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 29.333,
+   "t": 41.4617,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 30.1378,
+   "t": 41.529,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 30.1795,
+   "t": 41.5938,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 30.2194,
+   "t": 41.6637,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 30.2618,
+   "t": 42.5073,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 30.3056,
+   "t": 42.5752,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 30.3576,
+   "t": 42.643,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 30.4143,
+   "t": 42.72,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 31.4066,
+   "t": 43.5617,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 31.6352,
+   "t": 43.6306,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 33.9609,
+   "t": 43.699,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 34.8718,
+   "t": 43.7729,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 34.923,
+   "t": 44.6306,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 34.9678,
+   "t": 44.7028,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 35.0138,
+   "t": 44.7715,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 35.0732,
+   "t": 44.8389,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 36.0787,
+   "t": 44.9196,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 36.4308,
+   "t": 45.773,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 37.5123,
+   "t": 45.846,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 37.6306,
+   "t": 45.9107,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 38.6241,
+   "t": 45.9919,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 38.7632,
+   "t": 46.8297,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 39.7208,
+   "t": 46.897,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 48.1733,
+   "t": 46.9862,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 64.1621,
+   "t": 47.0871,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 83.7491,
+   "t": 47.9577,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 104.4697,
+   "t": 48.0265,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 120.4636,
+   "t": 48.0951,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 124.5404,
+   "t": 48.1737,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 124.5756,
+   "t": 49.0542,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 124.6114,
+   "t": 49.1203,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 124.6465,
+   "t": 49.1868,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 124.6814,
+   "t": 49.2552,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 124.7168,
+   "t": 50.0956,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 124.7563,
+   "t": 50.1588,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 124.7957,
+   "t": 50.2222,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 125.578,
+   "t": 50.2849,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 125.6128,
+   "t": 50.3543,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 125.6476,
+   "t": 51.1936,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 125.6827,
+   "t": 51.2594,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 125.7192,
+   "t": 51.3297,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 125.7539,
+   "t": 51.4067,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 125.803,
+   "t": 52.241,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 125.8572,
+   "t": 52.31,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 126.6513,
+   "t": 52.3862,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 126.6894,
+   "t": 52.4741,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 126.73,
+   "t": 52.5682,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 126.7678,
+   "t": 53.4163,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 126.8063,
+   "t": 53.4863,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 126.85,
+   "t": 53.5547,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 126.8919,
+   "t": 53.6273,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 127.6737,
+   "t": 54.4728,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 127.7087,
+   "t": 54.5849,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 127.744,
+   "t": 54.6776,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 127.7789,
+   "t": 55.5237,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 127.814,
+   "t": 55.5905,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 127.8488,
+   "t": 55.657,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 127.887,
+   "t": 55.7266,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 127.9267,
+   "t": 56.5847,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 128.7124,
+   "t": 56.6595,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 128.7493,
+   "t": 56.7231,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 128.7841,
+   "t": 56.7889,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 128.8191,
+   "t": 57.6389,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 128.8539,
+   "t": 57.7028,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 128.8887,
+   "t": 57.7667,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 128.9281,
+   "t": 57.8302,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 128.9667,
+   "t": 57.9009,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 129.7568,
+   "t": 58.752,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 129.7956,
+   "t": 58.8158,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 129.834,
+   "t": 58.8782,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 129.8733,
+   "t": 58.9462,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 129.9134,
+   "t": 59.8033,
    "bytes": 4,
    "text": "</s>"
   }
  ],
  "mem_series": [
   {
-   "t": 0.724,
-   "anon_mb": 1.81,
+   "t": 0.718,
+   "anon_mb": 2.11,
    "file_mb": 4812.8
   },
   {
-   "t": 2.138,
-   "anon_mb": 3.06,
+   "t": 1.834,
+   "anon_mb": 14.2,
    "file_mb": 4812.8
   },
   {
-   "t": 3.295,
-   "anon_mb": 13.7,
+   "t": 2.941,
+   "anon_mb": 15.0,
    "file_mb": 4812.8
   },
   {
-   "t": 4.37,
-   "anon_mb": 14.1,
+   "t": 4.065,
+   "anon_mb": 15.9,
    "file_mb": 4812.8
   },
   {
-   "t": 5.452,
-   "anon_mb": 14.4,
+   "t": 5.321,
+   "anon_mb": 16.9,
    "file_mb": 4812.8
   },
   {
-   "t": 6.483,
-   "anon_mb": 14.6,
+   "t": 6.392,
+   "anon_mb": 18.3,
    "file_mb": 4812.8
   },
   {
-   "t": 7.523,
-   "anon_mb": 16.1,
+   "t": 7.469,
+   "anon_mb": 18.3,
    "file_mb": 4812.8
   },
   {
-   "t": 8.608,
-   "anon_mb": 16.4,
+   "t": 8.554,
+   "anon_mb": 18.3,
    "file_mb": 4812.8
   },
   {
-   "t": 9.645,
-   "anon_mb": 20.4,
+   "t": 9.627,
+   "anon_mb": 18.3,
    "file_mb": 4812.8
   },
   {
-   "t": 10.68,
-   "anon_mb": 21.6,
+   "t": 10.758,
+   "anon_mb": 19.6,
    "file_mb": 4812.8
   },
   {
-   "t": 11.749,
+   "t": 11.822,
+   "anon_mb": 19.6,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 12.91,
+   "anon_mb": 19.7,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 14.018,
+   "anon_mb": 19.7,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 15.1,
+   "anon_mb": 21.0,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 16.198,
+   "anon_mb": 21.0,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 17.404,
+   "anon_mb": 21.0,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 18.509,
+   "anon_mb": 21.0,
+   "file_mb": 4812.8
+  },
+  {
+   "t": 19.629,
    "anon_mb": 21.8,
    "file_mb": 4812.8
   },
   {
-   "t": 12.798,
-   "anon_mb": 23.2,
+   "t": 20.74,
+   "anon_mb": 22.3,
    "file_mb": 4812.8
   },
   {
-   "t": 13.855,
-   "anon_mb": 23.2,
+   "t": 21.852,
+   "anon_mb": 22.3,
    "file_mb": 4812.8
   },
   {
-   "t": 14.934,
-   "anon_mb": 24.5,
+   "t": 22.974,
+   "anon_mb": 22.3,
    "file_mb": 4812.8
   },
   {
-   "t": 15.995,
-   "anon_mb": 24.5,
+   "t": 24.06,
+   "anon_mb": 22.3,
    "file_mb": 4812.8
   },
   {
-   "t": 17.065,
-   "anon_mb": 25.7,
+   "t": 25.211,
+   "anon_mb": 23.7,
    "file_mb": 4812.8
   },
   {
-   "t": 18.17,
-   "anon_mb": 25.9,
+   "t": 26.303,
+   "anon_mb": 23.7,
    "file_mb": 4812.8
   },
   {
-   "t": 19.229,
-   "anon_mb": 25.9,
+   "t": 27.373,
+   "anon_mb": 23.7,
    "file_mb": 4812.8
   },
   {
-   "t": 20.288,
-   "anon_mb": 27.2,
+   "t": 28.456,
+   "anon_mb": 23.7,
    "file_mb": 4812.8
   },
   {
-   "t": 21.353,
-   "anon_mb": 27.2,
+   "t": 29.535,
+   "anon_mb": 24.0,
    "file_mb": 4812.8
   },
   {
-   "t": 22.42,
-   "anon_mb": 28.5,
+   "t": 30.61,
+   "anon_mb": 25.0,
    "file_mb": 4812.8
   },
   {
-   "t": 23.482,
-   "anon_mb": 28.5,
+   "t": 31.678,
+   "anon_mb": 25.0,
    "file_mb": 4812.8
   },
   {
-   "t": 24.546,
-   "anon_mb": 29.9,
+   "t": 32.754,
+   "anon_mb": 25.0,
    "file_mb": 4812.8
   },
   {
-   "t": 25.689,
-   "anon_mb": 29.9,
+   "t": 33.864,
+   "anon_mb": 25.0,
    "file_mb": 4812.8
   },
   {
-   "t": 26.728,
-   "anon_mb": 29.9,
+   "t": 34.929,
+   "anon_mb": 26.3,
    "file_mb": 4812.8
   },
   {
-   "t": 27.784,
-   "anon_mb": 31.2,
+   "t": 35.994,
+   "anon_mb": 26.3,
    "file_mb": 4812.8
   },
   {
-   "t": 29.072,
-   "anon_mb": 31.2,
+   "t": 37.055,
+   "anon_mb": 26.3,
    "file_mb": 4812.8
   },
   {
-   "t": 30.129,
-   "anon_mb": 31.2,
+   "t": 38.113,
+   "anon_mb": 26.8,
    "file_mb": 4812.8
   },
   {
-   "t": 31.251,
-   "anon_mb": 32.5,
+   "t": 39.183,
+   "anon_mb": 27.6,
    "file_mb": 4812.8
   },
   {
-   "t": 32.641,
-   "anon_mb": 32.5,
+   "t": 40.27,
+   "anon_mb": 27.6,
    "file_mb": 4812.8
   },
   {
-   "t": 33.747,
-   "anon_mb": 32.5,
+   "t": 41.399,
+   "anon_mb": 27.6,
    "file_mb": 4812.8
   },
   {
-   "t": 34.846,
-   "anon_mb": 32.5,
+   "t": 42.479,
+   "anon_mb": 29.0,
    "file_mb": 4812.8
   },
   {
-   "t": 36.01,
-   "anon_mb": 32.5,
+   "t": 43.549,
+   "anon_mb": 29.0,
    "file_mb": 4812.8
   },
   {
-   "t": 37.361,
-   "anon_mb": 32.5,
+   "t": 44.63,
+   "anon_mb": 29.0,
    "file_mb": 4812.8
   },
   {
-   "t": 38.523,
-   "anon_mb": 33.8,
+   "t": 45.716,
+   "anon_mb": 29.0,
    "file_mb": 4812.8
   },
   {
-   "t": 39.671,
-   "anon_mb": 33.8,
+   "t": 46.773,
+   "anon_mb": 30.3,
    "file_mb": 4812.8
   },
   {
-   "t": 40.904,
-   "anon_mb": 33.8,
+   "t": 47.937,
+   "anon_mb": 30.3,
    "file_mb": 4812.8
   },
   {
-   "t": 42.227,
-   "anon_mb": 33.8,
+   "t": 49.039,
+   "anon_mb": 30.3,
    "file_mb": 4812.8
   },
   {
-   "t": 43.344,
-   "anon_mb": 33.8,
+   "t": 50.098,
+   "anon_mb": 30.3,
    "file_mb": 4812.8
   },
   {
-   "t": 44.67,
-   "anon_mb": 33.8,
+   "t": 51.159,
+   "anon_mb": 31.6,
    "file_mb": 4812.8
   },
   {
-   "t": 45.784,
-   "anon_mb": 33.8,
+   "t": 52.218,
+   "anon_mb": 31.6,
    "file_mb": 4812.8
   },
   {
-   "t": 46.875,
-   "anon_mb": 33.8,
+   "t": 53.362,
+   "anon_mb": 31.6,
    "file_mb": 4812.8
   },
   {
-   "t": 48.147,
-   "anon_mb": 33.8,
+   "t": 54.425,
+   "anon_mb": 32.2,
    "file_mb": 4812.8
   },
   {
-   "t": 49.306,
-   "anon_mb": 33.8,
+   "t": 55.491,
+   "anon_mb": 32.9,
    "file_mb": 4812.8
   },
   {
-   "t": 50.503,
-   "anon_mb": 33.8,
+   "t": 56.564,
+   "anon_mb": 32.9,
    "file_mb": 4812.8
   },
   {
-   "t": 51.683,
-   "anon_mb": 33.8,
+   "t": 57.642,
+   "anon_mb": 32.9,
    "file_mb": 4812.8
   },
   {
-   "t": 53.004,
-   "anon_mb": 33.8,
+   "t": 58.717,
+   "anon_mb": 33.5,
    "file_mb": 4812.8
   },
   {
-   "t": 54.126,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 55.211,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 56.272,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 57.31,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 58.346,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 59.428,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 60.494,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 61.556,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 62.683,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 63.992,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 65.156,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 66.267,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 67.374,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 68.55,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 69.725,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 70.84,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 72.124,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 73.381,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 74.549,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 75.748,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 76.862,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 77.954,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 79.169,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 80.273,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 81.579,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 82.624,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 83.673,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 84.755,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 85.863,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 87.051,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 88.155,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 89.277,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 91.031,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 92.082,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 93.199,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 94.371,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 95.489,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 96.632,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 97.969,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 99.561,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 100.676,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 101.826,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 103.079,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 104.373,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 105.485,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 106.653,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 107.702,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 108.758,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 109.874,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 111.032,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 112.128,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 113.147,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 114.297,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 115.895,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 117.023,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 118.206,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 119.336,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 120.429,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 121.455,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 122.474,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 123.499,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 124.532,
-   "anon_mb": 33.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 125.567,
-   "anon_mb": 35.1,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 126.619,
-   "anon_mb": 35.1,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 127.656,
-   "anon_mb": 35.8,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 128.694,
-   "anon_mb": 36.5,
-   "file_mb": 4812.8
-  },
-  {
-   "t": 129.733,
-   "anon_mb": 36.8,
+   "t": 59.797,
+   "anon_mb": 34.2,
    "file_mb": 4812.8
   }
  ],
- "peak_anon_mb": 36.8,
+ "peak_anon_mb": 34.2,
  "peak_file_mb": 4812.8,
  "llama_no_mmap": false,
  "prompt_echo_len": 0,
  "exit_code": 0,
- "wall_s": 129.938,
+ "wall_s": 59.828,
  "stderr_tail": "119  in=130073  stratum_argmax=1  logit=21.2916\n  step 120  in=1  stratum_argmax=130073  logit=24.8617\n  step 121  in=130073  stratum_argmax=1  logit=21.2638\n  step 122  in=1  stratum_argmax=130073  logit=24.7131\n  step 123  in=130073  stratum_argmax=1  logit=21.1988\n  step 124  in=1  stratum_argmax=130073  logit=24.7001\n  step 125  in=130073  stratum_argmax=1  logit=21.1209\n  step 126  in=1  stratum_argmax=130073  logit=24.8743\n  step 127  in=130073  stratum_argmax=1  logit=21.1578\n  step 128  in=1  stratum_argmax=130073  logit=24.9066\n  step 129  in=130073  stratum_argmax=1  logit=21.0986\n  step 130  in=1  stratum_argmax=130073  logit=24.667\n  step 131  in=130073  stratum_argmax=1  logit=20.7988\n  step 132  in=1  stratum_argmax=130073  logit=24.7074\n  step 133  in=130073  stratum_argmax=1  logit=20.7047\n  step 134  in=1  stratum_argmax=130073  logit=24.8895\n  step 135  in=130073  stratum_argmax=1  logit=20.9151\n  step 136  in=1  stratum_argmax=130073  logit=24.8187\n  step 137  in=130073  stratum_argmax=1  logit=20.8891\n  step 138  in=1  stratum_argmax=130073  logit=24.8295\n  step 139  in=130073  stratum_argmax=1  logit=20.7568\n  step 140  in=1  stratum_argmax=130073  logit=24.8397\n  step 141  in=130073  stratum_argmax=1  logit=20.7783\n  step 142  in=1  stratum_argmax=130073  logit=24.7474\n  step 143  in=130073  stratum_argmax=1  logit=20.5937\n  step 144  in=1  stratum_argmax=130073  logit=24.7442\n  step 145  in=130073  stratum_argmax=1  logit=20.4667\n  step 146  in=1  stratum_argmax=130073  logit=24.889\n  step 147  in=130073  stratum_argmax=1  logit=20.4568\n  step 148  in=1  stratum_argmax=130073  logit=24.8946\n  step 149  in=130073  stratum_argmax=1  logit=20.3818\n  step 150  in=1  stratum_argmax=130073  logit=24.9044\n  step 151  in=130073  stratum_argmax=1  logit=20.383\n  step 152  in=1  stratum_argmax=130073  logit=25.0326\n  step 153  in=130073  stratum_argmax=1  logit=20.4416\n  step 154  in=1  stratum_argmax=130073  logit=24.887\n  step 155  in=130073  stratum_argmax=1  logit=20.3285\n  step 156  in=1  stratum_argmax=130073  logit=24.727\n  step 157  in=130073  stratum_argmax=1  logit=19.943\n  step 158  in=1  stratum_argmax=130073  logit=24.7393\n  step 159  in=130073  stratum_argmax=1  logit=19.9343\n  step 160  in=1  stratum_argmax=130073  logit=24.6499\n  step 161  in=130073  stratum_argmax=1  logit=19.8798\n  step 162  in=1  stratum_argmax=130073  logit=24.5419\n  step 163  in=130073  stratum_argmax=1  logit=19.8146\n  step 164  in=1  stratum_argmax=130073  logit=24.6335\n  step 165  in=130073  stratum_argmax=1  logit=19.8595\n  step 166  in=1  stratum_argmax=130073  logit=24.5803\n  step 167  in=130073  stratum_argmax=1  logit=19.9028\n  step 168  in=1  stratum_argmax=130073  logit=24.4646\n  step 169  in=130073  stratum_argmax=1  logit=19.8431\n  step 170  in=1  stratum_argmax=130073  logit=24.4277\n  step 171  in=130073  stratum_argmax=1  logit=19.8188\n  step 172  in=1  stratum_argmax=130073  logit=24.3703\n  step 173  in=130073  stratum_argmax=1  logit=19.7965\n  step 174  in=1  stratum_argmax=130073  logit=24.4307\n  step 175  in=130073  stratum_argmax=1  logit=19.7073\n  step 176  in=1  stratum_argmax=130073  logit=24.6194\n  step 177  in=130073  stratum_argmax=1  logit=19.772\n  step 178  in=1  stratum_argmax=130073  logit=24.7667\n  step 179  in=130073  stratum_argmax=1  logit=19.8703\n  step 180  in=1  stratum_argmax=130073  logit=24.6343\n  step 181  in=130073  stratum_argmax=1  logit=19.7343\n  step 182  in=1  stratum_argmax=130073  logit=24.5062\n  step 183  in=130073  stratum_argmax=1  logit=19.5609\n  step 184  in=1  stratum_argmax=130073  logit=24.462\n  step 185  in=130073  stratum_argmax=1  logit=19.5906\n  step 186  in=1  stratum_argmax=130073  logit=24.3371\n  step 187  in=130073  stratum_argmax=1  logit=19.5289\n  step 188  in=1  stratum_argmax=130073  logit=24.3436\n  step 189  in=130073  stratum_argmax=1  logit=19.5264\n  step 190  in=1  stratum_argmax=130073  logit=24.4402\n  step 191  in=130073  stratum_argmax=1  logit=19.6299\n",
  "gen_chunks": 192,
  "gen_bytes": 1223,
- "t_first_gen_chunk_s": 10.754,
- "t_last_gen_chunk_s": 129.913,
- "gen_span_s": 119.16,
- "tok_per_s_stream": 1.61,
- "tok_per_s_wall": 1.48,
- "mem_samples": 114
+ "t_first_gen_chunk_s": 6.489,
+ "t_last_gen_chunk_s": 59.803,
+ "gen_span_s": 53.314,
+ "tok_per_s_stream": 3.6,
+ "tok_per_s_wall": 3.21,
+ "mem_samples": 55
 }

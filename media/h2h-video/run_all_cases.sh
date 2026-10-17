@@ -24,12 +24,15 @@ for run in 1 2; do
   python3 run_h2h.py $LLAMA  $MODEL llamacpp    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_speed_run${run}.json --nomen
   python3 run_h2h.py $LLAMA  $MODEL llamacpp    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_gpu_speed_run${run}.json --nomen --ngl=99
   python3 run_h2h.py $STRATUM $MODEL stratum    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_speed_run${run}.json --nomen
-  python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_speed_run${run}.json --nomen
-  python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_chain_speed_run${run}.json --nomen --chain
+  # Qwen3-0.6B declares context_length 40960. Full-GPU rope/KV is capped at
+  # 8192 (STRATUM_GPU_ROPE_MAX_KV); without this cap the fused forward stays
+  # on CPU. 192 generated tokens fit in 8192.
+  STRATUM_MAX_KV=8192 python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_speed_run${run}.json --nomen
+  STRATUM_MAX_KV=8192 python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_chain_speed_run${run}.json --nomen --chain
   # memory pass (vmmap sampling; wall time here is not comparable)
   python3 run_h2h.py $LLAMA  $MODEL llamacpp    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_mem_run${run}.json
   python3 run_h2h.py $LLAMA  $MODEL llamacpp    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_llamacpp_gpu_mem_run${run}.json --ngl=99
   python3 run_h2h.py $STRATUM $MODEL stratum    "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_mem_run${run}.json
-  python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_mem_run${run}.json
+  STRATUM_MAX_KV=8192 python3 run_h2h.py $STRATUM $MODEL stratum_gpu "$PROMPT_TEXT" "$PROMPT_IDS" $NGEN results/${TAG}_stratum_gpu_mem_run${run}.json
 done
 echo "=== all cases done ==="
