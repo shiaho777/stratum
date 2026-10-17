@@ -12718,6 +12718,22 @@ static int q35_allocate_state(void) {
  * policy. Output is identical to greedy when drafts are rejected.
  * ====================================================================== */
 
+/* Streaming pread stores one index per main layer in a fixed table.
+ * Filling past the cap writes off the end of that array. */
+enum { q35_STREAM_LAYER_CAP = 128 };
+
+static int q35_stream_main_layers_ok(void) {
+    int n = 0;
+    for (int li = 0; li < q35_g_cfg.n_layers; li++) {
+        if (!stratum_is_nextn_v2(&q35_g_cfg, li)) n++;
+    }
+    if (n >= 1 && n <= q35_STREAM_LAYER_CAP) return 0;
+    fprintf(stderr,
+            "qwen35: streaming layer table holds 1..%d main layers, model has %d\n",
+            q35_STREAM_LAYER_CAP, n);
+    return -1;
+}
+
 static int q35_forward_one_token(int token_id, int position) {
     int H = q35_g_cfg.n_embed;
     int V = q35_g_cfg.vocab_size;
@@ -12776,8 +12792,9 @@ static int q35_forward_one_token(int token_id, int position) {
     }
 
     if (q35_g_stream_enabled) {
+        if (q35_stream_main_layers_ok() != 0) return -1;
 
-        int ml[128]; int n_ml = 0;
+        int ml[q35_STREAM_LAYER_CAP]; int n_ml = 0;
         for (int li = 0; li < q35_g_cfg.n_layers; li++) {
             if (stratum_is_nextn_v2(&q35_g_cfg, li)) continue;
             ml[n_ml++] = li;
@@ -13498,8 +13515,9 @@ static int q35_forward_batch_lm(const int* tokens, const int* positions,
     q35_g_ssm_snap_valid_n = (q35_g_ms_mode || B <= 1) ? 0 : (B - 1);
 
     if (q35_g_stream_enabled) {
+        if (q35_stream_main_layers_ok() != 0) return -1;
 
-        int main_layers[128];
+        int main_layers[q35_STREAM_LAYER_CAP];
         int n_ml = 0;
         for (int li = 0; li < q35_g_cfg.n_layers; li++) {
             if (!stratum_is_nextn_v2(&q35_g_cfg, li)) main_layers[n_ml++] = li;
