@@ -18,6 +18,77 @@ import threading
 import time
 
 VM_INTERVAL = 0.2
+# First of these ends the recorded answer. Later copies are the cap padding.
+TURN_END_MARKERS = ("<|im_end|>", "<|endoftext|>", "</s>")
+
+
+def clip_at_turn_end(events):
+    """Return events through the first end-of-turn marker, inclusive."""
+    kept = []
+    acc = ""
+    for ev in events:
+        start = len(acc)
+        piece = ev.get("text") or ""
+        acc += piece
+        cut = None
+        for marker in TURN_END_MARKERS:
+            i = acc.find(marker)
+            if i >= 0 and (cut is None or i < cut):
+                cut = i + len(marker)
+        if cut is None:
+            kept.append(ev)
+            continue
+        take = cut - start
+        if take > 0:
+            text = piece[:take]
+            kept.append({
+                "t": ev["t"],
+                "bytes": len(text.encode("utf-8")),
+                "text": text,
+            })
+        return kept, _marker_at(acc, cut)
+    return kept, None
+
+
+def llama_generation_events(events):
+    """Drop the echoed prompt. llama prints it, then `assistant:` and the tokens."""
+    acc = ""
+    spans = []
+    for ev in events:
+        start = len(acc)
+        acc += ev.get("text") or ""
+        spans.append((start, len(acc), ev))
+    header = "<|im_start|>assistant"
+    i = acc.rfind(header)
+    if i < 0:
+        return events
+    j = i + len(header)
+    if j < len(acc) and acc[j] == ":":
+        j += 1
+    if j < len(acc) and acc[j] == "\n":
+        j += 1
+    out = []
+    for start, end, ev in spans:
+        if end <= j:
+            continue
+        text = ev.get("text") or ""
+        if start < j:
+            text = text[j - start:]
+        if not text:
+            continue
+        out.append({
+            "t": ev["t"],
+            "text": text,
+            "bytes": len(text.encode("utf-8")),
+        })
+    return out
+
+
+def _marker_at(acc, cut):
+    for marker in TURN_END_MARKERS:
+        if acc.rfind(marker, 0, cut) == cut - len(marker):
+            return marker
+    return None
 
 
 def parse_mb(v):
@@ -110,17 +181,14 @@ def main():
         for a in sys.argv:
             if a.startswith("--ngl="):
                 ngl = a.split("=", 1)[1]
-        # calibrate the prompt echo once: a -n 0 run prints the rendered
-        # prompt + the "> EOF by user" trailer; the echo is what precedes it
-        echo_probe = subprocess.run(
-            [binpath, "-m", model, "-n", "0", "-ngl", ngl,
-             "--ignore-eos", "-p", prompt_text],
-            stdin=subprocess.DEVNULL, capture_output=True, env=env)
-        echo = echo_probe.stdout
-        marker = echo.find(b"> EOF by user")
-        prompt_echo_len = (marker - 1) if marker > 0 else len(echo)
+        # -no-cnv: conversation mode re-wraps an already-templated prompt.
+        # -sp prints special tokens the way stratum does. temp 0 is greedy;
+        # the binary defaults to temperature 0.80, which made the two
+        # panels think in different words. EOS stays enabled.
+        prompt_echo_len = 0
         cmd = [binpath, "-m", model, "-n", str(n_gen), "-ngl", ngl,
-               "--ignore-eos", "-p", prompt_text]
+               "-no-cnv", "-sp", "--temp", "0", "--top-k", "1",
+               "--top-p", "1", "--min-p", "0", "-p", prompt_text]
     else:
         raise SystemExit(f"unknown engine {engine}")
 
@@ -174,21 +242,33 @@ def main():
             break
         if ev["bytes"] > 0:
             break
-    rec["gen_chunks"] = len(gen_events)
-    rec["gen_bytes"] = sum(e["bytes"] for e in gen_events)
-    if gen_events:
-        rec["t_first_gen_chunk_s"] = round(gen_events[0]["t"], 3)
-        rec["t_last_gen_chunk_s"] = round(gen_events[-1]["t"], 3)
-        span = gen_events[-1]["t"] - gen_events[0]["t"]
+    # Keep the turn, drop the padding. Both engines are asked for n_gen
+    # as a cap. stratum does not stop on EOS, so the text after the first
+    # end-of-turn marker is the same answer repeated as special tokens or
+    # a new prompt. The recorded answer stops at that marker.
+    if engine == "llamacpp":
+        gen_events = llama_generation_events(gen_events)
+    answer_events, stop_marker = clip_at_turn_end(gen_events)
+    rec["answer_events"] = answer_events
+    rec["stop_marker"] = stop_marker
+    rec["n_shown"] = len(answer_events)
+    rec["gen_chunks"] = len(answer_events)
+    rec["gen_bytes"] = sum(e["bytes"] for e in answer_events)
+    shown = rec["n_shown"] or n_gen
+    if answer_events:
+        rec["t_first_gen_chunk_s"] = round(answer_events[0]["t"], 3)
+        rec["t_last_gen_chunk_s"] = round(answer_events[-1]["t"], 3)
+        rec["t_answer_end_s"] = rec["t_last_gen_chunk_s"]
+        span = answer_events[-1]["t"] - answer_events[0]["t"]
         rec["gen_span_s"] = round(span, 3)
-        rec["tok_per_s_stream"] = round(n_gen / span, 2) if span > 0 else None
-    rec["tok_per_s_wall"] = round(n_gen / rec["wall_s"], 2)
+        rec["tok_per_s_stream"] = round(shown / span, 2) if span > 0 else None
+    rec["tok_per_s_wall"] = round(shown / rec["wall_s"], 2) if rec["wall_s"] else None
     rec["mem_samples"] = len(rec["mem_series"])
 
     with open(outjson, "w") as f:
         json.dump(rec, f, indent=1)
     print(f"[{engine}] {os.path.basename(model)} wall={rec['wall_s']}s "
-          f"tok/s(wall)={rec['tok_per_s_wall']} "
+          f"shown={rec['n_shown']} stop={rec['stop_marker']} "
           f"tok/s(stream)={rec.get('tok_per_s_stream')} "
           f"peak_anon={rec['peak_anon_mb']:.0f}MB peak_file={rec['peak_file_mb']:.0f}MB "
           f"-> {outjson}")

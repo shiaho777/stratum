@@ -2,7 +2,8 @@
 # run_minicpm_cases.sh — MiniCPM5-2B head-to-head: stratum vs llama.cpp.
 # Homebrew llama.cpp b9180 refuses the official GGUF ('minicpm5'
 # pre-tokenizer unknown) — the llama side renders as CANNOT RUN.
-# Same two-pass, two-run methodology as run_all_cases.sh; run 2 (hot) kept.
+# Same two-pass methodology as run_all_cases.sh. The recorded answer
+# stops at the first end-of-turn marker instead of padding the cap.
 set -u
 cd "$(dirname "$0")"
 

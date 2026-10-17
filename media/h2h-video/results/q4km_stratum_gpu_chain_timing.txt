@@ -1,9 +1,5 @@
-# Qwen3-0.6B Q4_K_M fused GPU decode phase
-# commit 5f72757, USE_METAL=1 USE_MEMX=0, Apple M4 Pro, 2026-10-17
-# STRATUM_MAX_KV=8192 STRATUM_GPU=1 STRATUM_GPU_FULL=1 STRATUM_GPU_FUSED_ARGMAX=1 STRATUM_GPU_CHAIN=1
-# metallib loaded from the binary directory (full forward on-GPU, fused layer path)
-# host swap in use (~2.6–3.1 GB)
-#
-# gen 192 tok: 0.892–0.903 s (4.6–4.7 ms/tok, 212.6–215.1 tok/s)
-# gen 512 tok: 2.575 s (5.0 ms/tok, 198.8 tok/s)
-# non-chain fused gen 192 tok: 0.948 s (4.9 ms/tok, 202.5 tok/s)
+# Qwen3-0.6B Q4_K_M chained fused decode, after the first-token print fix
+# STRATUM_MAX_KV=8192 STRATUM_GPU=1 STRATUM_GPU_FULL=1 STRATUM_GPU_CHAIN=1
+# STRATUM_TIMING=1, 96-token cap (the turn itself ends at <|im_end|>)
+# prefill 21 tok: 0.229s | gen 96 tok: 0.373s (3.9 ms/tok, 257.6 tok/s)
+# The printed turn matches the streaming GPU answer, including <think>.

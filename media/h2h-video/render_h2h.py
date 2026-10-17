@@ -71,13 +71,14 @@ class Case:
         # llama-simple echoes the prompt first — drop those leading bytes.
         # prompt text: prefer the record's own (multi-model harness);
         # fall back to the legacy Qwen3 template for the first video set.
-        prompt_text = self.rec.get("prompt_text") or PROMPT_TEXT
-        events = []
-        if self.is_stratum:
+        if self.rec.get("answer_events"):
+            events = self.rec["answer_events"]
+        elif self.is_stratum:
             events = self.rec["stdout_events"]
         else:
+            prompt_text = self.rec.get("prompt_text") or PROMPT_TEXT
             skip = self.rec.get("prompt_echo_len") or len(prompt_text)
-            acc = ""
+            events = []
             for ev in self.rec["stdout_events"]:
                 if skip > 0:
                     take = ev["text"][skip:]
@@ -89,8 +90,9 @@ class Case:
                     continue
                 events.append(ev)
         self.events = events
-        self.wall = self.rec["wall_s"]
-        self.n_gen = self.rec["n_gen"]
+        # End the clip when the turn ends, not when the generation cap does.
+        self.wall = self.rec.get("t_answer_end_s") or self.rec["wall_s"]
+        self.n_gen = self.rec.get("n_shown") or self.rec["n_gen"]
         self.total_chunks = max(1, len(self.events))
         self.t_first = self.events[0]["t"] if self.events else 0.0
         # drop memory samples taken at/after process exit (the sampler races
