@@ -1,12 +1,12 @@
 {
  "engine": "llamacpp",
- "model_path": "/Users/shiaho/Desktop/0-/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf",
+ "model_path": "<models>/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf",
  "model_size_mb": 1489.0,
  "n_prompt_tokens": 21,
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1790857082.463344,
+ "t0": 1792216029.957563,
  "stdout_events": [],
  "mem_series": [],
  "peak_anon_mb": 0.0,
@@ -14,10 +14,10 @@
  "llama_no_mmap": false,
  "prompt_echo_len": 0,
  "exit_code": 1,
- "wall_s": 0.563,
- "stderr_tail": "0.00.071.169 I main: llama backend init\n0.00.071.173 I main: load the model and apply lora adapter, if any\n0.00.071.176 I common_init_result: fitting params to device memory ...\n0.00.071.177 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n0.00.135.273 E llama_model_load: error loading model: error loading model vocabulary: unknown pre-tokenizer type: 'minicpm5'\n0.00.135.275 E llama_model_load_from_file_impl: failed to load model\n0.00.135.303 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model\n0.00.195.811 E llama_model_load: error loading model: error loading model vocabulary: unknown pre-tokenizer type: 'minicpm5'\n0.00.195.815 E llama_model_load_from_file_impl: failed to load model\n0.00.195.817 E common_init_from_params: failed to load model '/Users/shiaho/Desktop/0-/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf'\n0.00.195.817 E main: error: unable to create context\n",
+ "wall_s": 0.579,
+ "stderr_tail": "0.00.092.413 I main: llama backend init\n0.00.092.418 I main: load the model and apply lora adapter, if any\n0.00.092.424 I common_init_result: fitting params to device memory ...\n0.00.092.424 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)\n0.00.159.696 E llama_model_load: error loading model: error loading model vocabulary: unknown pre-tokenizer type: 'minicpm5'\n0.00.159.699 E llama_model_load_from_file_impl: failed to load model\n0.00.159.730 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model\n0.00.224.702 E llama_model_load: error loading model: error loading model vocabulary: unknown pre-tokenizer type: 'minicpm5'\n0.00.224.705 E llama_model_load_from_file_impl: failed to load model\n0.00.224.707 E common_init_from_params: failed to load model '<models>/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf'\n0.00.224.708 E main: error: unable to create context\n",
  "gen_chunks": 0,
  "gen_bytes": 0,
- "tok_per_s_wall": 341.03,
+ "tok_per_s_wall": 331.61,
  "mem_samples": 0
 }

@@ -1,0 +1,4 @@
+# llama-bench b9180, Qwen3-0.6B Q4_K_M, tg192, 2 repetitions
+# 2026-10-17, Apple M4 Pro, swap about 3 GB in use
+# -ngl 0:  133.28 ± 13.61 tok/s
+# -ngl 99: 186.45 ± 0.56 tok/s

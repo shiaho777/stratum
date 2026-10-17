@@ -1,1124 +1,1054 @@
 {
  "engine": "stratum",
- "model_path": "/Users/shiaho/Desktop/0-/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf",
+ "model_path": "<models>/MiniCPM5-2B/MiniCPM5-2B-Q4_K_M.gguf",
  "model_size_mb": 1489.0,
  "n_prompt_tokens": 21,
  "n_gen": 192,
  "sdot0": false,
  "prompt_text": "<|im_start|>user\nWhat is the capital of France? Answer in one short sentence.<|im_end|>\n<|im_start|>assistant\n",
- "t0": 1790857161.026169,
+ "t0": 1792216056.014424,
  "stdout_events": [
   {
-   "t": 1.6122,
+   "t": 0.8023,
    "bytes": 1,
    "text": "\n"
   },
   {
-   "t": 1.6545,
+   "t": 0.821,
    "bytes": 5,
    "text": "First"
   },
   {
-   "t": 1.6999,
+   "t": 0.8392,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 1.7478,
+   "t": 0.856,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 1.8218,
+   "t": 0.8729,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 2.5753,
+   "t": 0.8893,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 2.622,
+   "t": 1.6136,
    "bytes": 5,
    "text": " make"
   },
   {
-   "t": 2.6753,
+   "t": 1.6288,
    "bytes": 5,
    "text": " sure"
   },
   {
-   "t": 2.7498,
+   "t": 1.643,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 3.4861,
+   "t": 1.6582,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 3.5296,
+   "t": 1.6744,
    "bytes": 7,
    "text": " answer"
   },
   {
-   "t": 3.5642,
+   "t": 1.6897,
    "bytes": 3,
    "text": " in"
   },
   {
-   "t": 3.5902,
+   "t": 1.7049,
    "bytes": 4,
    "text": " one"
   },
   {
-   "t": 3.6123,
+   "t": 1.7197,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 3.6406,
+   "t": 1.7341,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 3.6652,
+   "t": 1.7492,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 3.7009,
+   "t": 1.7654,
    "bytes": 4,
    "text": "Next"
   },
   {
-   "t": 3.7486,
+   "t": 1.7821,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 4.4705,
+   "t": 1.797,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 4.5116,
+   "t": 1.8154,
    "bytes": 5,
    "text": " have"
   },
   {
-   "t": 4.5478,
+   "t": 1.8376,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 4.5807,
+   "t": 1.853,
    "bytes": 5,
    "text": " make"
   },
   {
-   "t": 4.6117,
+   "t": 1.8694,
    "bytes": 5,
    "text": " sure"
   },
   {
-   "t": 4.6437,
+   "t": 1.8843,
    "bytes": 5,
    "text": " that"
   },
   {
-   "t": 4.6946,
+   "t": 2.597,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 4.7378,
-   "bytes": 6,
-   "text": " state"
+   "t": 2.6102,
+   "bytes": 8,
+   "text": " mention"
   },
   {
-   "t": 4.7823,
+   "t": 2.624,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 5.5187,
+   "t": 2.6381,
    "bytes": 8,
    "text": " capital"
   },
   {
-   "t": 5.5715,
+   "t": 2.6531,
    "bytes": 3,
    "text": " of"
   },
   {
-   "t": 5.6001,
+   "t": 2.6665,
    "bytes": 7,
    "text": " France"
   },
   {
-   "t": 5.6535,
+   "t": 2.6808,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 5.7,
+   "t": 2.6952,
    "bytes": 4,
    "text": "Then"
   },
   {
-   "t": 5.7389,
+   "t": 2.7089,
    "bytes": 1,
    "text": ","
   },
   {
-   "t": 6.4408,
+   "t": 2.7223,
    "bytes": 2,
    "text": " I"
   },
   {
-   "t": 6.4566,
+   "t": 2.7368,
    "bytes": 5,
    "text": " need"
   },
   {
-   "t": 6.4778,
+   "t": 2.7497,
    "bytes": 3,
    "text": " to"
   },
   {
-   "t": 6.4944,
+   "t": 2.7638,
    "bytes": 5,
    "text": " keep"
   },
   {
-   "t": 6.5157,
-   "bytes": 3,
-   "text": " it"
-  },
-  {
-   "t": 6.536,
-   "bytes": 8,
-   "text": " concise"
-  },
-  {
-   "t": 6.5545,
-   "bytes": 3,
-   "text": " to"
-  },
-  {
-   "t": 6.5754,
-   "bytes": 9,
-   "text": " maintain"
-  },
-  {
-   "t": 6.595,
+   "t": 2.7778,
    "bytes": 4,
    "text": " the"
   },
   {
-   "t": 6.6131,
+   "t": 2.7915,
+   "bytes": 9,
+   "text": " response"
+  },
+  {
+   "t": 2.8065,
+   "bytes": 8,
+   "text": " concise"
+  },
+  {
+   "t": 2.8234,
+   "bytes": 3,
+   "text": " to"
+  },
+  {
+   "t": 2.8407,
+   "bytes": 9,
+   "text": " maintain"
+  },
+  {
+   "t": 2.8553,
+   "bytes": 4,
+   "text": " the"
+  },
+  {
+   "t": 2.871,
    "bytes": 6,
    "text": " short"
   },
   {
-   "t": 6.6358,
+   "t": 2.887,
    "bytes": 9,
    "text": " sentence"
   },
   {
-   "t": 6.6706,
+   "t": 3.583,
    "bytes": 12,
    "text": " requirement"
   },
   {
-   "t": 6.7138,
+   "t": 3.6004,
    "bytes": 2,
    "text": ".\n"
   },
   {
-   "t": 6.7356,
+   "t": 3.6149,
    "bytes": 8,
    "text": "</think>"
   },
   {
-   "t": 7.469,
+   "t": 3.6306,
    "bytes": 2,
    "text": "\n\n"
   },
   {
-   "t": 7.4944,
+   "t": 3.6461,
    "bytes": 5,
    "text": "Paris"
   },
   {
-   "t": 7.5149,
+   "t": 3.6616,
    "bytes": 1,
    "text": "."
   },
   {
-   "t": 7.533,
+   "t": 3.6788,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 7.5559,
+   "t": 3.6932,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 7.5785,
+   "t": 3.7069,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 7.5949,
+   "t": 3.7215,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 7.611,
+   "t": 3.7352,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 7.6427,
+   "t": 3.7486,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 7.695,
+   "t": 3.7633,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.45,
+   "t": 3.7776,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.4639,
+   "t": 3.7927,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.4786,
+   "t": 3.814,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.4939,
+   "t": 3.8348,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.5139,
+   "t": 3.8505,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.5322,
+   "t": 3.8693,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.5567,
+   "t": 4.5665,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.5828,
+   "t": 4.5801,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.608,
+   "t": 4.5953,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.6314,
+   "t": 4.6092,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.6539,
+   "t": 4.6228,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.6857,
+   "t": 4.6378,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 8.7151,
+   "t": 4.6525,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 8.7414,
+   "t": 4.6685,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.5028,
+   "t": 4.6839,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 9.5282,
+   "t": 4.6979,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.5532,
+   "t": 4.7132,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 9.5771,
+   "t": 4.7279,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.5998,
+   "t": 4.7421,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 9.627,
+   "t": 4.766,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.656,
+   "t": 4.818,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 9.6839,
+   "t": 4.8376,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 9.7299,
+   "t": 4.8555,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 9.7815,
+   "t": 5.5723,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 10.6286,
+   "t": 5.5933,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 10.6699,
+   "t": 5.6122,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 10.6846,
+   "t": 5.6357,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 10.7213,
+   "t": 5.6536,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 10.788,
+   "t": 5.6699,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 10.9156,
+   "t": 5.6864,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 11.8895,
+   "t": 5.7017,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 11.9723,
+   "t": 5.717,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 11.998,
+   "t": 5.7326,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 12.1201,
+   "t": 5.7527,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 12.8795,
+   "t": 5.7695,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 12.9185,
+   "t": 5.7912,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 12.9451,
+   "t": 5.8147,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 12.98,
+   "t": 5.8333,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 13.8274,
+   "t": 5.8523,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 13.875,
+   "t": 6.5686,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 13.9184,
+   "t": 6.5822,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 14.0183,
+   "t": 6.5969,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 14.0655,
+   "t": 6.6122,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 14.8197,
+   "t": 6.6275,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 14.8425,
+   "t": 6.6424,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 14.8732,
+   "t": 6.6575,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 14.8991,
+   "t": 6.6718,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 14.9237,
+   "t": 6.6872,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 14.9418,
+   "t": 6.7028,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 14.9647,
+   "t": 6.719,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 14.9834,
+   "t": 6.7349,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 15.0054,
+   "t": 6.7504,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 15.0505,
+   "t": 6.7666,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 15.0837,
+   "t": 6.7865,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 15.7983,
+   "t": 6.8227,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 15.8338,
+   "t": 7.5595,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 15.8734,
+   "t": 7.5761,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 15.9284,
+   "t": 7.5931,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 16.0738,
+   "t": 7.6176,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.1422,
+   "t": 7.6339,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 17.1668,
+   "t": 7.6528,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.1979,
+   "t": 7.6725,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 17.2233,
+   "t": 7.7199,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 17.2662,
+   "t": 7.7375,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 17.35,
+   "t": 7.7555,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.4901,
+   "t": 7.7781,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.5231,
+   "t": 7.7982,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.5399,
+   "t": 7.8166,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.5651,
+   "t": 7.8358,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.5807,
+   "t": 8.5521,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.5989,
+   "t": 8.5676,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 18.6236,
+   "t": 8.5826,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 18.7697,
+   "t": 8.5977,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.5855,
+   "t": 8.6131,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.6305,
+   "t": 8.6286,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.6724,
+   "t": 8.6444,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 19.7151,
+   "t": 8.665,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 19.807,
+   "t": 8.68,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.9135,
+   "t": 8.6979,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.9313,
+   "t": 8.7258,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.9488,
+   "t": 8.7634,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 20.9686,
+   "t": 8.7873,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 20.991,
+   "t": 8.8068,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 21.0557,
+   "t": 8.8225,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 21.1896,
+   "t": 9.5405,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.1493,
+   "t": 9.5565,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.1655,
+   "t": 9.5721,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.1796,
+   "t": 9.5869,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.2081,
+   "t": 9.6037,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.2252,
+   "t": 9.6201,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.2648,
+   "t": 9.6368,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.308,
+   "t": 9.6603,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 22.3508,
+   "t": 9.6763,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 22.4132,
+   "t": 9.6942,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.2134,
+   "t": 9.7103,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.2434,
+   "t": 9.7265,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.2596,
+   "t": 9.7486,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.2738,
+   "t": 9.7708,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.4038,
+   "t": 9.7913,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 23.4549,
+   "t": 9.8157,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 23.4713,
+   "t": 10.5449,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.3364,
+   "t": 10.5602,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.3818,
+   "t": 10.5756,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.4065,
+   "t": 10.5909,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.4384,
+   "t": 10.6068,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.4619,
+   "t": 10.6222,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.4822,
+   "t": 10.6368,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 24.5093,
+   "t": 10.6525,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 24.5464,
+   "t": 10.6683,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.2699,
+   "t": 10.6874,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.3022,
+   "t": 10.703,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 25.3381,
+   "t": 10.7208,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 25.5233,
+   "t": 10.7353,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.6053,
+   "t": 10.766,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.6449,
+   "t": 10.8077,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.6809,
+   "t": 10.8222,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.7165,
+   "t": 11.562,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.7412,
+   "t": 11.5792,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.7574,
+   "t": 11.5958,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.7791,
+   "t": 11.613,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 26.8065,
+   "t": 11.6293,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 26.8544,
+   "t": 11.6477,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 27.5666,
+   "t": 11.6674,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 27.603,
+   "t": 11.6861,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 27.6275,
+   "t": 11.714,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 27.6661,
+   "t": 11.7325,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 27.7039,
+   "t": 11.7541,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 27.7305,
+   "t": 11.775,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 27.7527,
+   "t": 11.8277,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 27.82,
+   "t": 11.8503,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 28.7933,
+   "t": 12.5762,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 28.8105,
+   "t": 12.5932,
    "bytes": 10,
    "text": "<|im_end|>"
   },
   {
-   "t": 28.8391,
+   "t": 12.6092,
    "bytes": 4,
    "text": "</s>"
   },
   {
-   "t": 28.8672,
+   "t": 12.6251,
    "bytes": 10,
    "text": "<|im_end|>"
-  },
-  {
-   "t": 28.9027,
-   "bytes": 4,
-   "text": "</s>"
   }
  ],
  "mem_series": [
   {
-   "t": 0.555,
+   "t": 0.6,
    "anon_mb": 11.8,
    "file_mb": 1536.0
   },
   {
-   "t": 1.517,
-   "anon_mb": 19.6,
+   "t": 1.59,
+   "anon_mb": 16.8,
    "file_mb": 1536.0
   },
   {
-   "t": 2.515,
-   "anon_mb": 20.3,
+   "t": 2.593,
+   "anon_mb": 18.1,
    "file_mb": 1536.0
   },
   {
-   "t": 3.487,
-   "anon_mb": 20.3,
+   "t": 3.574,
+   "anon_mb": 20.8,
    "file_mb": 1536.0
   },
   {
-   "t": 4.448,
-   "anon_mb": 21.6,
+   "t": 4.56,
+   "anon_mb": 22.1,
    "file_mb": 1536.0
   },
   {
-   "t": 5.476,
-   "anon_mb": 21.7,
+   "t": 5.567,
+   "anon_mb": 23.5,
    "file_mb": 1536.0
   },
   {
-   "t": 6.436,
-   "anon_mb": 22.9,
+   "t": 6.557,
+   "anon_mb": 24.8,
    "file_mb": 1536.0
   },
   {
-   "t": 7.458,
-   "anon_mb": 24.3,
+   "t": 7.554,
+   "anon_mb": 26.1,
    "file_mb": 1536.0
   },
   {
-   "t": 8.448,
-   "anon_mb": 24.3,
+   "t": 8.545,
+   "anon_mb": 27.4,
    "file_mb": 1536.0
   },
   {
-   "t": 9.486,
-   "anon_mb": 25.6,
+   "t": 9.528,
+   "anon_mb": 28.8,
    "file_mb": 1536.0
   },
   {
-   "t": 10.634,
-   "anon_mb": 26.9,
+   "t": 10.534,
+   "anon_mb": 30.1,
    "file_mb": 1536.0
   },
   {
-   "t": 11.847,
-   "anon_mb": 26.9,
+   "t": 11.563,
+   "anon_mb": 31.4,
    "file_mb": 1536.0
   },
   {
-   "t": 12.832,
-   "anon_mb": 27.3,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 13.823,
-   "anon_mb": 28.3,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 14.811,
-   "anon_mb": 28.3,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 15.782,
-   "anon_mb": 29.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 17.142,
-   "anon_mb": 29.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 18.479,
-   "anon_mb": 29.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 19.569,
-   "anon_mb": 30.9,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 20.924,
-   "anon_mb": 30.9,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 22.161,
-   "anon_mb": 32.2,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 23.197,
-   "anon_mb": 32.2,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 24.291,
-   "anon_mb": 33.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 25.27,
-   "anon_mb": 33.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 26.593,
-   "anon_mb": 33.6,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 27.553,
-   "anon_mb": 34.9,
-   "file_mb": 1536.0
-  },
-  {
-   "t": 28.725,
-   "anon_mb": 35.5,
+   "t": 12.572,
+   "anon_mb": 32.7,
    "file_mb": 1536.0
   }
  ],
- "peak_anon_mb": 35.5,
+ "peak_anon_mb": 32.7,
  "peak_file_mb": 1536.0,
  "llama_no_mmap": false,
  "prompt_echo_len": 0,
  "exit_code": 0,
- "wall_s": 28.913,
- "stderr_tail": "\n  step 119  in=130073  stratum_argmax=1  logit=20.7643\n  step 120  in=1  stratum_argmax=130073  logit=23.4788\n  step 121  in=130073  stratum_argmax=1  logit=20.7916\n  step 122  in=1  stratum_argmax=130073  logit=23.9459\n  step 123  in=130073  stratum_argmax=1  logit=20.9099\n  step 124  in=1  stratum_argmax=130073  logit=23.8042\n  step 125  in=130073  stratum_argmax=1  logit=20.8273\n  step 126  in=1  stratum_argmax=130073  logit=24.02\n  step 127  in=130073  stratum_argmax=1  logit=20.9105\n  step 128  in=1  stratum_argmax=130073  logit=24.128\n  step 129  in=130073  stratum_argmax=1  logit=20.8657\n  step 130  in=1  stratum_argmax=130073  logit=23.3875\n  step 131  in=130073  stratum_argmax=1  logit=20.4784\n  step 132  in=1  stratum_argmax=130073  logit=23.2466\n  step 133  in=130073  stratum_argmax=1  logit=20.4917\n  step 134  in=1  stratum_argmax=130073  logit=23.5016\n  step 135  in=130073  stratum_argmax=1  logit=20.5174\n  step 136  in=1  stratum_argmax=130073  logit=23.2997\n  step 137  in=130073  stratum_argmax=1  logit=20.3828\n  step 138  in=1  stratum_argmax=130073  logit=23.1124\n  step 139  in=130073  stratum_argmax=1  logit=20.2506\n  step 140  in=1  stratum_argmax=130073  logit=23.0093\n  step 141  in=130073  stratum_argmax=1  logit=20.5076\n  step 142  in=1  stratum_argmax=130073  logit=22.8021\n  step 143  in=130073  stratum_argmax=1  logit=20.387\n  step 144  in=1  stratum_argmax=130073  logit=22.7157\n  step 145  in=130073  stratum_argmax=1  logit=20.1841\n  step 146  in=1  stratum_argmax=130073  logit=22.9523\n  step 147  in=130073  stratum_argmax=1  logit=20.3281\n  step 148  in=1  stratum_argmax=130073  logit=22.859\n  step 149  in=130073  stratum_argmax=1  logit=20.2264\n  step 150  in=1  stratum_argmax=130073  logit=23.088\n  step 151  in=130073  stratum_argmax=1  logit=20.127\n  step 152  in=1  stratum_argmax=130073  logit=23.7064\n  step 153  in=130073  stratum_argmax=1  logit=20.1243\n  step 154  in=1  stratum_argmax=130073  logit=23.447\n  step 155  in=130073  stratum_argmax=1  logit=19.8304\n  step 156  in=1  stratum_argmax=130073  logit=23.2624\n  step 157  in=130073  stratum_argmax=1  logit=19.6431\n  step 158  in=1  stratum_argmax=130073  logit=23.3753\n  step 159  in=130073  stratum_argmax=1  logit=19.7859\n  step 160  in=1  stratum_argmax=130073  logit=23.427\n  step 161  in=130073  stratum_argmax=1  logit=19.5851\n  step 162  in=1  stratum_argmax=130073  logit=23.264\n  step 163  in=130073  stratum_argmax=1  logit=19.4041\n  step 164  in=1  stratum_argmax=130073  logit=23.4605\n  step 165  in=130073  stratum_argmax=1  logit=19.5804\n  step 166  in=1  stratum_argmax=130073  logit=23.428\n  step 167  in=130073  stratum_argmax=1  logit=19.6189\n  step 168  in=1  stratum_argmax=130073  logit=23.2152\n  step 169  in=130073  stratum_argmax=1  logit=19.4233\n  step 170  in=1  stratum_argmax=130073  logit=23.2933\n  step 171  in=130073  stratum_argmax=1  logit=19.4356\n  step 172  in=1  stratum_argmax=130073  logit=23.3014\n  step 173  in=130073  stratum_argmax=1  logit=19.3001\n  step 174  in=1  stratum_argmax=130073  logit=23.434\n  step 175  in=130073  stratum_argmax=1  logit=19.3409\n  step 176  in=1  stratum_argmax=130073  logit=23.4875\n  step 177  in=130073  stratum_argmax=1  logit=19.386\n  step 178  in=1  stratum_argmax=130073  logit=23.7977\n  step 179  in=130073  stratum_argmax=1  logit=19.43\n  step 180  in=1  stratum_argmax=130073  logit=23.5784\n  step 181  in=130073  stratum_argmax=1  logit=19.1548\n  step 182  in=1  stratum_argmax=130073  logit=23.5075\n  step 183  in=130073  stratum_argmax=1  logit=19.2909\n  step 184  in=1  stratum_argmax=130073  logit=23.6764\n  step 185  in=130073  stratum_argmax=1  logit=19.2442\n  step 186  in=1  stratum_argmax=130073  logit=23.383\n  step 187  in=130073  stratum_argmax=1  logit=19.1028\n  step 188  in=1  stratum_argmax=130073  logit=23.2462\n  step 189  in=130073  stratum_argmax=1  logit=19.2651\n  step 190  in=1  stratum_argmax=130073  logit=23.2868\n  step 191  in=130073  stratum_argmax=1  logit=19.2317\n",
+ "wall_s": 12.635,
+ "stderr_tail": "ep 119  in=1  stratum_argmax=130073  logit=23.1368\n  step 120  in=130073  stratum_argmax=1  logit=20.7405\n  step 121  in=1  stratum_argmax=130073  logit=23.3602\n  step 122  in=130073  stratum_argmax=1  logit=20.8154\n  step 123  in=1  stratum_argmax=130073  logit=23.9115\n  step 124  in=130073  stratum_argmax=1  logit=20.7061\n  step 125  in=1  stratum_argmax=130073  logit=23.6023\n  step 126  in=130073  stratum_argmax=1  logit=20.9643\n  step 127  in=1  stratum_argmax=130073  logit=23.8461\n  step 128  in=130073  stratum_argmax=1  logit=21.0564\n  step 129  in=1  stratum_argmax=130073  logit=24.0088\n  step 130  in=130073  stratum_argmax=1  logit=20.6925\n  step 131  in=1  stratum_argmax=130073  logit=23.3574\n  step 132  in=130073  stratum_argmax=1  logit=20.5582\n  step 133  in=1  stratum_argmax=130073  logit=23.4121\n  step 134  in=130073  stratum_argmax=1  logit=20.7553\n  step 135  in=1  stratum_argmax=130073  logit=23.2593\n  step 136  in=130073  stratum_argmax=1  logit=20.609\n  step 137  in=1  stratum_argmax=130073  logit=22.9469\n  step 138  in=130073  stratum_argmax=1  logit=20.3426\n  step 139  in=1  stratum_argmax=130073  logit=23.3221\n  step 140  in=130073  stratum_argmax=1  logit=20.298\n  step 141  in=1  stratum_argmax=130073  logit=23.149\n  step 142  in=130073  stratum_argmax=1  logit=20.345\n  step 143  in=1  stratum_argmax=130073  logit=22.7301\n  step 144  in=130073  stratum_argmax=1  logit=20.1867\n  step 145  in=1  stratum_argmax=130073  logit=23.0212\n  step 146  in=130073  stratum_argmax=1  logit=20.3028\n  step 147  in=1  stratum_argmax=130073  logit=23.0301\n  step 148  in=130073  stratum_argmax=1  logit=20.1724\n  step 149  in=1  stratum_argmax=130073  logit=23.1222\n  step 150  in=130073  stratum_argmax=1  logit=20.2581\n  step 151  in=1  stratum_argmax=130073  logit=23.3058\n  step 152  in=130073  stratum_argmax=1  logit=20.222\n  step 153  in=1  stratum_argmax=130073  logit=23.2464\n  step 154  in=130073  stratum_argmax=1  logit=19.9912\n  step 155  in=1  stratum_argmax=130073  logit=23.0879\n  step 156  in=130073  stratum_argmax=1  logit=19.8532\n  step 157  in=1  stratum_argmax=130073  logit=22.9845\n  step 158  in=130073  stratum_argmax=1  logit=19.835\n  step 159  in=1  stratum_argmax=130073  logit=23.3973\n  step 160  in=130073  stratum_argmax=1  logit=19.8184\n  step 161  in=1  stratum_argmax=130073  logit=23.1957\n  step 162  in=130073  stratum_argmax=1  logit=19.6031\n  step 163  in=1  stratum_argmax=130073  logit=23.2541\n  step 164  in=130073  stratum_argmax=1  logit=19.4164\n  step 165  in=1  stratum_argmax=130073  logit=23.535\n  step 166  in=130073  stratum_argmax=1  logit=19.5851\n  step 167  in=1  stratum_argmax=130073  logit=23.2797\n  step 168  in=130073  stratum_argmax=1  logit=19.3691\n  step 169  in=1  stratum_argmax=130073  logit=23.0795\n  step 170  in=130073  stratum_argmax=1  logit=19.275\n  step 171  in=1  stratum_argmax=130073  logit=23.1692\n  step 172  in=130073  stratum_argmax=1  logit=19.218\n  step 173  in=1  stratum_argmax=130073  logit=23.2367\n  step 174  in=130073  stratum_argmax=1  logit=19.3694\n  step 175  in=1  stratum_argmax=130073  logit=23.44\n  step 176  in=130073  stratum_argmax=1  logit=19.3554\n  step 177  in=1  stratum_argmax=130073  logit=23.4845\n  step 178  in=130073  stratum_argmax=1  logit=19.4245\n  step 179  in=1  stratum_argmax=130073  logit=23.6423\n  step 180  in=130073  stratum_argmax=1  logit=19.3341\n  step 181  in=1  stratum_argmax=130073  logit=23.7147\n  step 182  in=130073  stratum_argmax=1  logit=19.3306\n  step 183  in=1  stratum_argmax=130073  logit=23.4817\n  step 184  in=130073  stratum_argmax=1  logit=19.3031\n  step 185  in=1  stratum_argmax=130073  logit=23.6013\n  step 186  in=130073  stratum_argmax=1  logit=19.1143\n  step 187  in=1  stratum_argmax=130073  logit=23.4069\n  step 188  in=130073  stratum_argmax=1  logit=19.1571\n  step 189  in=1  stratum_argmax=130073  logit=23.3527\n  step 190  in=130073  stratum_argmax=1  logit=19.3276\n  step 191  in=1  stratum_argmax=130073  logit=23.3253\n",
  "gen_chunks": 192,
- "gen_bytes": 1207,
- "t_first_gen_chunk_s": 1.612,
- "t_last_gen_chunk_s": 28.903,
- "gen_span_s": 27.29,
- "tok_per_s_stream": 7.04,
- "tok_per_s_wall": 6.64,
- "mem_samples": 27
+ "gen_bytes": 1215,
+ "t_first_gen_chunk_s": 0.802,
+ "t_last_gen_chunk_s": 12.625,
+ "gen_span_s": 11.823,
+ "tok_per_s_stream": 16.24,
+ "tok_per_s_wall": 15.2,
+ "mem_samples": 13
 }

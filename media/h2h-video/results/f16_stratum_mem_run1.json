@@ -1,6 +1,6 @@
 {
  "engine": "stratum",
- "model_path": "/Users/shiaho/Desktop/0-/Qwen3-0.6B/Qwen3-0.6B.f16.qwen3.gguf",
+ "model_path": "<models>/Qwen3-0.6B/Qwen3-0.6B.f16.qwen3.gguf",
  "model_size_mb": 1439.4,
  "n_prompt_tokens": 21,
  "n_gen": 192,
