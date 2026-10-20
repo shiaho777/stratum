@@ -16,8 +16,14 @@ make check MODEL=/path/to/model.gguf        # tests + one llama-arch smoke
 python3 stratum/tools/env_census.py         # regenerate docs/ENVVARS.md (preserves the H3 appendix)
 python3 stratum/tools/make_tiny_model.py --arch llama --out /tmp/tiny.gguf
 STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8   # llama smoke
-python3 stratum/tools/make_tiny_model.py --arch moe --out /tmp/tinymoe.gguf
+python3 stratum/tools/make_tiny_model.py --arch moe --weights f16 --out /tmp/tinymoe.gguf
 python3 stratum/tools/tiny_moe_oracle.py /tmp/tinymoe.gguf 0 1   # MoE numpy cross-check
+python3 stratum/tools/moe_expert_pack.py /tmp/tinymoe.gguf /tmp/tinymoe.moep
+# same greedy ids: serial, ahead+adapt defaults, full pack check, n-gram spec
+STRATUM_NO_GPU=1 STRATUM_MOE_AHEAD=0 STRATUM_MOE_ADAPT=0 \
+  ./stratum /tmp/tinymoe.gguf 6 0 1
+STRATUM_NO_GPU=1 STRATUM_MOE_PACK=/tmp/tinymoe.moep STRATUM_MOE_PACK_CHECK=1 \
+  ./stratum /tmp/tinymoe.gguf 6 0 1
 ```
 
 ## What the gates cover (v199–v217)
@@ -44,7 +50,14 @@ decode settings. **Any engine change must keep every gate passing.**
 - **MoE tiny cross-check** (local, not CI): `make_tiny_model.py --arch moe`
   + `tiny_moe_oracle.py` reimplement the `llama-moe` arithmetic (dense
   attention + router top-k expert FFN, deterministic tie-break) in numpy
-  and compare greedy sequences with the engine.
+  and compare greedy sequences with the engine. These runs must share
+  that id sequence: plain (`STRATUM_MOE_AHEAD=0 STRATUM_MOE_ADAPT=0`),
+  the defaults (`AHEAD=1`, `ADAPT=1`, 256 MiB hint budget),
+  `STRATUM_MOE_PACK` with `STRATUM_MOE_PACK_CHECK=1`, and
+  `STRATUM_NGRAM_SPEC`. F16 tiny models are the clean oracle match.
+  Q4_K tiny models can disagree with the oracle on a late near-tie; the
+  engine modes must still agree with each other. The pack is refused if
+  a checked slice differs from the GGUF.
 - **H3 large-run hygiene** (`h3_test_gate.sh`): `check` refuses to start
   when available memory is < 1 GB or a sibling large-model process is
   running; `clean <model…>` drops the used files from page cache
@@ -88,6 +101,10 @@ full chain, not just the default path:
    (needs `stratum_q4k.metallib`).
 3. If Q2K touched: nibble layout (`STRATUM_Q2K_NIB=<sidecar>`, embedded
    type-42) both must match the original layout bit-exactly.
+   If the MoE expert path or its pack touched: the four runs in the quick
+   commands (serial, defaults, full pack check, and the oracle) must share
+   one greedy id sequence. `STRATUM_SPEC_MIN_P` is opt-in and must be left
+   unset when re-running the qwen35 v-gates.
 4. If scheduling/IO touched: run the v*_gate.sh for the affected scenario
    (`run_all_gates.sh`).
 5. If the H3/DiT spikes touched: re-run the oracle comparison for that

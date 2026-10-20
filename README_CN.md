@@ -6,481 +6,68 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-black.svg)
 
-一个面向 Apple Silicon 的纯 C Transformer 推理引擎，其**驻留内存占用与模型大小无关**。权重是流，不是驻留物：引擎通过 `mmap` 映射模型并经由 OS 页缓存读取，因此匿名内存无论是 0.5B 还是 27B 模型都保持在 ~7 MB。
+**27B 模型用大约 77 MB 匿名内存就能跑完。** 权重留在文件里：引擎 `mmap` GGUF，经页缓存读取。0.5B 到 1B 的匿名内存大约 7 MB；27B 把 KV 和 SSM 状态算进去大约 77 MB。内存决定有多少文件留在热页里，也就决定下一个 token 有多快。它不决定模型能不能跑完。
 
-| 指标 | 数值 |
+<p align="center"><img src="docs/assets/hero-stream.svg" alt="权重从磁盘经页缓存流入引擎，匿名内存保持一条平线" width="760"></p>
+
+实测机器：M4 Pro、24 GB、贪心。除注明外走 CPU。
+
+| | |
 |---|---|
-| 实测模型 | 27B dense（Qwen3.8，11.98 GB GGUF），小至 0.5B |
-| 27B 的匿名（wired）内存 | **~77 MB**（含 KV/SSM 状态） |
-| 0.5–1B 模型的匿名内存 | ~7 MB |
-| 对比 llama.cpp（TinyLlama 1.1B） | 匿名内存**低 85.7×** |
-| 对比 llama.cpp GPU 解码（Qwen3-0.6B） | **融合流式 ~247–252 tok/s** 对 ~224–231（贪心，在回合结束处停下；融合路径需要 `STRATUM_MAX_KV=8192`） |
-| 引擎体积 | ~752 KB 二进制 · ≈4.6 万行 C/Metal/工具（引擎核心 ≈2.6 万行） |
-| GPU 需求 | 无（集成 GPU，可选 Metal 加速） |
-| 架构支持 | Llama 家族 + Qwen3.8 混合（Gated DeltaNet SSM + attention；GGUF 架构 id：`qwen35`）+ MoE（`llama-moe`，实验性）+ 视频 DiT/H3 探针（独立程序，不属于 `stratum` 二进制） |
+| 27B（Qwen3.8，11.98 GB） | 热缓存短跑 **5.73 tok/s**，长生成约 1.4–2 tok/s，匿名内存 **约 77 MB** |
+| 0.5B–1B Q4_K | **68–125 tok/s**，匿名内存 **约 7 MB** |
+| 对比 llama.cpp，TinyLlama 1.1B | 匿名内存 **7.4 MB 对 634.9 MB**（**85.7×**） |
+| 对比 llama.cpp Metal，Qwen3-0.6B Q4_K_M | 融合 GPU **247–252 tok/s** 对 224–231（在回合结束处停下，需要 `STRATUM_MAX_KV=8192`） |
+| 引擎 | 二进制约 752 KB。仅 Apple Silicon。GPU 可选 |
+| 架构 | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 混合（`qwen35`）· MoE（`llama-moe`，实验性）· DiT 与 H3 视频探针（独立程序） |
 
-<p align="center"><img src="docs/assets/project-stats.svg" alt="项目统计:代码行数、二进制大小、格式数、gate 数、CI job 数" width="720"></p>
+## 快速开始
 
-真正的约束是磁盘和带宽，而不是内存：只要模型文件放得下，模型就能跑完。内存买的是"模型在页缓存中有多少保持热"——内存越多，每个 token 的 SSD 读取越少，吞吐越高。除此之外一切不变。
-
-<p align="center"><img src="docs/assets/hero-stream.svg" alt="权重是流:磁盘 → 页缓存 → 引擎,匿名内存地板恒定" width="760"></p>
-
----
-
-## Part I — 快速上手
-
-### 硬件需求
-
-| 组件 | 要求 |
-|---|---|
-| CPU | **必须是 Apple Silicon（ARM64）**。热路径是手写 NEON SIMD，只存在于 Apple Silicon。Intel Mac（x86_64）不支持。M1/M2/M3/M4 任意型号均可，含 base/Pro/Max/Ultra。 |
-| GPU | 无需购买。GPU 集成在 SoC 中，通过 Metal 暴露；引擎完全在 CPU 上运行，GPU 仅用于可选加速。 |
-| 内存 | **几乎没有最低限制——任何现代设备都能跑。** 引擎的匿名需求只有 ~7 MB（小模型）/ ~77 MB（27B，含 KV/SSM 状态）；权重放在可回收的页缓存里，所以内存不决定模型能不能跑，只决定跑多快。1 GB 是现代设备的基线；而 Apple Silicon Mac 实际起步就是 8 GB。 |
-| 磁盘 | ≥ 模型文件大小，推荐 NVMe SSD。冷权重从磁盘流式读取；~3 GB/s 顺序读即可保证冷路径可用。 |
-
-内存带宽是主导性能的杠杆，而不是核心数。Apple Silicon 带宽随芯片档位增长：
-
-| 芯片档位 | 内存带宽（约） |
-|---|---|
-| M1 / M2 / M3 base | ~70–100 GB/s |
-| M1 Pro / M2 Pro | ~200 GB/s |
-| M4 / M4 Pro | ~120 / 273 GB/s |
-| M3 Max / M4 Max | ~400 / 546 GB/s |
-| Ultra（双 Max） | ~800+ GB/s |
-
-### 达到 5 tok/s 的最低配置
-
-"能跑"和"跑得快"是两个问题。以下是各模型档位达到最低 **5 token/s** 的配置，由每 token 时间公式 `W × (f_hot / BW_hot + f_cold / BW_cold)` 推导，并以实测硬件锚定：
-
-| 模型 | 达到 5 tok/s 的最低配置 | 为什么 |
-|---|---|---|
-| 1B（Q4_K，~688 MB） | **任意 Apple Silicon（M1 base 及以上）+ ≥1 GB 内存 + SSD** | 5 tok/s = 200 ms/token = 688 MB / 0.2 s ≈ **3.4 GB/s** 有效带宽。任何 M 芯片（~70 GB/s+）和任何 SSD（~3 GB/s+）都超出一个数量级——M4 Pro 实测 68 tok/s，即 1B 规模下 ~20× 余量。 |
-| 27B（Q2_K/Q4_K/Q6_K，11.98 GB） | **M4 Pro 级（~250 GB/s）+ ≥16 GB 内存（模型大部分保持热）+ NVMe SSD** | 5 tok/s = 200 ms/token = 11.98 GB / 0.2 s ≈ **60 GB/s** 有效带宽。解码只用到标称带宽的 ~25–30%，所以芯片需要 ~250 GB/s 标称——即 M4 Pro 档（273 GB/s）。低于 M4 Pro，即使全热，M2 Pro（~200 GB/s）也只能到 ~4 tok/s。内存 ≥16 GB 让模型大部分驻留页缓存（实测锚点：M4 Pro + 24 GB = 5.73 tok/s 热短测）。 |
-
-模型*能跑*所需的配置远低于此：同样的 27B 在 M1 base + 8 GB 上全冷流式也有 ~0.2–0.3 tok/s。上表是吞吐不再是"等待游戏"的门槛。
-
-### 快速开始
+需要 Apple Silicon。Intel Mac 不在范围内。热路径是手写 NEON。
 
 ```sh
 cd stratum/native
-make                  # 构建 ./stratum（+ GPU 路径用的 stratum_q4k.metallib）
-make tests            # 量化 kernel 交叉验证 + 采样器精确性
+make                         # ./stratum（含 Metal）。不要 MemX 或 Metal：make USE_MEMX=0 或 USE_METAL=0
+make tests
 
-# 冒烟测试 —— 任意小 GGUF（Qwen、Llama、TinyLlama……）：
-./stratum <model.gguf> 2 1 450 7483 310 3444 338
+./stratum <model.gguf> 8 1 2 3          # 生成 N 个 token，后面是 prompt 的 token id
+STRATUM_NO_GPU=1 ./stratum <model.gguf> 64 0 1
 ```
 
-仓库不附带、不内置、不假设任何模型：引擎和所有脚本都要求把模型路径作为显式参数传入。二进制从 GGUF 元数据读取 `general.architecture` 并分发到已注册的处理器——没有任何模型名被硬编码。
-
-构建选项：MemX（`github.com/shiaho777/memx`，MIT）是可选的内存压缩运行时，承载暂存缓冲与 KV/SSM 状态——**首次使用时自动拉取**（`make deps` 克隆/更新；直接 `make` 会在需要时自动拉取），可用 `make USE_MEMX=0` 禁用。`make USE_METAL=0` 构建纯 CPU 版（不含 Metal shader 库）。
-
-#### 无需下载权重即可试用
-
-仓库不附带模型，但可以*现场生成*：`make_tiny_model.py` 以固定种子产出确定性 GGUF（约 0.4–1 MB，跨机器字节一致），覆盖三种布局——llama、qwen35 纯注意力、qwen35 混合 SSM——支持 F16 或 Q4_K 权重：
+仓库不带权重。一个确定性小 GGUF 就够看一次真正的贪心解码：
 
 ```sh
-cd stratum/native
 python3 ../tools/make_tiny_model.py --arch llama --weights q4k --out /tmp/tinyq.gguf
-
-STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8     # 真实贪心解码
-
-# 三后端一致性检查（CPU vs GPU-NC vs GPU2；需要 metallib）:
-./verify_backends.sh /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
+STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
 ```
 
-Q4_K 权重会走真实的量化 GEMV 内核路径。CI 推理冒烟用的正是这些生成器和钉定的贪心序列。
+`general.architecture` 决定交给哪个架构。一个进程一个模型。stderr 里要看的是匿名内存，旁边是 tok/s。
 
-### 用法
+## 怎么工作
 
-```
-stratum <model.gguf> [N_GENERATE] [PROMPT_TOKEN_ID...]
-```
+一个 token 就是对权重流的一次扫描。文件只读映射。操作系统留住的页是白来的速度；丢掉的页再从 SSD 读。匿名内存是激活、KV cache 和 SSM 状态。
 
-- `<model.gguf>` — 受支持 GGUF 的路径（必填）
-- `N_GENERATE` — 生成的 token 数（默认 32）
-- `PROMPT_TOKEN_ID...` — 预分词 prompt；省略则从 stdin 读原始 token
+流上面有三层调度。热层纯计算。冷层在当前层计算时，以 50–100 MB 的窗口预取。`STRATUM_MULTISEQ=N` 让 N 条解码流共享一次权重扫描（27B 上 64 流实测聚合 **130 tok/s**）。
 
-示例：
+在这之上，权重不重量化，页也不锁：
 
-```sh
-# 纯 CPU、贪心、基准风格（wall = 加载 + prefill + 64 tokens）：
-STRATUM_NO_GPU=1 /usr/bin/time -p ./stratum <model.gguf> 64 0 1
+- **Q2_K nibble 布局**（type 42）重排同样的 2-bit 值。解包实测 2.2×。用 `STRATUM_Q2K_NIB` 打开。
+- **MoE** 每个 token 碰到 E 个专家里的 k 个。`moe_expert_pack.py` 把一个专家的 gate、up、down 排成一段连续字节。引擎可以在 attention 期间预取一个猜测，并在页缓存预算内维持一个衰减热集。真正做选择的仍是 router。
+- **MTP** 一次 forward 验证一棵 draft 树，未命中就回滚，发出的 token 与贪心相同。低置信度的 draft 可以在付一次权重读取之前停掉。
+- **Metal** 按 tensor、有上界。把整个模型注册成一块 GPU 缓冲是失败模式。
 
-# GPU 路径（自动从 CWD 或 native/ 探测 stratum_q4k.metallib）：
-STRATUM_GPU=1 ./stratum <model.gguf> 32 1 450 7483 310 3444 338
-```
+这些数字站得住，是因为有三条边界：不重量化、不 `mlock`、不对整份模型做 NoCopy。写在 [AGENTS.md](AGENTS.md)。
 
-Metal 库自动检测（当前目录，然后 `native/`）；Metal 设备自动检测（`MTLCreateSystemDefaultDevice`）。完整开关见 [Part V — 环境变量](#part-v--参考)。
+## 接着读
 
-### 读懂运行报告
+| | |
+|---|---|
+| [工作原理](docs/HOW_IT_WORKS_CN.md) | 权重流、MoE pack、MTP、Metal，以及实测表 |
+| [验证](stratum/docs/VALIDATION.md) | v199–v217 覆盖什么，以及 MoE oracle |
+| [环境变量](stratum/docs/ENVVARS.md) | 每一个 `STRATUM_*` 开关 |
+| [AGENTS.md](AGENTS.md) | 边界与确定性约定 |
+| [对照录像](media/h2h-video/) | stratum 与 llama.cpp，附原始 JSON |
 
-引擎向 stderr 打印诊断日志。三个关键数字：
+## 许可证
 
-- **`wired` / 匿名内存** —— 核心主张。小模型 ~7 MB，27B ~77 MB（含 KV/SSM 状态）。这个数字**不会**随模型大小增长。
-- **`tok/s`** —— 解码吞吐。`MULTISEQ` 模式下聚合行显示 `aggregate X tok/s (per-stream Y tok/s)`。
-- **`argmax` 序列** —— 贪心 token id；gate 脚本用它断言 bit-exact。
-
-### 常见问题
-
-- **为什么我的机器在交换/变慢？** 模型可能是冷的；第一遍从磁盘流式读取。大跑之前先查可用内存（`vm_stat`、`sysctl vm.swapusage`）。24 GB 机器上不要在有重型后台进程时跑 12 GB 模型。
-- **它会用我的 GPU 吗？** 只有设置了 `STRATUM_GPU` / `STRATUM_GPU_NC` 才会。默认纯 CPU。
-- **能跑比内存大的模型吗？** 能——这正是设计点。它需要的是磁盘空间和耐心，不是内存。
-- **为什么大模型解码慢？** 每个 token 都要读一遍完整权重流（11.98 GB @ ~27 GB/s 热 ≈ M4 Pro 上 0.44 s/token）。解码按构造就是带宽受限的；见 [Part IV — 机制极限](#机制极限)。
-- **一个进程能跑多个模型吗？** 不能——引擎按设计是单模型、单进程：状态是文件级全局变量，一个进程只能跑一个模型（见 AGENTS.md）。
-
----
-
-## Part II — 工作原理
-
-### 问题：dense 权重是一条流
-
-MoE 模型每个 token 只激活一部分参数——kimi-k3 激活 896 个专家中的 16 个（~3.7%），所以它可以把 93% 的权重流式化。**dense** 模型没有这种运气：每个 token 消耗*每一个*权重，一次。传统引擎的应对是整模型载入 RAM/VRAM，这就是为什么 llama.cpp 跑 27B 需要 ~16 GB 统一内存，没有时只能颠簸。
-
-Stratum 持相反立场：**工作集与模型大小无关**。一个 token = 一次完整权重流扫描，而这条流从来不需要驻留。结果就是 27B 在 24 GB 机器上以 ~77 MB 匿名内存跑完——换到 4 GB 机器也一样跑，只是更慢。
-
-### 削减 1 — `mmap`：权重从不进入匿名内存
-
-模型文件只读映射，每次权重读取都直接经过 OS 页缓存：
-
-- 页缓存**可回收**——内存压力下 OS 驱逐权重页而不是杀死进程，与任何普通文件读取完全相同。
-- 匿名内存只为模型运行真正需要的东西保留：激活、KV 缓存、SSM 状态。这就是 ~7 MB / ~77 MB 数字的来源。
-- 预取是建议性的，不是驻留：`madvise(MADV_WILLNEED)` + `F_RDADVISE` 提示内核提前载入（逐 tensor 粒度，50–100 MB 窗口），随即释放。这些页仍然是普通页缓存。
-
-这就是为什么内存下限是一个"刻度盘"而不是悬崖：内存大小决定 `f_hot`（页缓存能装下的权重比例），吞吐遵循 [Part IV](#性能如何缩放) 的公式。
-
-### 削减 2 — 流式调度器：热检测，冷预取
-
-不是所有层都平等。24 GB 机器 + 12 GB 模型时，第一遍扫描后大部分权重在页缓存中保持热。调度器测量而非猜测：
-
-- **热检测** —— `mincore()` 对每层采样 3–12 页；若 ≥80% 驻留则判定为"热"，作为纯计算运行，无 I/O 等待。
-- **冷路径** —— 冷层获得合并的 `madvise`/`F_RDADVISE` 突发（覆盖接下来几层，24 MB 间隙合并为一次调用），SSD 持续流式读取的同时计算继续推进。
-- **确定性模式**（`STRATUM_STREAM_DET=1`）完全跳过 mincore 开销，一律按冷处理，保证可复现。
-
-实测 mincore 采样本身在热路径上的成本约为零——赢的不是检测，而是知道什么时候*不用*预取。
-
-<p align="center"><img src="docs/assets/streaming-scheduler.svg" alt="流式调度:mincore 热检测与合并冷预取和计算重叠" width="720"></p>
-
-### 削减 3 — MULTISEQ：一次权重扫描，N 个逻辑流
-
-这是摊薄打法：`STRATUM_MULTISEQ=N` 让 N 条独立解码流（相同 prompt，各自采样后分叉）每一步共享**一次权重扫描**。N 条流共享同一批 tensor 读取；计算在其上批量执行。
-
-- 聚合吞吐随 N 近似线性增长：27B 上 **64 流 130 tok/s**（实测），单流 ~2.0 tok/s。
-- 运行报告打印 `weight-scans` 与 `main-scans`——比值就是摊薄因子。理论行：*一次冷扫描服务 N 个逻辑流*。
-- 同 prompt 克隆流折叠是现实场景：N 份同一对话 130 tok/s 聚合 = 每份 130/N，仍然只有一次权重读取。
-
-### Q2K nibble 布局（GGUF type 42）
-
-Q2_K 解包是计算受限的（14 核 ~7 GB/s）——瓶颈是反量化指令而不是内存。nibble 布局是**字节重排**，不是重新量化：
-
-- 每个 2-bit 权重值不变（0–3）；只置换字节打包方式，使 NEON 解包 kernel 的指令数减半。
-- 实测**解包快 2.2×**，与原始布局 bit-exact。
-- 代价：Q2_K tensor 文件体积 +50%（27B 的 sidecar 16.3 GB），需要 ≥32 GB 内存保持热——因此 nibble 路径通过 `STRATUM_Q2K_NIB=<path>` 或内嵌 type-42 GGUF 显式启用。
-
-转换器（`tools_gguf_nib_convert.c`）输出 sidecar 或内嵌 type-42 GGUF，引擎在使用前会验证 nibble 与原值一致（`[NIB-DBG]` 诊断）。
-
-### MTP 树解码
-
-多 token 预测：小 draft head 每次 forward 提出 8-token 树；主模型一次验证整棵树。
-
-- **draft 一致时每次 forward 8 个 token，100% 接受**——无额外 pass，输出与贪心完全相同。
-- 27B 上的墙是 draft 的*质量*而不是树参数：实测树效率 2.46 tok/main，树深实验（`STRATUM_TREE_EXTEND_K`）超过 4 反而更差。树机制本身没问题；draft head 才是约束。
-
-<p align="center"><img src="docs/assets/mtp-tree.svg" alt="MTP draft 树:批量验证与精确回滚" width="720"></p>
-
-### Metal GPU：有界缓冲，逐 tensor 零拷贝
-
-GPU 可选且严格有界：
-
-- **有界 staging** —— GPU 缓冲有上限；引擎永远不会把模型镜像到 GPU。
-- **逐 tensor NoCopy**（`STRATUM_GPU_NC=1`）——每个 matmul 只把自己的 tensor（<100 MB）用 `newBufferWithBytesNoCopy` 视图包住 mmap，分发，释放。wired 内存保持平稳（实测 11.98 GB 顺序 GPU 读取仅 +0.04 GB）。
-- **批量提交**（`stratum_metal_nc_batch_*`）——多个独立 matmul 共享一个 command buffer：**比逐 matmul 等待快 17.3×**（480 个 matmul：3.71 s → 0.21 s）。
-- **失败模式是整模型注册**——对整个 mmap（或 >~1 GB 的块）建一个 NoCopy 缓冲会把整个模型 wire 住并 OOM。这正是逐 tensor 粒度要避免的。此外任何地方都不锁页缓存：`keep_resident` 被禁止，`STRATUM_HOT_FAST` 是不锁页缓存的热模式调度器。
-- **融合全前向解码**（`STRATUM_GPU=1 STRATUM_GPU_FULL=1`，小模型）——整个 Transformer 层每 token 走一遍融合 Metal 路径：单个 compute encoder 横跨全部 28 层、dispatch 之间用 buffer barrier 分隔、激活暂存在 threadgroup 内存；可选链式解码（`STRATUM_GPU_CHAIN=1`）让 token ring + embedding gather 留在 GPU 上，token 背靠背解码、无宿主往返。Qwen3-0.6B Q4_K_M 的 `context_length` 是 40960，而全 GPU 的 rope/KV 上限是 8192，所以只设 `STRATUM_GPU_FULL=1` 时前向留在 CPU。加上 `STRATUM_MAX_KV=8192`，在第一个回合结束符处停下，融合路径实测 **~247–252 tok/s**，llama.cpp Metal **~224–231 tok/s**。两边都先写 `<think>`，再写答案 “The capital of France is Paris.”。8192 上限对应的 GPU KV 是急切分配，物理占用 **~1.84 GB**；权重仍是文件态。不支持的架构自动回退通用路径（MiniCPM5 已验证）。
-
-既然 CPU 能跑，为什么还要 GPU？内存层面的答案才是重点：GPU 加速是*有界*资源，所以它永远不会改变内存故事——在一个带宽受限的流水线里，它只能加速计算部分。
-
-### KV 缓存与 SSM 状态
-
-运行状态是模型唯一需要的匿名内存：
-
-
-<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="Qwen3.8 混合层结构:固定状态 SSM 层 + 周期性全注意力 KV 环" width="740"></p>
-
-- 全注意力层保留 KV 缓存；Qwen3.8 混合架构的 SSM 层（Gated DeltaNet）保留固定大小的 delta-rule 状态，**与上下文长度无关**——每个 token 原位更新的有界矩阵，类似 kimi 的 KDA。
-- 27B 的 ~77 MB 匿名 = KV/SSM 状态 + 激活 + 小块 scratch；权重本身的贡献为 ~0。
-
-### 可选 MemX 平面 —— 状态的压缩内存
-
-[MemX](https://github.com/shiaho777/memx)（MIT，自动拉取）用压缩内存平面承载暂存缓冲与 KV/SSM 状态；上文 27B 的 ~77 MB 数字即在其启用下实测。
-
-- **配额运行时可调** —— `STRATUM_MEMX_BUF_QUOTA_MB` / `STRATUM_MEMX_KV_QUOTA_MB` 覆盖默认的 3 GB / 2 GB。调小配额会抬升内部池压力，也是在不拖垮主机的前提下复现压力场景的安全手段。
-- **依赖可钉定** —— `MEMX_REF=<branch-or-sha> make deps` 检出固定上游版本，而不是浮动 HEAD。
-- **实测注意事项** —— stage 缓冲拿到哪种背板（MemX 平面 vs anon 回退）取决于分配时的内存压力，两种背板的 FP 累加路径略有不同。因此启用 MemX 的运行在完全相同的调用之间会有 mean KL ~1e-4 的方差；token 序列稳定、全部 gate 通过，但只有 `USE_MEMX=0` 构建跨运行字节可复现（见 AGENTS.md 的确定性契约）。
-
-### 代码结构
-
-```
-stratum/native/
-├── stratum.c                    ← 入口：读 general.architecture，分发
-├── stratum_arch.h               ← 通用架构注册表 + 配置加载
-├── stratum_linear.h             ← 通用量化线性层（Q2_K…Q8_0/F16/F32）
-├── stratum_engine.h             ← CPU/GPU 初始化、madvise、投机解码、内存报告
-├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense 架构（自注册）
-├── stratum_arch_qwen35.inc.c    ← Qwen3.8 混合架构（GGUF 架构 id：qwen35）：Gated DeltaNet + attention（~2.4 万行）
-├── stratum_arch_moe.inc.c       ← MoE 架构（GGUF 架构 id：`llama-moe,llama_moe,moe`，实验性）：dense 注意力 + top-k 专家 FFN，逐专家 `madvise` 流式
-├── stratum_metal.m/.h           ← Metal 层：GEMV kernel、batched-B、group dispatch、NC
-├── stratum_q{k}_*.{h,neon.h,metal} ← 量化 kernel（scalar + NEON + Metal）
-├── v199–v217_gate.sh            ← bit-exact 回归 gate
-├── h3_*.c / te_qwen3vl_step.c   ← H3 视频生成探针（独立二进制，不属于 `./stratum`）：打包 denoiser 前向、文本编码器、VAE 解码器、Euler 采样器——见下
-├── dit_probe.c / dit_sample.c   ← mini-DiT 探针 + flow-matching 采样器（独立程序；`dit_probe` 是 `make` 目标也是 CI gate）
-└── Makefile                     ← 构建 ./stratum（+ metallib）
-```
-
-新增架构 = 写 `stratum_arch_<name>.inc.c`，实现 `StratumArch` 接口，注册——Makefile 会自动把 `*.inc.c` 收集进 `stratum_archs.gen.h`，因此不需要改任何现有文件。对模型也是同理：没有任何逐模型硬编码。
-
-### 文本 LLM 之外：MoE 与视频生成探针
-
-两个研究探针在 `stratum` 二进制之外复用同一套流式原语。两者都是**实验性**：权重同样经 mmap 流式，但没有任何 bit-exact gate 覆盖，也不做内存地板承诺。
-
-- **MoE（`llama-moe`）** —— 注册进引擎的架构：注意力与 llama 路径完全一致，FFN 换成路由（`ffn_gate_inp`）+ 堆叠专家张量（`ffn_gate/up/down_exps`）的 top-k。流式要点：每 token 只碰 k/E 个专家切片，每个切片是张量内连续字节段，路由触发后 `madvise` 预取——永不锁定。路由确定（平局取小编号）。小模型生成器（`make_tiny_model.py --arch moe`）+ 独立 numpy oracle（`tiny_moe_oracle.py`）覆盖；尚未进 CI。
-- **H3 视频管线（`h3_*.c`、`te_qwen3vl_step.c`）** —— 独立的 denoiser/VAE/采样器探针（50 block 打包前向、文本编码器、视频/音频 VAE 解码器、进程内多步 Euler 采样器、`stratum_h3_attn.metal` 里的 Metal flash attention）。同样的 mmap 流式纪律，独立的环境变量面（`STRATUM_H3_*`、`H3_*`、`STRATUM_NC_*`——记在 `ENVVARS.md` 附录，不在上面的引擎表里），独立的启动前 gate（`h3_test_gate.sh check/clean`，符合边界 3）。数值注意：denoiser 上 int8 SDOT 已被杀掉（50 步扩散没有 argmax 可掩盖误差）；路径间一致用打包 dump 的 md5 / max|d| 对，不用 token 一致断言。
-
-### 不变量
-
-引擎绝不越过的三条硬边界——它们保证数字始终可信：
-
-1. **永不损害质量** —— 不重新量化现有权重（Q4_K→Q4_0 被禁止），不跳层，不近似计算。唯一允许的"近似"是 int8 SDOT，已验证贪心 bit-exact。nibble 布局是字节置换，不是重新量化。
-2. **永不增加 wired 内存** —— 不整模型 mlock，不用 GPU 缓冲缓存权重，不注册 >1 GB 的 NoCopy。权重流式；只有 KV/SSM 状态驻留。
-3. **测试不得耗尽机器** —— 大跑之前检查内存；kernel 实验用微基准，不用 27B 端到端。
-
----
-
-## Part III — 验证
-
-<p align="center"><img src="docs/assets/validation-stack.svg" alt="验证栈:CI、无模型测试、19 个 gate、分布级与后端检查" width="740"></p>
-
-引擎把正确性当作契约而不是希望：
-
-- **每个 PR 都跑 CI（4 个 job）** —— 构建 + 量化 kernel 交叉验证与采样器精确性；同样的测试在 **ASan + UBSan** 下再跑一遍；Metal 设备探针；以及一次**真实端到端推理冒烟**：测试时现场*生成*确定性小模型（仓库不附带权重），在 llama、qwen35 纯注意力、qwen35 混合 SSM、**Q4_K 权重**变体与 mini-DiT 序列前向上驱动完整回路，贪心序列被钉定为硬回归断言。
-- **`quant_test`** —— 每个量化 kernel 与标量参考交叉验证。
-- **`spec_sample_test`** —— Leviathan-Chen 拒绝采样精确性。
-- **19 个 gate 脚本（`v199`–`v217`）** —— Qwen3.8 混合架构 + 27B 的全模型贪心回归：断言精确 argmax 序列 `[2, 220, 16, 13]` 与 `tok/main ≥ 8.0`。任何引擎改动必须让所有 gate 保持通过。
-- **分布级回归** —— `STRATUM_LOGITS_DUMP=<path>` 记录每步 logits；`logit_compare` 报告任意两次运行的 KL(base‖candidate)、top-1 一致率与 max |Δ|。gate 只钉住少数 token 的 argmax，这看到的是整个分布。（MemX 运行间方差正是用它发现的，见 AGENTS.md。）
-- **双路径纪律** —— CPU（NEON）与 GPU（Metal）路径都被覆盖；逐 tensor NoCopy 在 27B 上与 CPU 路径验证 bit-exact 后才被允许。
-- **后端一致性（本地硬件）** —— `verify_backends.sh <model>` 断言 cpu = GPU-NC = GPU2 贪心序列（在生成的 Q4_K 小模型上运行）。
-- **MoE oracle（本地，非 CI）** —— `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` 对 `llama-moe` 路径做独立 numpy 交叉检查。
-- **H3 门禁（本地，大权重）** —— `h3_test_gate.sh check` 在内存紧张或已有大模型进程时拒绝启动；`h3_test_gate.sh clean <model…>` 跑后释放页缓存。H3 数值对比用 dump 一致（`md5` / max|d|），不用 token argmax。
-
-两个配置 argmax 一致是必要条件，不是充分条件。分布级对比：
-
-```sh
-STRATUM_NO_GPU=1 STRATUM_LOGITS_DUMP=/tmp/a.slog ./stratum <model.gguf> 64 <prompt ids>
-STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prompt ids>
-./logit_compare /tmp/a.slog /tmp/b.slog        # 每步 KL(base‖cand) + top-1 一致率
-```
-
-同一配置跑两遍必须 KL = 0（`USE_MEMX=0` 构建跨运行字节可复现）。MemX 方差正是这个工具发现的。
-
-"bit-exact" 的确切含义、豁免项（跨工具链的 `-ffast-math` 收缩、int8 SDOT、MemX 背板切换）与再验证规则：见 `AGENTS.md` 的确定性契约；完整覆盖矩阵见 `stratum/docs/VALIDATION.md`。
-
-### 实测对比视频 — stratum vs llama.cpp
-
-同一个 GGUF 文件喂给两个引擎，CPU 与 GPU（Metal）贪心解码，token 并排流式输出，配浮动 HUD——实时 tok/s、物理占用、页缓存、token 进度——游戏 FPS 浮层风格。全部由实测运行渲染；原始 JSON 与 harness 在 `media/h2h-video/`。
-
-**测量规则（全部视频）：**
-
-- 输出修正之后重录。Apple M4 Pro、24 GB，`USE_METAL=1 USE_MEMX=0`。llama.cpp 是 Homebrew 原版 `llama-completion` b9180。
-- 同一个 GGUF、同一段 chat prompt。llama.cpp 用原始补全模式（`-no-cnv`）。它默认会在模型带 chat 模板时打开对话模式，把已经套好模板的 prompt 再包一层。贪心是 `--temp 0 --top-k 1`。这个二进制默认温度是 0.80，所以早先两边的思考写的不是同一段话。
-- stratum 会把预填后采到的第一个 token 打出来。在这条 prompt 上它是 `<think>`。旧循环只打印喂进去之后的下一个 token，所以画面从思考正文中间开始。
-- 记录下来的回答停在第一个 `<|im_end|>`。生成上限只是天花板。回合结束之后的 token 不进视频。
-- 内存仍用 `vmmap --summary`。速度 pass 不挂采样器。
-- CPU：`STRATUM_NO_GPU=1` 对 `-ngl 0`。GPU：融合全前向加 `STRATUM_MAX_KV=8192` 对 `-ngl 99`。这份文件的 `context_length` 是 40960，不加这个上限，全 GPU rope 路径留在 CPU。
-
-#### 视频 — Qwen3-0.6B Q4_K_M（462 MB）CPU
-
-<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M CPU：stratum（左）vs llama.cpp（右），token 流式输出 + 浮动 tok/s 与内存 HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4">▶ 高清 MP4</a></p>
-
-| | stratum | llama.cpp |
-|---|---|---|
-| 回合（到结束符） | 81 token | 93 token |
-| 解码吞吐（流式） | **247–255 tok/s** | 171–184 tok/s |
-| wall，第 2 遍 | 0.76 s | 1.57 s |
-| **物理占用（峰值）** | **46 MB** | **4915 MB** |
-| 页缓存（可回收，峰值） | 462 MB | 542 MB |
-
-两边都先写 `<think>`，再回答 “The capital of France is Paris.”。思考段落并不逐字相同：llama-completion 会丢掉 `assistant` 后面的换行，prompt 少一个 token，CPU 内核也不是同一份代码。答案那一句是一样的。
-
-#### 视频 — Qwen3-0.6B Q4_K_M — GPU（Metal）
-
-<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-gpu-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M GPU：stratum（左）vs llama.cpp（右），token 流式输出 + 浮动 tok/s 与内存 HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-gpu-stratum-vs-llamacpp.mp4">▶ 高清 MP4</a></p>
-
-| | stratum GPU | llama.cpp GPU（-ngl 99） |
-|---|---|---|
-| 回合（到结束符） | 81 token | 81 token |
-| 解码吞吐（流式） | **247–252 tok/s** | 224–231 tok/s |
-| — 链式解码（`STRATUM_GPU_CHAIN`） | **258 tok/s**（3.9 ms/tok） | — |
-| wall，第 2 遍 | 0.92 s | 1.58 s |
-| **物理占用（峰值，并保持）** | **1843 MB** | **4608 MB** |
-| 页缓存（可回收，峰值） | 552 MB | 562 MB |
-
-这一遍两个 GPU 面板的正文相同，包括思考。1843 MB 是 8192 上限下急切分配的 GPU KV。CPU 上 stratum 的思考以 “that's all” 收尾，GPU 这一对以 “that's it” 收尾。答案那一句每个面板都一样。
-
-#### 视频 — MiniCPM5-2B（官方 GGUF，llama.cpp 拒载）
-
-<p align="center"><img src="media/h2h-video/videos/minicpm5-2b-q4km-stratum-vs-llamacpp.gif" alt="MiniCPM5-2B Q4_K_M：stratum（左）vs llama.cpp CANNOT RUN（右）" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/minicpm5-2b-q4km-stratum-vs-llamacpp.mp4">▶ Q4_K_M MP4</a> · <a href="media/h2h-video/videos/minicpm5-2b-f16-stratum-vs-llamacpp.mp4">▶ F16 MP4</a></p>
-
-| | stratum | llama.cpp |
-|---|---|---|
-| 回合 | Q4 53 token，答 “Paris.” · F16 45 token，答完整的一句 | — |
-| 解码吞吐（流式） | Q4 **89–92 tok/s** · F16 **19.0–19.9 tok/s** | — |
-| **物理占用（峰值）** | **Q4 29 MB · F16 32 MB** | — |
-| 页缓存（可回收，峰值） | Q4 1536 MB · F16 4813 MB | — |
-
-两边都指向**官方未改动的 `openbmb/MiniCPM5-2B-GGUF`**。Homebrew llama.cpp（b9180）加载时直接拒绝（`unknown pre-tokenizer type: 'minicpm5'`），右侧是 CANNOT-RUN。stratum 写出 `<think>`，答完就停。Q4 和 F16 的答案长短不同，这是量化本身的差别，不是视频被截断。
-
----
-
-## Part IV — 实测数据
-
-所有数字实测于 Apple M4 Pro（14 核）、24 GB 统一内存、macOS、贪心解码、CPU 路径。27B 工件为 Qwen3.8 发布版；验证在规格完全相同的 3.6 发布权重（文件 `qwen3.6-27b-mixed.gguf`）上进行——同架构，无需重跑。（`STRATUM_NO_GPU=1`），方法 `/usr/bin/time -p ./stratum <model.gguf> 64 0 1`。
-
-### 小模型 — 感知即时（0.5B–1B）
-
-这是 Stratum 的最佳舞台：小模型以正常、交互级速度运行，资源占用近乎为零——生成时机器对其它一切照常响应。wired 内存无论 0.5B 还是 27B 都保持 ~7 MB。
-
-| 模型 | 格式 | 大小 | tok/s | 感知 |
-|---|---|---|---|---|
-| Qwen2.5-Coder-0.5B | Q4_K | 398 MB | **125** | 即时 |
-| Qwen3-0.6B | Q4_K | 484 MB | **89** | 即时 |
-| MiniCPM5-1B-Base | Q4_K | 688 MB | **68** | 即时 |
-| Qwen2.5-Coder-0.5B | F16 | 988 MB | 51 | 即时 |
-| Qwen3-0.6B | F16 | 1.5 GB | 40 | 即时 |
-| MiniCPM5-1B-Base | F16 | 2.16 GB | 30 | 即时 |
-
-### 大模型 — 研究前沿（27B）
-
-| 模型 | 格式 | 大小 | tok/s | 备注 |
-|---|---|---|---|---|
-| Qwen3.8-27B-mixed | Q2_K/Q4_K/Q6_K 混合 | 11.98 GB | **5.73**（8-token 短测） | 热缓存；长生成持续 ~1.4–2 tok/s |
-
-大模型是权衡最明显的地方：它能跑（llama.cpp 在这里颠簸或 OOM），但解码受带宽限制。**在保持资源占用无感的前提下缩小小模型速度与大模型吞吐之间的差距，是本项目当前的研究方向。**
-
-### 资源占用 — 与模型大小无关
-
-| 模型 | 参数量 | Wired（匿名） |
-|---|---|---|
-| Qwen2.5-Coder-0.5B | 0.5B | ~7 MB |
-| MiniCPM5-1B-Base | 1B | ~7 MB |
-| Qwen3.8-27B-mixed | 27B | **~77 MB**（含 KV/SSM 状态） |
-
-**模型大小理论上无上限。**无论参数量多少，wired 内存都保持在 ~7 MB 量级，总物理占用与 OS 选择保留的页缓存成正比——引擎本身从不把模型放进匿名内存。唯一的实际限制是磁盘空间和每个 token 的耐心。
-
-### 内存 — 核心主张（TinyLlama 1.1B Q4_K_M，64 tokens）
-
-| | stratum | llama.cpp | 比值 |
-|---|---|---|---|
-| 匿名（绑定 RAM） | **7.4 MB** | 634.9 MB | **低 85.7×** |
-| 总物理 | 645.2 MB | 1300.5 MB | 低 2.0× |
-
-<p align="center"><img src="docs/assets/memory-bars.svg" alt="匿名内存对比:stratum vs llama.cpp" width="720"></p>
-
-### 规模 — 24 GB 机器上的 27B
-
-stratum 以 ~77 MB 匿名内存跑完 27B。llama.cpp 在这里无法可用地运行它：`-ngl 0` 颠簸，`-ngl 99` 需要 16 GB 统一内存。Stratum 是唯一能产出 token 的引擎。
-
-### 性能如何缩放
-
-每个 token 消耗一次完整权重流，因此每 token 时间由一个公式决定——RAM 决定有多少保持热（`f_hot`），内存带宽决定 `BW_hot`，SSD 决定冷流式速率：
-
-$$
-t_{\text{token}} \;=\; W_{\text{bytes}} \left( \frac{f_{\text{hot}}}{BW_{\text{hot}}} + \frac{f_{\text{cold}}}{BW_{\text{cold}}} \right)
-$$
-
-27B 理论表现（由该模型推导的估算——下图实心为实测，斜纹为推算）：
-
-| 硬件 | 内存 | 预期（估算） |
-|---|---|---|
-| M1 base，8 GB | 全冷流式 | ~0.2–0.3 tok/s（SSD ~3 GB/s） |
-| M4 Pro，24 GB | 部分热 | **5.73 tok/s 热短测 / ~1.4–2 持续**（实测） |
-| M4 Max，48 GB+ | 全热 | ~8–10 tok/s（更高带宽） |
-| ≥128 GB 工作站 | 全热 + nibble 布局 | 12+ tok/s（Q2_K 2.2× 解包） |
-
-<p align="center"><img src="docs/assets/throughput-estimate.svg" alt="27B 各硬件档位吞吐:实测与理论估算" width="740"></p>
-
-### 机制极限
-
-- **单流解码是带宽受限的**：每个 token 读一遍完整权重流（本机 11.98 GB @ ~27 GB/s 热 ≈ 0.44 s/token）。
-- **Q2_K 解包是计算受限的**（14 核 ~7 GB/s）；nibble 布局突破这一点（2.2×），代价是文件体积 +50%——需要 ≥32 GB 内存保持热。
-- **长生成树效率 2.46 tok/main**——墙是 draft 质量，不是树参数。
-
-### 诚实的局限
-
-- **按设计单模型、单进程**：架构状态位于文件级全局变量；一个进程跑一个模型，`STRATUM_SERVER` 模式是串行循环而非并发服务。
-- **解码保持带宽受限**：吞吐遵循上述公式——大模型是耐心的活，不是交互的活。MULTISEQ 在流间摊销，但不改变单流延迟。
-- **投机解码的长程收益受 draft 质量限制**（持续 2.46 tok/main vs 短测 8.0）。
-- **MemX 以位可复现性换足迹**（~1e-4 mean KL 运行间方差；token 序列稳定）。
-- **MoE 与 H3 是探针不是产品** —— `llama-moe` 有 oracle 覆盖但无 CI gate、无全规模验证；H3 管线无内存地板承诺（768p 下激活 + Metal staging 是 GB 级），其 kernel 默认走保守路径，待 gate 裁决。
-- **仅支持 Apple Silicon** —— NEON 热路径没有 x86_64 移植。
-
----
-
-## Part V — 参考
-
-### 环境变量
-
-引擎有 200+ 环境变量（多数是实验遗留的 GPU kernel 变体开关；全表见 `stratum/docs/ENVVARS.md`，H3 探针开关在其附录）。关键项：
-
-| 变量 | 用途 | 边界 |
-|---|---|---|
-| `STRATUM_NO_GPU=1` | 强制纯 CPU（默认基准配置） | ✅ |
-| `STRATUM_GPU=1` / `STRATUM_GPU_NC=1` | GPU 路径；NC = 逐 tensor 零拷贝 | ✅（NC bit-exact） |
-| `STRATUM_MULTISEQ=N` | N 条流共享一次权重扫描 | ✅（64 流 130 tok/s） |
-| `STRATUM_MTP` / `STRATUM_TREE_*` | MTP 树 / 投机解码 | ✅ |
-| `STRATUM_ASYNC_PREFETCH=1` | 后台 pread 预取 | ✅ |
-| `STRATUM_HOT_FAST=1` | 热缓存纯计算模式（不锁页缓存） | ✅ |
-| `STRATUM_STREAM_DET=1` | 确定性流式（跳过 mincore 检测） | ✅ |
-| `STRATUM_Q2K_NIB=<path>` | Q2K nibble 布局模型（type 42） | ✅（字节重排） |
-| `STRATUM_TREE_EXTEND_K=N` | 树链深度（上限 12，默认 4） | ✅ |
-| `STRATUM_GPU2=1` | 冷权重 staging 流水线 | ⚠️ 热权重时比 CPU 慢 |
-| `STRATUM_Q2K_SDOT=1` | Q2K 的 int8 SDOT | ⚠️ 14 核无增益 |
-| `STRATUM_LOGITS_DUMP=<path>` | 逐步 logits 导出 → `logit_compare` | ✅ 测量 |
-| `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram 投机解码 | ✅ |
-| `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX 平面配额（压力复现） | ✅ |
-| `STRATUM_ADAPTIVE=1` | 启动带宽校准探针（~1.5 s；只记录机器上下文，不改变路由） | ✅ 测量 |
-| `MEMX_REF=<ref>` (make deps) | 钉定 MemX 依赖版本 | ✅ 可复现性 |
-| `STRATUM_PREDECODE=1` | Q4_K→F16 预解码到 GPU | ❌ 内存边界 |
-| `STRATUM_Q4_0=1` | Q4_K→Q4_0 重编码 | ❌ 质量边界 |
-| `STRATUM_MLOCK_ALL` / `STRATUM_KEEP_RESIDENT` | 锁定/钉住权重 | ❌ 内存边界 |
-
-### 仓库布局
-
-```
-├── README.md          ← 本文件（英文）
-├── README_CN.md       ← 简体中文
-├── AGENTS.md          ← 开发指南、边界、确定性契约
-├── docs/assets/       ← 本 README 嵌入的 SVG 图集
-└── stratum/
-    ├── native/        ← 引擎（C/Metal）、Makefile、gate 脚本、verify_backends.sh、H3/DiT 探针
-    ├── docs/          ← 实测证据 + VALIDATION.md 覆盖矩阵 + ENVVARS.md 开关表
-    ├── tools/         ← GGUF 工具,含 make_tiny_model.py（llama/qwen35/hybrid/dit/moe 从种子生成）、oracle、env_census.py
-    └── benchmarks/    ← 基准脚本（headtohead、manifesto、GPU 扫描）
-```
-
-### 参考
-
-本项目参考过的项目，以及它们的思路在 Stratum 中的体现：
-
-- **[AirLLM](https://github.com/lyogavin/airllm)** —— 工作集应随层大小而非模型大小缩放；Stratum 将同一思路应用到 tensor 粒度。
-- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** —— 窄专业引擎、decode 图捕获、专家 LRU、在关键处保持精确。
-- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** —— 8 GB 跑 2.78T；O_DIRECT 读取、打包数据直读、位级确定性契约；nibble 布局本身就在质疑权重格式。
-- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** —— Apple Silicon 上的纯 C/Metal MoE；SSD 专家流式、FMA 融合反量化 kernel、信任 OS 页缓存。
-- **[tessera](https://github.com/geoph9/tessera)** —— NoCopy GPU 缓冲 + `MADV_DONTNEED` 页驱逐；为逐 tensor NoCopy 边界提供了依据。（该仓库已不再公开。）
-- **[HuggingFace transformers](https://github.com/huggingface/transformers)** —— 用于输出对比的参考框架。
-- **[ggml / llama.cpp](https://github.com/ggerganov/llama.cpp)** —— GGUF 量化格式与模型转换工具链。
-
-### 许可证
-
-Apache-2.0。
+Apache-2.0.

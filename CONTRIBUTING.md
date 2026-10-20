@@ -23,6 +23,7 @@ No weights needed — `make check` generates deterministic tiny models.
 
 | File | Purpose |
 |---|---|
+| `docs/HOW_IT_WORKS.md` | The stream, MoE, MTP, Metal, measurements |
 | `AGENTS.md` | Development guide: boundaries, env vars, determinism contract |
 | `stratum/docs/VALIDATION.md` | What the gates cover and don't |
 | `stratum/docs/ENVVARS.md` | All STRATUM_* switches (generated table + hand-maintained H3 appendix) — regenerate with `python3 stratum/tools/env_census.py` |

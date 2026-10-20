@@ -28,7 +28,8 @@
   - **`STRATUM_MOE_STATS=1`** 路由诊断探针(FreeToken decode_routing_stats 的借鉴):每步去重专家数/累计触达,为预读策略调优提供测量基础;
   - **独立 oracle**(`tools/tiny_moe_oracle.py`,numpy 从文件权重复算):Q4_K 与 F16 两条路径的贪心序列均与引擎**逐位一致**(q4k:`987 647 804 804 804 16`;f16:`63 69 192 133`)。
 - **验证中的语义发现**:① GGUF F32 路由按 cblas RowMajor [E][H] 读,生成器 flat 写入即此布局;② `-O3` 会把探针 sink 当死代码消除(volatile 全局救回);③ f16 模型的专家也是 F16(不是 Q4_K)。
-- **下一步(Phase B)**:真实 MoE 模型(Qwen3-30B-A3B 级)接入验证;top-k>2/MULTISEQ 批量路径;专家命中率先行统计 → 决定是否值得把 #3 的 qstar 校准接到专家预读;v-gate 门禁脚本新增 moe 场景。
+- **已续 (Xolotl 调度,落在边界内)**:`moe_expert_pack.py` + `STRATUM_MOE_PACK` 把 gate|up|down 抄成一段连续字节(加载时和 GGUF 对字节);`STRATUM_MOE_AHEAD` 在 attention 之前用残差做 hint 预取,真正的 top-k 仍在 attention 之后; `STRATUM_MOE_ADAPT` 按衰减命中、在 `STRATUM_MOE_ADAPT_MB` 预算内 `WILLNEED`(`DONTNEED` 要 `STRATUM_MOE_ADAPT_DROP=1`)。n-gram 只在续写唯一时延伸(`STRATUM_SPEC_CONF`);Qwen3.5 MTP 链可用 `STRATUM_SPEC_MIN_P` 在低 top-1 时停止延伸。没有钉页、没有路由偏置、没有重量化。用法和开关见 `docs/HOW_IT_WORKS_CN.md` 与 `stratum/docs/VALIDATION.md`。
+- **仍未做 (Phase B)**:真实 MoE 模型(Qwen3-30B-A3B 级)接入验证;v-gate 门禁脚本新增 moe 场景。qstar 校准去改路由这一步不做。
 
 ### 2. 工具调用锚点 + recurrent-state 快照 ✅ 已落地 (2026-08-26)
 

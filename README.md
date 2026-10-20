@@ -6,546 +6,68 @@
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Apple%20Silicon-black.svg)
 
-A pure-C transformer inference engine for Apple Silicon with a wired-memory footprint that is **independent of model size**. Weights are a stream, not a resident: the engine `mmap`s the model and reads it through the OS page cache, so anonymous memory stays ~7 MB whether the model is 0.5B or 27B.
+**A 27B model runs in ~77 MB of anonymous memory.** Weights stay a file: the engine `mmap`s the GGUF and reads it through the page cache. Anonymous memory stays ~7 MB from 0.5B to 1B, and ~77 MB at 27B once KV and SSM state are counted. RAM decides how much of the file stays hot, and therefore how fast the next token is. It does not decide whether the model finishes.
 
-| Metric | Value |
+<p align="center"><img src="docs/assets/hero-stream.svg" alt="Weights stream from disk through the page cache. Anonymous memory stays flat." width="760"></p>
+
+Measured on an M4 Pro, 24 GB, greedy, CPU unless noted.
+
+| | |
 |---|---|
-| Models measured | 27B dense (Qwen3.8, 11.98 GB GGUF), down to 0.5B |
-| Anonymous (wired) RAM for 27B | **~77 MB** (incl. KV/SSM state) |
-| Anonymous RAM for 0.5–1B | ~7 MB |
-| vs llama.cpp (TinyLlama 1.1B) | **85.7× lower** anonymous RAM |
-| vs llama.cpp GPU decode (Qwen3-0.6B) | **~247–252 tok/s** fused stream vs ~224–231 (greedy, stop at end of turn; fused path needs `STRATUM_MAX_KV=8192`) |
-| Engine size | ~752 KB binary · ≈46k lines C/Metal/tooling (≈26k engine core) |
-| GPU required | none (integrated, optional Metal accel) |
-| Architecture support | Llama family + Qwen3/Qwen2-dense + Qwen3.8 hybrid (Gated DeltaNet SSM + attention; GGUF arch id: `qwen35`) + MoE (`llama-moe`, experimental) + video-DiT/H3 spikes (standalone, not part of the `stratum` binary) |
+| 27B (Qwen3.8, 11.98 GB) | **5.73 tok/s** hot short run, ~1.4–2 tok/s sustained, **~77 MB** anonymous |
+| 0.5B–1B Q4_K | **68–125 tok/s**, **~7 MB** anonymous |
+| vs llama.cpp, TinyLlama 1.1B | **7.4 MB vs 634.9 MB** anonymous (**85.7×**) |
+| vs llama.cpp Metal, Qwen3-0.6B Q4_K_M | **247–252 tok/s** vs 224–231 (fused GPU, stop at end of turn, `STRATUM_MAX_KV=8192`) |
+| Engine | ~752 KB binary. Apple Silicon. GPU optional |
+| Architectures | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 hybrid (`qwen35`) · MoE (`llama-moe`, experimental) · DiT and H3 video spikes (separate programs) |
 
-<p align="center"><img src="docs/assets/project-stats.svg" alt="Project statistics: lines of code, binary size, formats, gates, CI jobs" width="720"></p>
+## Quick start
 
-The binding constraint is disk and bandwidth, not RAM: a model runs to completion as long as it fits on disk. What RAM buys is *how much of the model stays hot in page cache* — more RAM, fewer SSD reads per token, higher throughput. Nothing else changes.
-
-<p align="center"><img src="docs/assets/hero-stream.svg" alt="Weights are a stream: disk → page cache → engine, with a flat anonymous-memory floor" width="760"></p>
-
----
-
-## Part I — Getting started
-
-### Requirements
-
-| Component | Requirement |
-|---|---|
-| CPU | **Apple Silicon (ARM64) required.** The hot path is hand-written NEON SIMD, which exists only on Apple Silicon. Intel Macs (x86_64) are not supported. Any M1/M2/M3/M4 chip works, including base/Pro/Max/Ultra. |
-| GPU | None to buy. The GPU is integrated into the SoC and exposed through Metal; the engine runs fully on CPU and uses it only for optional acceleration. |
-| RAM | **No practical minimum — any modern device runs it.** The engine's anonymous need is ~7 MB (small models) / ~77 MB (27B, incl. KV/SSM state); weights live in reclaimable page cache, so RAM does not decide whether a model runs, only how fast. 1 GB is the modern-device baseline; every Apple Silicon Mac ships with ≥8 GB. |
-| Disk | ≥ model file size, NVMe SSD recommended. Cold weights stream from disk; ~3 GB/s sequential read keeps the cold path usable. |
-
-Memory bandwidth is the dominant performance lever, not core count. Apple Silicon bandwidth grows with chip tier:
-
-| Chip tier | Memory bandwidth (approx.) |
-|---|---|
-| M1 / M2 / M3 base | ~70–100 GB/s |
-| M1 Pro / M2 Pro | ~200 GB/s |
-| M4 / M4 Pro | ~120 / 273 GB/s |
-| M3 Max / M4 Max | ~400 / 546 GB/s |
-| Ultra (dual Max) | ~800+ GB/s |
-
-### Minimum hardware for 5 tok/s
-
-"Runs" and "runs fast" are different questions. Minimum **5 tokens/s** per model tier, derived from the per-token time formula `W × (f_hot / BW_hot + f_cold / BW_cold)` and anchored to measured hardware:
-
-| Model | Minimum for 5 tok/s | Why |
-|---|---|---|
-| 1B (Q4_K, ~688 MB) | **Any Apple Silicon (M1 base or newer) + ≥1 GB RAM + SSD** | 5 tok/s = 200 ms/token = 688 MB / 0.2 s ≈ **3.4 GB/s** effective bandwidth. Every M-chip (~70 GB/s+) and every SSD (~3 GB/s+) clears this by an order of magnitude — measured 68 tok/s on M4 Pro, i.e. ~20× headroom at 1B scale. |
-| 27B (Q2_K/Q4_K/Q6_K, 11.98 GB) | **M4 Pro-class (~250 GB/s) + ≥16 GB RAM (model mostly hot) + NVMe SSD** | 5 tok/s = 200 ms/token = 11.98 GB / 0.2 s ≈ **60 GB/s** effective bandwidth. Decode uses ~25–30% of nominal bandwidth, so the chip needs ~250 GB/s nominal — the M4 Pro tier (273 GB/s). Below M4 Pro, even fully hot, M2 Pro (~200 GB/s) tops out near 4 tok/s. RAM ≥16 GB keeps the model mostly resident in page cache (measured anchor: M4 Pro + 24 GB = 5.73 tok/s hot short-run). |
-
-A model *runs* on far less than this: on the same machine, the 27B streams fully cold at ~0.2–0.3 tok/s from an M1 base with 8 GB. The table above is the threshold where throughput stops being a waiting game.
-
-### Quick start
+Apple Silicon. Intel Macs are out of scope. The hot path is hand-written NEON.
 
 ```sh
 cd stratum/native
-make                  # builds ./stratum (+ stratum_q4k.metallib for GPU paths)
-make tests            # quant-kernel cross-validation + sampler exactness
+make                         # ./stratum  (+ Metal).  make USE_MEMX=0  or  USE_METAL=0 to leave those out
+make tests
 
-# smoke test — any small GGUF (Qwen, Llama, TinyLlama, ...):
-./stratum <model.gguf> 2 1 450 7483 310 3444 338
+./stratum <model.gguf> 8 1 2 3          # N tokens, then prompt token ids
+STRATUM_NO_GPU=1 ./stratum <model.gguf> 64 0 1
 ```
 
-No model is shipped, bundled, or assumed: the engine and every script require a model path as an explicit argument. The binary reads `general.architecture` from the GGUF metadata and dispatches to a registered handler — no model names are hardcoded.
-
-Build options: MemX (`github.com/shiaho777/memx`, MIT) is an optional compressed-memory runtime backing staging buffers and KV/SSM state — it is **fetched automatically** on first use (`make deps` clones/pulls it; a plain `make` does so when needed) and can be disabled with `make USE_MEMX=0`. `make USE_METAL=0` builds CPU-only without the Metal shader library.
-
-#### Test drive without downloading any weights
-
-The repo ships no model, but it *generates* one: `make_tiny_model.py` emits deterministic GGUFs (~0.4–1 MB, fixed seed, byte-identical across machines) in three layouts — llama, qwen35 full-attention, and the qwen35 hybrid SSM layout — with F16 or Q4_K weights:
+No weights ship with the repo. A deterministic tiny GGUF is enough to see a real greedy decode:
 
 ```sh
-cd stratum/native
 python3 ../tools/make_tiny_model.py --arch llama --weights q4k --out /tmp/tinyq.gguf
-
-STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8     # real greedy decode
-
-# three-backend identity check (CPU vs GPU-NC vs GPU2; needs the metallib):
-./verify_backends.sh /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
+STRATUM_NO_GPU=1 ./stratum /tmp/tinyq.gguf 8 1 2 3 4 5 6 7 8
 ```
 
-Q4_K weights route through the quantized GEMV kernels — the same path real models take. The CI inference smoke uses exactly these generators and pins their greedy sequences.
+`general.architecture` selects the handler. One process, one model. The stderr line that matters is anonymous / wired memory, next to tok/s.
 
-### Usage
+## How it works
 
-```
-stratum <model.gguf> [N_GENERATE] [PROMPT_TOKEN_ID...]
-```
+One token is one pass over the weight stream. The file is mapped read-only. Pages the OS keeps are free speed; pages it drops are read again from the SSD. Anonymous memory is activations, the KV cache, and SSM state.
 
-- `<model.gguf>` — path to any supported GGUF (required)
-- `N_GENERATE` — number of tokens to generate (default 32)
-- `PROMPT_TOKEN_ID...` — pre-tokenized prompt; omit to read raw tokens from stdin
+Three schedulers sit on that stream. A hot layer is pure compute. A cold layer is prefetched in a 50–100 MB window while the current layer runs. `STRATUM_MULTISEQ=N` runs N decode streams through one weight scan (measured **130 tok/s** aggregate at 64 streams on the 27B).
 
-Examples:
+On top of that, still without requantizing or locking pages:
 
-```sh
-# CPU-only, greedy, benchmark style (wall = load + prefill + 64 tokens):
-STRATUM_NO_GPU=1 /usr/bin/time -p ./stratum <model.gguf> 64 0 1
+- **Q2_K nibble layout** (type 42) repacks the same 2-bit values. Unpack measured 2.2×. Opt-in via `STRATUM_Q2K_NIB`.
+- **MoE** touches k of E experts. `moe_expert_pack.py` lays gate, up, and down of one expert in one byte range. The engine can prefetch a guess during attention and keep a decayed hot set inside a page-cache budget. The real router still chooses.
+- **MTP** verifies a draft tree in one forward and rolls a miss back, so the emitted tokens match greedy. A low-confidence draft can be skipped before it pays for a weight read.
+- **Metal** is per-tensor and bounded. A whole-model GPU registration is the failure mode.
 
-# GPU path (auto-detects stratum_q4k.metallib from CWD or native/):
-STRATUM_GPU=1 ./stratum <model.gguf> 32 1 450 7483 310 3444 338
-```
+The rules that keep those claims true — no requantize, no `mlock`, no whole-model NoCopy — are in [AGENTS.md](AGENTS.md).
 
-The Metal library is auto-detected (current dir, then `native/`); the Metal device is auto-detected (`MTLCreateSystemDefaultDevice`). See [Part V — Environment variables](#part-v--reference) for the full switchboard.
+## Read more
 
-### Reading the run report
+| | |
+|---|---|
+| [How it works](docs/HOW_IT_WORKS.md) | the stream, MoE pack, MTP, Metal, and the measurement tables |
+| [Validation](stratum/docs/VALIDATION.md) | what the v199–v217 gates cover, and the MoE oracle |
+| [Environment variables](stratum/docs/ENVVARS.md) | every `STRATUM_*` switch |
+| [AGENTS.md](AGENTS.md) | boundaries and the determinism contract |
+| [Head-to-head clips](media/h2h-video/) | stratum vs llama.cpp, with the raw JSON |
 
-The engine prints a diagnostic log to stderr. The three numbers that matter:
-
-- **`wired` / anonymous memory** — the core claim. ~7 MB for small models, ~77 MB for 27B (includes KV/SSM state). This is the number that does **not** grow with model size.
-- **`tok/s`** — decode throughput. For `MULTISEQ`, the aggregate line reads `aggregate X tok/s (per-stream Y tok/s)`.
-- **`argmax` sequences** — greedy token ids; used by the gate scripts to assert bit-exactness.
-
-### Common questions
-
-- **Why is my machine swapping / slow?** The model may be cold; the first pass streams from disk. Check free memory before big runs (`vm_stat`, `sysctl vm.swapusage`). On a 24 GB machine, do not run a 12 GB model while heavy background processes are active.
-- **Does it use my GPU?** Only if `STRATUM_GPU` / `STRATUM_GPU_NC` is set. Default is CPU-only.
-- **Can it run a model bigger than RAM?** Yes — that is the design point. It needs disk space and patience, not RAM.
-- **Why is large-model decode slow?** Every token reads the whole weight stream once (11.98 GB @ ~27 GB/s hot ≈ 0.44 s/token on M4 Pro). Decode is bandwidth-bound by construction; see [Part IV — Mechanism limits](#mechanism-limits).
-- **Can one process run multiple models?** No — the engine is single-model, single-process by design: state is file-scope global, so one model per process (see AGENTS.md).
-
----
-
-## Part II — How it works
-
-### The problem: dense weights are a stream
-
-A MoE model activates a fraction of its parameters per token — kimi-k3 activates 16 of 896 experts (~3.7%), which is why it can stream 93% of its weights. A **dense** model has no such luck: every token consumes *every* weight, once. Traditional engines respond by loading the whole model into RAM/VRAM, which is why llama.cpp needs ~16 GB unified memory for a 27B and thrashes when it doesn't have it.
-
-Stratum takes the opposite position: **working set is constant regardless of model size**. One token = one full sweep of the weight stream, and the stream never has to be resident. The result is that a 27B runs in ~77 MB anonymous RAM on a 24 GB machine — and would run identically on a 4 GB one, only slower.
-
-### Reduction 1 — `mmap`: the weights never enter anonymous memory
-
-The model file is mapped read-only and every weight read goes straight through the OS page cache:
-
-- Page cache is **reclaimable** — under memory pressure the OS evicts weight pages instead of killing the process, exactly like any other file read.
-- Anonymous memory is reserved only for what the model genuinely needs at runtime: activations, KV cache, SSM state. That is the ~7 MB / ~77 MB number.
-- Prefetch is advisory, not resident: `madvise(MADV_WILLNEED)` + `F_RDADVISE` hint the kernel to load pages ahead (per-tensor granularity, 50–100 MB windows), then release. The pages are still just page cache.
-
-This is why the memory floor is a *dial*, not a cliff: RAM size chooses `f_hot` (the fraction of weights the page cache can hold), and throughput follows the formula in [Part IV](#how-performance-scales).
-
-### Reduction 2 — the streaming scheduler: hot detection, cold prefetch
-
-Not all layers are equal. On a 24 GB machine with a 12 GB model, most weights stay hot in page cache after the first sweep. The scheduler measures this instead of guessing:
-
-- **Hot detection** — `mincore()` samples 3–12 pages per layer; if ≥80% are resident, the layer is "hot" and runs as pure compute with no I/O waits.
-- **Cold path** — cold layers get a coalesced `madvise`/`F_RDADVISE` burst for the next few layers (per-tensor windows, 24 MB gaps coalesced into one call), so the SSD keeps streaming while compute proceeds.
-- **Deterministic mode** (`STRATUM_STREAM_DET=1`) skips the mincore tax entirely and treats everything as cold, for reproducibility.
-
-The measured cost of the mincore sampling itself was ~zero on the hot path — the win is not the detection, it is knowing when *not* to prefetch.
-
-<p align="center"><img src="docs/assets/streaming-scheduler.svg" alt="Streaming scheduler: mincore hot detection and coalesced cold prefetch overlapping compute" width="720"></p>
-
-### Reduction 3 — MULTISEQ: one weight scan, N logical streams
-
-This is the amortization play: `STRATUM_MULTISEQ=N` runs N independent decode streams (same prompt, diverging as each samples) through **one weight scan per step**. N streams share the same tensor reads; the compute is batched on top.
-
-- Aggregate throughput scales ~linearly with N: **130 tok/s @ 64 streams on the 27B** (measured), ~2.0 tok/s single-stream.
-- The run report prints `weight-scans` vs `main-scans` — the ratio is the amortization factor. Theory line: *one cold scan serves N logical streams*.
-- Same-prompt clone folding is the realistic case: N copies of one conversation at 130 tok/s aggregate = 130/N per copy, still one weight read.
-
-### The Q2K nibble layout (GGUF type 42)
-
-Q2_K unpack is compute-bound (~7 GB/s at 14 cores) — the dequant instructions, not the memory, are the wall. The nibble layout is a **byte re-arrangement**, not a requantization:
-
-- Each 2-bit weight value is unchanged (0–3); only the byte packing is permuted so the NEON unpack kernel halves its instruction count.
-- Measured **2.2× faster unpack**, bit-exact with the original layout.
-- Cost: +50% file size for the Q2_K tensors (a 16.3 GB sidecar for the 27B), which needs ≥32 GB RAM to stay hot — hence the nibble path is opt-in via `STRATUM_Q2K_NIB=<path>` or an embedded type-42 GGUF.
-
-The converter (`tools_gguf_nib_convert.c`) emits either a sidecar or an embedded type-42 GGUF, and the engine verifies nibble vs original values match (`[NIB-DBG]` diagnostics) before trusting it.
-
-### MTP tree decode
-
-Multi-token prediction: a small draft head proposes an 8-token tree per forward; the main model verifies the whole tree at once.
-
-- **8 tokens per forward at 100% acceptance** when the draft agrees — no extra passes, output identical to greedy.
-- On the 27B the wall is draft *quality*, not tree parameters: measured tree efficiency 2.46 tok/main, and tree-depth experiments (`STRATUM_TREE_EXTEND_K`) beyond 4 made it worse. The tree machinery works; the draft head is the binding constraint.
-
-<p align="center"><img src="docs/assets/mtp-tree.svg" alt="MTP draft tree with batch verification and exact rollback" width="720"></p>
-
-### Metal GPU: bounded buffers, per-tensor zero-copy
-
-GPU is optional and strictly bounded:
-
-- **Bounded staging** — GPU buffers are capped; the engine never mirrors the model onto the GPU.
-- **Per-tensor NoCopy** (`STRATUM_GPU_NC=1`) — each matmul wraps *only its own tensor* (<100 MB) in a `newBufferWithBytesNoCopy` view over the mmap, dispatches, releases. Wired memory stays flat (measured +0.04 GB over an 11.98 GB sequential GPU read).
-- **Batched submission** (`stratum_metal_nc_batch_*`) — independent matmuls share one command buffer: **17.3× vs per-matmul waits** (480 matmuls: 3.71 s → 0.21 s).
-- **The failure mode is whole-model registration** — one NoCopy buffer over the entire mmap (or chunks > ~1 GB) wires the whole model and OOMs. That is exactly what per-tensor granularity avoids. There is also no page-cache locking anywhere: `keep_resident` is forbidden, `STRATUM_HOT_FAST` is the sanctioned hot-mode scheduler that does not lock.
-- **Fused full-forward decode** (`STRATUM_GPU=1 STRATUM_GPU_FULL=1`, small models) — the entire Transformer layer runs as one fused Metal pass per token: a single compute encoder spans all 28 layers with buffer barriers between dispatches, activations staged in threadgroup memory, and optional chained decode (`STRATUM_GPU_CHAIN=1`) where the token ring + embedding gather live on-GPU so tokens decode back-to-back without host round-trips. On Qwen3-0.6B Q4_K_M the file's `context_length` is 40960, and the full-GPU rope/KV slab is capped at 8192, so `STRATUM_GPU_FULL=1` alone leaves the forward on CPU. With `STRATUM_MAX_KV=8192` the fused path, stopped at the first `<|im_end|>`, measured **~247–252 tok/s** against llama.cpp Metal **~224–231 tok/s**. Both sides open with `<think>`, close it, and answer "The capital of France is Paris." The eager GPU KV slab shows up as **~1.84 GB** physical footprint; weights stay file-backed. Unsupported architectures fall back to the general path automatically (MiniCPM5 verified).
-
-Why the GPU at all, if CPU works? The memory answer is the point: GPU acceleration is a *bounded* resource, so it never changes the memory story — it can only speed up the compute portion of a bandwidth-bound pipeline.
-
-### KV cache and SSM state
-
-Runtime state is the only anonymous memory the model needs:
-
-- Full-attention layers keep KV cache; the Qwen3.8 hybrid's SSM layers (Gated DeltaNet) keep a fixed-size delta-rule state that is **independent of context length** — a bounded matrix updated in place per token, like kimi's KDA.
-- The 27B's ~77 MB anon = KV/SSM state + activations + small scratch; the weights themselves contribute ~0.
-
-<p align="center"><img src="docs/assets/hybrid-layers.svg" alt="qwen35 hybrid layer pattern: SSM layers with fixed-size state plus periodic full attention over a KV ring" width="740"></p>
-
-### Optional MemX plane — compressed memory for state
-
-[MemX](https://github.com/shiaho777/memx) (MIT, fetched automatically) backs staging buffers and KV/SSM state with a compressed-memory plane; the ~77 MB 27B figure above is measured with it enabled.
-
-- **Runtime-tunable quotas** — `STRATUM_MEMX_BUF_QUOTA_MB` / `STRATUM_MEMX_KV_QUOTA_MB` override the 3 GB / 2 GB defaults. Shrinking a quota raises internal pool pressure, which is also the safe way to reproduce pressure scenarios without stressing the host.
-- **Pinnable dependency** — `MEMX_REF=<branch-or-sha> make deps` checks out a fixed upstream revision instead of floating HEAD.
-- **Measured caveat** — which backing a stage buffer receives (MemX plane vs anon fallback) depends on allocation-time memory pressure, and the two backings take slightly different FP accumulation paths. MemX-enabled runs therefore vary by mean KL ~1e-4 between identical invocations; token sequences stay stable and all gates pass, but only `USE_MEMX=0` builds are byte-reproducible run-to-run (see the determinism contract in AGENTS.md).
-
-### The codebase
-
-```
-stratum/native/
-├── stratum.c                    ← entry: reads general.architecture, dispatches
-├── stratum_arch.h               ← generic arch registry + config loader
-├── stratum_linear.h             ← generic quantized linear layers (Q2_K…Q8_0/F16/F32)
-├── stratum_engine.h             ← CPU/GPU init, madvise, spec decode, memory report
-├── stratum_arch_llama.inc.c     ← Llama/Qwen2/Qwen3 dense arch (self-registers)
-├── stratum_arch_qwen35.inc.c    ← Qwen3.8 hybrid arch (GGUF arch id: qwen35): Gated DeltaNet + attention (~24k lines)
-├── stratum_arch_moe.inc.c       ← MoE arch (GGUF arch ids: `llama-moe,llama_moe,moe`, experimental): dense attention + top-k expert FFN, per-expert `madvise` streaming
-├── stratum_metal.m/.h           ← Metal layer: GEMV kernels, batched-B, group dispatch, NC
-├── stratum_q{k}_*.{h,neon.h,metal} ← quantized kernels (scalar + NEON + Metal)
-├── v199–v217_gate.sh            ← bit-exact regression gates
-├── h3_*.c / te_qwen3vl_step.c   ← H3 video-generation spikes (standalone binaries, NOT part of `./stratum`): packed denoiser forward, text encoder, VAE decoders, Euler sampler — see below
-├── dit_probe.c / dit_sample.c   ← mini-DiT spike + flow-matching sampler (standalone; `dit_probe` is a `make` target and a CI gate)
-└── Makefile                     ← builds ./stratum (+ metallib)
-```
-
-Adding an architecture = write `stratum_arch_<name>.inc.c`, implement the `StratumArch` interface, register it — the Makefile auto-collects `*.inc.c` into `stratum_archs.gen.h`, so no existing file changes. The same rule applies to models: nothing is hardcoded per-model.
-
-### Beyond text LLMs: MoE and video-generation spikes
-
-Two research spikes reuse the same streaming primitives outside the `stratum` binary. Both are **experimental**: they stream weights via mmap like the engine, but they carry no bit-exact gate coverage and make no memory-floor claim.
-
-- **MoE (`llama-moe`)** — a registered engine architecture: dense attention exactly like the llama path, FFN replaced by a router (`ffn_gate_inp`) + top-k experts from stacked `ffn_gate/up/down_exps` tensors. Streaming point: only k of E expert slices are touched per token, each slice a contiguous byte range prefetched with `madvise` after the router fires — nothing is ever locked. Routing is deterministic (ties → lower expert id). Tiny-model generator (`make_tiny_model.py --arch moe`) + independent numpy oracle (`tiny_moe_oracle.py`) covering it; not yet a CI gate.
-- **H3 video pipeline (`h3_*.c`, `te_qwen3vl_step.c`)** — standalone denoiser/VAE/sampler spikes (50-block packed forward, text encoder, video/audio VAE decoders, resident multi-step Euler sampler, Metal flash attention in `stratum_h3_attn.metal`). Same mmap-streaming discipline, own env-var surface (`STRATUM_H3_*`, `H3_*`, `STRATUM_NC_*` — documented in the `ENVVARS.md` appendix, not in the engine table above), own pre-run gate (`h3_test_gate.sh check/clean`, boundary-3 compliant). Numerics note: int8 SDOT is killed for the denoiser (no argmax to hide behind over 50 diffusion steps); per-path agreement is checked with packed-dump md5 / max|d|, not token identity.
-
-### Invariants
-
-Three hard boundaries the engine never crosses:
-
-1. **Never harm quality** — no requantization of existing weights (Q4_K→Q4_0 is forbidden), no skipped layers, no approximate compute. The only allowed "approximation" is int8 SDOT, verified greedy bit-exact. The nibble layout is a byte permutation, not requantization.
-2. **Never grow wired memory** — no whole-model mlock, no GPU buffers caching weights, no >1 GB NoCopy registrations. Weights stream; only KV/SSM state is resident.
-3. **Testing must not exhaust the machine** — memory checked before big runs; kernel experiments use micro-benchmarks, not the 27B end-to-end.
-
----
-
-## Part III — Validation
-
-<p align="center"><img src="docs/assets/validation-stack.svg" alt="Validation stack: CI, model-free tests, 19 gates, distribution-level and backend checks" width="740"></p>
-
-The engine treats correctness as a contract, not a hope:
-
-- **CI on every PR (4 jobs)** — build + quant kernel cross-validation and sampler exactness; the same tests under **ASan + UBSan**; a Metal device probe; and a **real end-to-end inference smoke**: deterministic tiny models are *generated* at test time (no weights in the repo) and driven through the full decode loop on llama, qwen35 full-attention, qwen35 hybrid SSM, a Q4_K-weighted variant, and a mini-DiT sequence forward — with the greedy sequences pinned as hard regression assertions.
-- **`quant_test`** — every quantized kernel cross-validated against a scalar reference.
-- **`spec_sample_test`** — Leviathan-Chen rejection-sampling exactness.
-- **19 gate scripts (`v199`–`v217`)** — full-model greedy regressions on the Qwen3.8 hybrid architecture + the 27B: assert the exact argmax sequence `[2, 220, 16, 13]` and `tok/main ≥ 8.0`. Any engine change must keep every gate passing.
-- **Distribution-level regression** — `STRATUM_LOGITS_DUMP=<path>` records per-step logits; `logit_compare` reports KL(base‖candidate), top-1 agreement, and max |Δ| between any two runs. The gates pin argmax over a handful of tokens; this sees the whole distribution. (It is also how the MemX run-to-run variance documented in AGENTS.md was found.)
-- **Dual-path discipline** — CPU (NEON) and GPU (Metal) paths are both exercised; per-tensor NoCopy was verified bit-exact against the CPU path on the 27B before it was allowed.
-
-- **Backend identity (local hardware)** — `verify_backends.sh <model>` asserts cpu = GPU-NC = GPU2 greedy sequences on a generated Q4_K tiny model.
-- **MoE oracle (local, not CI)** — `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` cross-check the `llama-moe` path against an independent numpy reference.
-- **H3 gate (local, large weights)** — `h3_test_gate.sh check` refuses to start under memory pressure or with a sibling large-model process running; `h3_test_gate.sh clean <model…>` releases page cache after the run. H3 numerics are compared by dump identity (`md5` / max|d|), never by token argmax.
-
-Two configs agreeing on argmax is necessary, not sufficient. For distribution-level comparison:
-
-```sh
-STRATUM_NO_GPU=1 STRATUM_LOGITS_DUMP=/tmp/a.slog ./stratum <model.gguf> 64 <prompt ids>
-STRATUM_GPU_NC=1 STRATUM_LOGITS_DUMP=/tmp/b.slog ./stratum <model.gguf> 64 <prompt ids>
-./logit_compare /tmp/a.slog /tmp/b.slog        # KL(base‖cand) per step + top-1 agreement
-```
-
-Same config twice must give KL = 0 (`USE_MEMX=0` builds are byte-reproducible run-to-run). This is the tool that surfaced the MemX variance documented below.
-
-What "bit-exact" means, what is exempt (`-ffast-math` contraction across toolchains, int8 SDOT, MemX backing flips), and what re-validates it: see the determinism contract in `AGENTS.md`, and `stratum/docs/VALIDATION.md` for the full coverage matrix.
-
-### Head-to-head videos — stratum vs llama.cpp
-
-The same GGUF file fed to both engines, greedy decoding on CPU and GPU (Metal), tokens streamed side by side with a floating HUD — real-time tok/s, physical footprint, page cache, token progress — in the style of a game FPS overlay. Rendered from measured runs; the raw JSON records and the harness live in `media/h2h-video/`.
-
-**Measurement ground rules (all videos):**
-
-- Re-recorded after the output fix. Apple M4 Pro, 24 GB, `USE_METAL=1 USE_MEMX=0`. llama.cpp is stock Homebrew `llama-completion` b9180.
-- Same GGUF and the same chat prompt ("What is the capital of France? Answer in one short sentence."). llama.cpp runs in raw completion mode (`-no-cnv`): conversation mode was re-wrapping that prompt and turning thinking on and off relative to stratum. Greedy is `--temp 0 --top-k 1`. The binary's default temperature is 0.80, which is why earlier panels thought in different words.
-- stratum prints the prefill sample. That token is `<think>` on this prompt; the old loop printed only the token after it, so the panel started mid-thought.
-- The recorded answer stops at the first `<|im_end|>`. A generation cap (160 here, 192 in `run_all_cases.sh`) is only a ceiling. Tokens after the end of the turn are not part of the video.
-- Memory accounting via `vmmap --summary` every 0.2 s: **physical footprint**, and **page cache = mapped-file resident**. Speed passes do not attach vmmap.
-- CPU pass: `STRATUM_NO_GPU=1` vs `-ngl 0`. GPU pass: fused full-forward with `STRATUM_MAX_KV=8192` vs `-ngl 99`. This file's `context_length` is 40960; without the cap the full-GPU rope path stays on CPU.
-- int8 SDOT stays enabled. The Q6_K xscale index bug on current-generation dense models is fixed (#88).
-
-#### Video — Qwen3-0.6B Q4_K_M (462 MB) — CPU
-
-<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M CPU: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
-
-| | stratum | llama.cpp |
-|---|---|---|
-| turn (until end marker) | 81 tokens | 93 tokens |
-| decode throughput (stream) | **247–255 tok/s** | 171–184 tok/s |
-| wall, run 2 | 0.76 s | 1.57 s |
-| **physical footprint (peak)** | **46 MB** | **4915 MB** |
-| page cache (reclaimable, peak) | 462 MB | 542 MB |
-
-Both open `<think>`, close it, and answer "The capital of France is Paris." The thoughts are not the same paragraph: llama-completion drops the trailing newline after `assistant`, so its prompt is one token shorter, and the CPU kernels are not the same code. The answer sentence matches.
-
-```sh
-cd media/h2h-video && ./run_all_cases.sh
-python3 render_h2h.py results/q4km_stratum_speed_run2.json \
-  results/q4km_llamacpp_speed_run2.json \
-  videos/qwen3-0.6b-q4km-stratum-vs-llamacpp.mp4 \
-  --title "Qwen3-0.6B Q4_K_M — CPU, greedy, stop at end of turn"
-
-# results/q4km_*_speed_run2.json:
-#   [stratum]  81 tok  tok/s(stream)=254.8  peak_footprint=46 MB   peak_file=462 MB
-#   [llamacpp] 93 tok  tok/s(stream)=184.0  peak_footprint=4915 MB peak_file=542 MB
-```
-
-#### Video — Qwen3-0.6B Q4_K_M — GPU (Metal)
-
-<p align="center"><img src="media/h2h-video/videos/qwen3-0.6b-q4km-gpu-stratum-vs-llamacpp.gif" alt="Qwen3-0.6B Q4_K_M GPU: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/qwen3-0.6b-q4km-gpu-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
-
-| | stratum GPU | llama.cpp GPU (-ngl 99) |
-|---|---|---|
-| turn (until end marker) | 81 tokens | 81 tokens |
-| decode throughput (stream) | **247–252 tok/s** | 224–231 tok/s |
-| — chained decode (`STRATUM_GPU_CHAIN`) | **258 tok/s** (3.9 ms/tok, 96-token timing) | — |
-| wall, run 2 | 0.92 s | 1.58 s |
-| **physical footprint (peak, held)** | **1843 MB** | **4608 MB** |
-| page cache (reclaimable, peak) | 552 MB | 562 MB |
-
-On this pass the two GPU transcripts are the same text, including the thought. The 1843 MB footprint is the eager GPU KV slab at the 8192 cap. Weights stay file-backed. llama.cpp's 4.6 GB is the Metal residency set. CPU stratum's thought ends "that's all"; the GPU pair ends "that's it". The answer sentence is the same on every panel.
-
-```sh
-python3 render_h2h.py results/q4km_stratum_gpu_speed_run2.json \
-  results/q4km_llamacpp_gpu_speed_run2.json \
-  videos/qwen3-0.6b-q4km-gpu-stratum-vs-llamacpp.mp4 \
-  --title "Qwen3-0.6B Q4_K_M — GPU, greedy, STRATUM_MAX_KV=8192"
-
-# results/q4km_*gpu*_speed_run2.json:
-#   [stratum_gpu] 81 tok  tok/s(stream)=251.7  peak_footprint=1843 MB  peak_file=552 MB
-#   [llamacpp]    81 tok  tok/s(stream)=223.9  peak_footprint=4608 MB  peak_file=562 MB
-```
-
-#### Video — MiniCPM5-2B Q4_K_M (1.56 GB, official GGUF)
-
-<p align="center"><img src="media/h2h-video/videos/minicpm5-2b-q4km-stratum-vs-llamacpp.gif" alt="MiniCPM5-2B Q4_K_M: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/minicpm5-2b-q4km-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
-
-| | stratum | llama.cpp |
-|---|---|---|
-| turn | 53 tokens, ends "Paris." | — |
-| decode throughput (stream) | **89–92 tok/s** | — |
-| **physical footprint (peak)** | **29 MB** | — |
-| page cache (reclaimable, peak) | 1536 MB | — |
-
-Both engines are pointed at the **official, unmodified `openbmb/MiniCPM5-2B-GGUF`** release. Homebrew llama.cpp (b9180) **refuses to load** it (`unknown pre-tokenizer type: 'minicpm5'`), so the right panel is a CANNOT-RUN card. stratum opens `<think>`, closes it, answers "Paris.", and stops. The old clip kept generating `<|im_end|></s>` until the token cap.
-
-```sh
-cd media/h2h-video && ./run_minicpm_cases.sh
-python3 render_h2h.py results/mcpm5_q4km_stratum_speed_run1.json - \
-  videos/minicpm5-2b-q4km-stratum-vs-llamacpp.mp4 \
-  --title "MiniCPM5-2B Q4_K_M — CPU, greedy, stop at end of turn" \
-  --right-cannot-run --cannot-model "MiniCPM5-2B-Q4_K_M.gguf (1.5 GB)" \
-  --cannot-lines "official GGUF, unmodified|llama.cpp b9180 refuses at load:|unknown pre-tokenizer type: 'minicpm5'"
-
-# results/mcpm5_q4km_stratum_speed_run2.json:
-#   53 tok, tok/s(stream)=92.2, peak_footprint=29 MB, peak_file=1536 MB
-#   [llamacpp] exits at load: "unknown pre-tokenizer type: 'minicpm5'"
-```
-
-#### Video — MiniCPM5-2B F16 (4.7 GB, official GGUF)
-
-<p align="center"><img src="media/h2h-video/videos/minicpm5-2b-f16-stratum-vs-llamacpp.gif" alt="MiniCPM5-2B F16: stratum (left) vs llama.cpp (right), streaming tokens with floating tok/s and memory HUD" width="720"></p>
-<p align="center"><a href="media/h2h-video/videos/minicpm5-2b-f16-stratum-vs-llamacpp.mp4">▶ HD MP4</a></p>
-
-| | stratum | llama.cpp |
-|---|---|---|
-| turn | 45 tokens | — |
-| decode throughput (speed pass) | **19.0–19.9 tok/s** | — |
-| **physical footprint (peak)** | **32 MB** | — |
-| page cache (reclaimable, peak) | 4813 MB | — |
-
-```text
-# results/mcpm5_f16_stratum_speed_run2.json:
-#   45 tok, tok/s(stream)=19.0, peak_footprint=32 MB, peak_file=4813 MB
-# The answer is "The capital of France is Paris." Q4_K_M on the same
-# prompt stops at "Paris." That is the quantisation, not a truncated clip.
-# llama.cpp still exits at load: unknown pre-tokenizer type: 'minicpm5'
-```
-
-#### Video — Qwen3.6-27B (pending measurement window)
-
-The 27B head-to-head renders from the same harness with the right panel showing llama.cpp's hard "CANNOT RUN" card (default Metal mode residents the whole 11.98 GB in unified memory — measured 20+ GB on this 24 GB machine, swap storm; CPU mode still needs ~12 GB of weight pages resident). stratum streams the same file with ~77 MB anonymous memory. Measurement waits for an idle machine window; the v217 bit-exact gate already passes on the current engine.
-
----
-
-## Part IV — Measurements
-
-All numbers measured on Apple M4 Pro (14 cores), 24 GB unified memory, macOS, greedy decoding, CPU path (`STRATUM_NO_GPU=1`), method `/usr/bin/time -p ./stratum <model.gguf> 64 0 1`.
-
-The 27B artifact is the Qwen3.8 release; validation was performed on the 3.6-release weights of identical specification (file `qwen3.6-27b-mixed.gguf`) — same architecture, no re-run required.
-
-### Small models — perceptually instant (0.5B–1B)
-
-This is where Stratum is the pick of the litter: small models run at normal, interactive speed with near-zero resource footprint — the machine stays responsive to everything else while generating. Wired memory stays ~7 MB whether the model is 0.5B or 27B.
-
-| Model | Format | Size | tok/s | Perceived |
-|---|---|---|---|---|
-| Qwen2.5-Coder-0.5B | Q4_K | 398 MB | **125** | instant |
-| Qwen3-0.6B | Q4_K | 484 MB | **89** | instant |
-| MiniCPM5-1B-Base | Q4_K | 688 MB | **68** | instant |
-| Qwen2.5-Coder-0.5B | F16 | 988 MB | 51 | instant |
-| Qwen3-0.6B | F16 | 1.5 GB | 40 | instant |
-| MiniCPM5-1B-Base | F16 | 2.16 GB | 30 | instant |
-
-### Large models — the research frontier (27B)
-
-| Model | Format | Size | tok/s | Notes |
-|---|---|---|---|---|
-| Qwen3.8-27B-mixed | Q2_K/Q4_K/Q6_K mixed | 11.98 GB | **5.73** (8-token short run) | hot cache; sustained ~1.4–2 tok/s long generation |
-
-Large models are where the trade-off is visible: they run — where llama.cpp thrashes or OOMs — but decode is bandwidth-bound. **Closing the gap between small-model speed and large-model throughput, while keeping the resource footprint imperceptible, is the active research direction of this project.**
-
-### Resource footprint — independent of model size
-
-| Model | Params | Wired (anon) |
-|---|---|---|
-| Qwen2.5-Coder-0.5B | 0.5B | ~7 MB |
-| MiniCPM5-1B-Base | 1B | ~7 MB |
-| Qwen3.8-27B-mixed | 27B | **~77 MB** (incl. KV/SSM state) |
-
-**Model size is theoretically unbounded.** Whatever the parameter count, wired memory stays at the ~7 MB level and total physical footprint stays proportional to the page cache the OS chooses to keep — the engine itself never holds the model in anonymous RAM. The only practical limits are disk space and patience per token.
-
-### Memory — the core claim (TinyLlama 1.1B Q4_K_M, 64 tokens)
-
-| | stratum | llama.cpp | ratio |
-|---|---|---|---|
-| anonymous (binding RAM) | **7.4 MB** | 634.9 MB | **85.7× lower** |
-| total physical | 645.2 MB | 1300.5 MB | 2.0× lower |
-
-<p align="center"><img src="docs/assets/memory-bars.svg" alt="Anonymous RAM comparison: stratum vs llama.cpp" width="720"></p>
-
-### Scale — 27B on a 24 GB machine
-
-stratum runs the 27B to completion in ~77 MB anonymous RAM. llama.cpp cannot run it usably here: `-ngl 0` thrashes, `-ngl 99` needs 16 GB in unified memory. Stratum is the only engine that produces tokens.
-
-### How performance scales
-
-Every token consumes the whole weight stream once, so per-token time follows one formula — RAM decides how much stays hot in page cache (`f_hot`), memory bandwidth sets `BW_hot`, the SSD sets the cold-streaming rate:
-
-$$
-t_{\text{token}} \;=\; W_{\text{bytes}} \left( \frac{f_{\text{hot}}}{BW_{\text{hot}}} + \frac{f_{\text{cold}}}{BW_{\text{cold}}} \right)
-$$
-
-Theoretical 27B behavior (estimates derived from this model — solid bars below are measurements, hatched are projections):
-
-| Hardware | RAM | Expected (estimate) |
-|---|---|---|
-| M1 base, 8 GB | fully cold streaming | ~0.2–0.3 tok/s (SSD ~3 GB/s) |
-| M4 Pro, 24 GB | partially hot | **5.73 tok/s hot short-run / ~1.4–2 sustained** (measured) |
-| M4 Max, 48 GB+ | fully hot | ~8–10 tok/s (higher bandwidth) |
-| ≥128 GB workstation | fully hot + nibble layout | 12+ tok/s (Q2_K 2.2× unpack) |
-
-<p align="center"><img src="docs/assets/throughput-estimate.svg" alt="27B throughput by hardware tier; measured vs theoretical estimates" width="740"></p>
-
-### Mechanism limits
-
-- **Single-stream decode is bandwidth-bound**: every token reads the whole weight stream once (11.98 GB @ ~27 GB/s hot ≈ 0.44 s/token on this machine).
-- **Q2_K unpack is compute-bound** (~7 GB/s at 14 cores); the nibble layout breaks this (2.2×) at the cost of +50% file size — needs ≥32 GB RAM to stay hot.
-- **Long-generation tree efficiency is 2.46 tok/main** — draft quality, not tree parameters, is the wall.
-
-### Limitations
-
-- **Single-model, single-process by design**: architecture state lives in file-scope globals; one process runs one model, and `STRATUM_SERVER` mode is a serial loop, not a concurrent server.
-- **Decode stays bandwidth-bound**: throughput follows the formula above — large models are patient work, not interactive work. MULTISEQ amortizes across streams but does not change per-stream latency.
-- **Speculative-decode long-run gains are draft-quality-bound** (2.46 tok/main sustained vs 8.0 short-run).
-- **Small-model decode on this host**: after the prompt and end-of-turn fix, Qwen3-0.6B Q4_K_M greedy (stop at the end marker) is stratum CPU **247–255 tok/s** vs llama.cpp **171–184**, and fused GPU **247–252** vs llama.cpp Metal **224–231**. The GPU pair prints the same turn. CPU stratum's thought differs by a few words. The Q6_K SDOT scale-index bug fixed along the way (#88) had silently forced current-generation models onto the slower exact-float path.
-- **MemX trades bit-reproducibility for footprint** (~1e-4 mean KL run-to-run variance; token sequences stable).
-- **MoE and H3 are spikes, not products** — `llama-moe` has oracle coverage but no CI gate and no full-scale validation; the H3 pipeline has no memory-floor claim (activations + Metal staging are GB-scale at 768p) and its kernels default to the conservative path pending gate decisions.
-- **Apple Silicon only** — the NEON hot path has no x86_64 port.
-
----
-
-## Part V — Reference
-
-### Environment variables
-
-The engine has 200+ env vars (mostly GPU kernel-variant toggles from experiments; full map in `stratum/docs/ENVVARS.md`, H3 spike switches in its appendix). The key ones:
-
-| Variable | Purpose | Boundary |
-|---|---|---|
-| `STRATUM_NO_GPU=1` | Force CPU-only (default benchmark config) | ✅ |
-| `STRATUM_GPU=1` / `STRATUM_GPU_NC=1` | GPU paths; NC = per-tensor zero-copy | ✅ (NC bit-exact) |
-| `STRATUM_MULTISEQ=N` | N streams sharing one weight scan | ✅ (130 tok/s @ 64) |
-| `STRATUM_MTP` / `STRATUM_TREE_*` | MTP tree / speculative decode | ✅ |
-| `STRATUM_ASYNC_PREFETCH=1` | Background pread prefetch | ✅ |
-| `STRATUM_HOT_FAST=1` | Hot-cache pure-compute mode (no page-cache lock) | ✅ |
-| `STRATUM_STREAM_DET=1` | Deterministic streaming (skip mincore detection) | ✅ |
-| `STRATUM_Q2K_NIB=<path>` | Q2K nibble-layout model (type 42) | ✅ (byte re-arrangement) |
-| `STRATUM_TREE_EXTEND_K=N` | Tree chain depth (cap 12, default 4) | ✅ |
-| `STRATUM_GPU2=1` | Cold-weight staging pipeline | ⚠️ slower than CPU for hot weights |
-| `STRATUM_Q2K_SDOT=1` | int8 SDOT for Q2K | ⚠️ no gain at 14 cores |
-| `STRATUM_LOGITS_DUMP=<path>` | Per-step logits dump → `logit_compare` | ✅ measurement |
-| `STRATUM_NGRAM_SPEC=K` / `STRATUM_B_MAX` | n-gram speculative decoding | ✅ |
-| `STRATUM_MEMX_BUF_QUOTA_MB` / `_KV_QUOTA_MB` | MemX plane quotas (pressure repro) | ✅ |
-| `STRATUM_ADAPTIVE=1` | Startup bandwidth calibration probe (~1.5 s; records machine context, no routing change) | ✅ measurement |
-| `MEMX_REF=<ref>` (make deps) | Pin the MemX dependency revision | ✅ reproducibility |
-| `STRATUM_PREDECODE=1` | Q4_K→F16 predecode to GPU | ❌ memory boundary |
-| `STRATUM_Q4_0=1` | Q4_K→Q4_0 re-encode | ❌ quality boundary |
-| `STRATUM_MLOCK_ALL` / `STRATUM_KEEP_RESIDENT` | Lock/pin weights | ❌ memory boundary |
-
-### Repository layout
-
-```
-├── README.md          ← this file (English)
-├── README_CN.md       ← 简体中文
-├── AGENTS.md          ← development guide, boundaries, determinism contract
-├── docs/assets/       ← SVG figures embedded in this README
-├── media/h2h-video/   ← head-to-head videos + raw measurement JSON + harness
-└── stratum/
-    ├── native/        ← the engine (C/Metal), Makefile, gate scripts, verify_backends.sh, H3/DiT spikes
-    ├── docs/          ← measured evidence + VALIDATION.md coverage matrix + ENVVARS.md switch map
-    ├── tools/         ← GGUF utilities incl. make_tiny_model.py (llama/qwen35/hybrid/dit/moe from seed), oracles, env_census.py
-    └── benchmarks/    ← benchmark scripts (headtohead, manifesto, GPU sweeps)
-```
-
-### References
-
-Projects consulted and where their ideas surface in Stratum:
-
-- **[AirLLM](https://github.com/lyogavin/airllm)** — working set should scale with layer size rather than model size; Stratum applies the same idea at tensor granularity.
-- **[ds4 / DwarfStar](https://github.com/antirez/ds4)** — narrow specialist engines, decode-graph capture, expert LRU, exactness where it matters.
-- **[kimi-k3-in-c](https://github.com/FareedKhan-dev/kimi-k3-in-c)** — 2.78T on 8 GB; O_DIRECT reads, direct consumption of packed data, a bit-level determinism contract; the nibble layout questions the weight format itself.
-- **[flash-moe (Alexintosh)](https://github.com/Alexintosh/flash-moe)** — pure C/Metal MoE on Apple Silicon; SSD expert streaming, FMA-fused dequant kernels, trusting the OS page cache.
-- **[tessera](https://github.com/geoph9/tessera)** — NoCopy GPU buffers with `MADV_DONTNEED` page eviction; informed the per-tensor NoCopy boundary. (Repository no longer publicly available.)
-- **[HuggingFace transformers](https://github.com/huggingface/transformers)** — the reference framework used for output comparison.
-- **[ggml / llama.cpp](https://github.com/ggerganov/llama.cpp)** — GGUF quantization formats and the model conversion toolchain.
-
-### License
+## License
 
 Apache-2.0.

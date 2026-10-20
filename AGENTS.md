@@ -18,6 +18,7 @@ The following boundaries must not be violated, must not be traded away for speed
 - Quantization formats (Q2_K/Q4_K/Q6_K) in a model file are the model's own choice; the engine consumes them as-is and never degrades them
 - The only allowed "approximation" is int8 dotprod (Q4_K SDOT), verified greedy bit-exact
 - **The type-42 Q2_K nibble layout is a byte re-arrangement, not requantization**: the 0–3 weight values are unchanged; it only changes how bytes are unpacked. It is allowed.
+- **The MoE expert pack (`.moep`) is the same class of change**: gate, up, and down of one expert are copied into one byte range. Values are unchanged. The engine checks them against the GGUF at load.
 
 ### 2. Never increase wired memory
 
@@ -59,7 +60,8 @@ Current rules:
 
 - GPU kernel efficiency (Q4_K unpack, SIMD, fused ops)
 - Multi-stream batching (batched decode, weight reuse) — `STRATUM_MULTISEQ=N` measured: aggregate throughput scales ~linearly with N (130 tok/s @ 64 streams on 27B)
-- Speculative decoding (n-gram spec, MTP tree) — changes nothing about output, only speed. MTP tree: 8 tokens/forward at full acceptance
+- Speculative decoding (n-gram spec, MTP tree) — changes nothing about output, only speed. MTP tree: 8 tokens/forward at full acceptance. `STRATUM_SPEC_CONF` (MoE n-gram, default on) extends only on a unique continuation. `STRATUM_SPEC_MIN_P` (opt-in) stops a Qwen3.5 MTP extension round below that top-1 probability. Undrafted tokens are emitted by the next real step.
+- MoE expert scheduling — contiguous `.moep` pack (`STRATUM_MOE_PACK`), ahead hint before attention (`STRATUM_MOE_AHEAD`, default on), decayed hot-set `WILLNEED` inside `STRATUM_MOE_ADAPT_MB` (default 256). Hints only. `STRATUM_MOE_ADAPT_DROP` is the opt-in `DONTNEED`. The real post-attention top-k is what runs.
 - Background pread prefetch (zero extra wired memory, page cache is reclaimable)
 - SSM group dispatch (merge multiple matmuls into one command buffer)
 - Metal per-tensor NoCopy direct-read + batched NC submission (see 2a)
@@ -97,7 +99,7 @@ Stratum targets **any model**, not a specific one. These rules must not be viola
 - `stratum_engine.h` — generic engine infrastructure (CPU detect/GPU init/madvise/spec decode/memory reporting)
 - `stratum_arch_qwen35.inc.c` — Qwen3.8 hybrid architecture (GGUF arch id: `qwen35`, alias `qwen38`; Gated DeltaNet + full attention), self-registers (~24k lines, the main engine)
 - `stratum_arch_llama.inc.c` — Llama/Qwen2/Qwen3 dense architecture, self-registers
-- `stratum_arch_moe.inc.c` — MoE architecture (GGUF arch ids: `llama-moe,llama_moe,moe`; experimental), self-registers: dense attention + router top-k expert FFN, per-expert-slice `madvise` streaming, deterministic tie-break
+- `stratum_arch_moe.inc.c` — MoE architecture (GGUF arch ids: `llama-moe,llama_moe,moe,olmoe`; experimental), self-registers: dense attention + router top-k expert FFN, deterministic tie-break. Streaming is per-slice `madvise` plus an optional contiguous pack, an ahead hint, and a budgeted hot set (see README "Expert streaming")
 - `h3_*.c`, `te_qwen3vl_step.c`, `stratum_h3_attn.metal` — H3 video-generation spikes (standalone binaries, NOT registered architectures, NOT part of `./stratum`): packed denoiser forward, text encoder, VAE decoders, Euler sampler, Metal flash attention
 - `dit_probe.c` / `dit_sample.c` — mini-DiT sequence-forward spike + flow-matching sampler (standalone; `dit_probe` is a `make` target and a CI gate)
 - `h3_test_gate.sh` — boundary-3 pre-run gate for large-model tests (`check` / `clean`), wraps `drop_page_cache.py`
@@ -118,7 +120,7 @@ README's ~77 MB 27B wired-memory figure is measured with MemX enabled.
 
 ### Standalone tools (`stratum/tools/`)
 
-Python GGUF utilities independent of the engine: `make_tiny_model.py` (deterministic generators for `--arch llama/qwen35/qwen35-hybrid/dit/moe`, incl. Q4_K weights), oracles (`tiny_moe_oracle.py`, `dit_oracle.py`, `hidden_oracle.py`), `env_census.py` (regenerates `docs/ENVVARS.md`; preserves the hand-maintained H3 appendix), `drop_page_cache.py` + `thermal_report.sh` (boundary-3 hygiene), plus `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
+Python GGUF utilities independent of the engine: `make_tiny_model.py` (deterministic generators for `--arch llama/qwen35/qwen35-hybrid/dit/moe`, incl. Q4_K weights), `moe_expert_pack.py` (byte-copy gate|up|down sidecar), oracles (`tiny_moe_oracle.py`, `dit_oracle.py`, `hidden_oracle.py`), `env_census.py` (regenerates `docs/ENVVARS.md`; preserves the hand-maintained H3 appendix), `drop_page_cache.py` + `thermal_report.sh` (boundary-3 hygiene), plus `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
 
 ### Experiment evidence (`stratum/docs/`)
 
@@ -160,6 +162,14 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 | `STRATUM_GPU=1` / `STRATUM_GPU_FULL` | Legacy GPU paths | ⚠️ small models only |
 | `STRATUM_MULTISEQ=N` | N parallel sequences sharing one weight stream | ✅ allowed (130 tok/s @ 64) |
 | `STRATUM_NGRAM_SPEC` / `STRATUM_TREE_*` / `STRATUM_MTP` | Speculative decoding / MTP tree | ✅ allowed |
+| `STRATUM_SPEC_CONF=1` | MoE n-gram extends only on a unique continuation | ✅ allowed (default on; output stays greedy) |
+| `STRATUM_SPEC_MIN_P=<p>` | Stop Qwen3.5 MTP extension below this top-1 probability | ✅ allowed (opt-in) |
+| `STRATUM_MOE_PACK=<path>` | Contiguous gate\|up\|down expert sidecar | ✅ allowed (byte copy) |
+| `STRATUM_MOE_PACK_CHECK=1` | Full byte-compare of the sidecar at load | ✅ allowed |
+| `STRATUM_MOE_AHEAD=1` | Hint-router prefetch before attention | ✅ allowed (MoE default; not the real top-k) |
+| `STRATUM_MOE_ADAPT=1` / `STRATUM_MOE_ADAPT_MB=N` | Decayed hot-set WILLNEED, budget in MiB | ✅ allowed (default 256; 0 disables) |
+| `STRATUM_MOE_ADAPT_DROP=1` | DONTNEED experts that left the hot set | ✅ allowed (off by default) |
+| `STRATUM_PREFILL_B=N` | MoE prefill chunk; each selected expert read once | ✅ allowed (`1` = serial) |
 | `STRATUM_ASYNC_PREFETCH=1` | Background pread prefetch | ✅ allowed |
 | `STRATUM_ADAPTIVE=1` | Startup bandwidth calibration probe (records machine context, no routing change) | ✅ allowed (measurement only) |
 | `STRATUM_HOT_FAST=1` | Hot-cache pure-compute mode (no page-cache lock) | ✅ allowed (replaces keep_resident) |
@@ -179,7 +189,7 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 3. **Check memory before big tests**: `vm_stat` free pages and `sysctl vm.swapusage`; abort if the system is under pressure. After a big-model run, return the resident weight pages (`stratum/tools/drop_page_cache.py <model.gguf>`, mincore-verified) so the next test starts from a known cache state
 4. **bit-exact validation**: run `v217_gate.sh` (or the relevant `v*_gate.sh`) — asserts greedy argmax sequence `[2, 220, 16, 13]` and `tok/main >= 8.0`. Any engine change must keep these gates passing. `run_all_gates.sh <model.gguf>` runs every gate in sequence.
 5. **Backend consistency**: `verify_backends.sh <small.gguf>` asserts CPU / GPU-NC / GPU2 greedy sequences are identical (needs metallib). See `docs/VALIDATION.md` for the full matrix — what the gates cover, what they don't, and the per-kernel-change checklist.
-6. **Spike validation (not gates)**: MoE via `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` (numpy cross-check); mini-DiT via `dit_probe` + `dit_oracle.py` (CI runs it, max|diff| ≤ 5e-7); H3 via `h3_test_gate.sh check` before and `clean <model…>` after every large run, with dump-identity (md5 / max|d|) comparisons — never token argmax.
+6. **Spike validation (not gates)**: MoE via `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` (numpy cross-check). The same greedy ids must hold for `STRATUM_MOE_AHEAD=0`, the ahead+adapt defaults, `STRATUM_MOE_PACK` with `STRATUM_MOE_PACK_CHECK=1`, and `STRATUM_NGRAM_SPEC`. Mini-DiT via `dit_probe` + `dit_oracle.py` (CI runs it, max|diff| ≤ 5e-7); H3 via `h3_test_gate.sh check` before and `clean <model…>` after every large run, with dump-identity (md5 / max|d|) comparisons — never token argmax.
 7. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s, plus thermal state (`stratum/tools/thermal_report.sh`; `run_all_gates.sh` records it automatically) — a throttled or swapping run changes tok/s without changing output
 
 ### Determinism & exactness contract
@@ -189,7 +199,7 @@ What is guaranteed, what is exempt, and what re-validates it — stated explicit
 **Guarantees**
 
 - Greedy decoding produces identical token sequences across sanctioned configurations: CPU (NEON and int8 SDOT) and GPU paths are pinned by the gate scripts (`v199`–`v217`) and `verify_backends.sh`.
-- Scheduling and cache knobs (`STRATUM_MULTISEQ`, prefetch policy, hot/cold detection, MemX placement) change throughput only, never output.
+- Scheduling and cache knobs (`STRATUM_MULTISEQ`, prefetch policy, hot/cold detection, MemX placement, `STRATUM_MOE_AHEAD`, `STRATUM_MOE_ADAPT`, `STRATUM_SPEC_CONF`, `STRATUM_SPEC_MIN_P`) change throughput only, never output. `STRATUM_MOE_PACK` is a byte copy of the same expert slices.
 - Speculative decoding accepts or rejects by exact comparison; rejected drafts roll back state, so output equals greedy by construction.
 
 **Exemptions / known drift sources**
@@ -198,6 +208,7 @@ What is guaranteed, what is exempt, and what re-validates it — stated explicit
 - **MemX-enabled runs are not bit-deterministic in logits**: two identical invocations can differ by mean KL ~1e-4 in the output distribution (measured on the 27B with `STRATUM_LOGITS_DUMP` + `logit_compare`; see #10). Root cause identified: the stage-buffer backing (MemX compress-plane vs anon fallback) is chosen by runtime alloc success, which varies with ambient memory pressure — and the two backings take different FP accumulation paths. Token sequences remain stable in all observed runs and the gates pass; only `USE_MEMX=0` builds are byte-reproducible run-to-run. Repro on demand: shrink `STRATUM_MEMX_BUF_QUOTA_MB` to force the fallback.
 - int8 SDOT x-prequantization (Q4_K/Q6_K) is an approved approximation, verified greedy-identical against the fp32 NEON path.
 - The Q2K nibble layout (type 42) is a byte permutation only; values are unchanged and verified at load.
+- The MoE expert pack is a byte copy of gate|up|down slices into one range per expert. Load compares slices with the GGUF (`STRATUM_MOE_PACK_CHECK=1` compares all of them) and refuses the sidecar on a mismatch.
 
 **Finer-grained comparison**
 
