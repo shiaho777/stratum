@@ -79,10 +79,18 @@ static const GgmlTypeInfo gguf_type_info[] = {
 };
 
 static inline int64_t gguf_tensor_bytes(GgmlType t, int64_t nelem) {
-    if (t >= GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return -1;
+    if ((int)t < 0 || t >= GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return -1;
+    if (nelem < 0) return -1;
     int eb = gguf_type_info[t].elements_per_block;
     int bb = gguf_type_info[t].bytes_per_block;
-    return (nelem / eb) * bb;
+    if (eb <= 0 || bb < 0) return -1;
+    /* Truncating a partial block is the historical formula. Callers that
+     * require an exact block multiple (gguf_open) check that themselves.
+     * The multiply is the part that used to wrap a hostile nelem into a
+     * negative size and skip the file-bounds guard. */
+    int64_t nblk = nelem / eb;
+    if (bb > 0 && nblk > INT64_MAX / bb) return -1;
+    return nblk * (int64_t)bb;
 }
 
 static inline const char* gguf_type_name(GgmlType t) {
@@ -159,16 +167,22 @@ static inline int gguf_take_u64(GgufCur* c, uint64_t* v) { return gguf_take(c, v
 static char* gguf_take_string_dup(GgufCur* c) {
     uint64_t n;
     if (gguf_take_u64(c, &n) != 0) return NULL;
-    if ((size_t)(c->end - c->p) < n) return NULL;
-    char* s = (char*)malloc(n + 1);
+    if (n > (uint64_t)SIZE_MAX - 1) return NULL;
+    if ((size_t)(c->end - c->p) < (size_t)n) return NULL;
+    char* s = (char*)malloc((size_t)n + 1);
     if (!s) return NULL;
-    memcpy(s, c->p, n);
+    memcpy(s, c->p, (size_t)n);
     s[n] = 0;
     c->p += n;
     return s;
 }
 
-static int gguf_skip_value(GgufCur* c, uint32_t vtype) {
+/* Real GGUF metadata is flat, or one array of scalars/strings. A file of
+ * array-of-array with no depth cap recurses until the C stack dies. */
+#define GGUF_VALUE_MAX_DEPTH 16
+
+static int gguf_skip_value_d(GgufCur* c, uint32_t vtype, int depth) {
+    if (depth > GGUF_VALUE_MAX_DEPTH) return -1;
     switch (vtype) {
         case GGUF_VAL_UINT8:
         case GGUF_VAL_INT8:
@@ -184,7 +198,8 @@ static int gguf_skip_value(GgufCur* c, uint32_t vtype) {
         case GGUF_VAL_STRING: {
             uint64_t n;
             if (gguf_take_u64(c, &n) != 0) return -1;
-            return gguf_skip(c, n);
+            if (n > (uint64_t)SIZE_MAX) return -1;
+            return gguf_skip(c, (size_t)n);
         }
         case GGUF_VAL_ARRAY: {
             uint32_t et;
@@ -192,12 +207,16 @@ static int gguf_skip_value(GgufCur* c, uint32_t vtype) {
             if (gguf_take_u32(c, &et) != 0) return -1;
             if (gguf_take_u64(c, &cnt) != 0) return -1;
             for (uint64_t i = 0; i < cnt; i++) {
-                if (gguf_skip_value(c, et) != 0) return -1;
+                if (gguf_skip_value_d(c, et, depth + 1) != 0) return -1;
             }
             return 0;
         }
     }
     return -1;
+}
+
+static int gguf_skip_value(GgufCur* c, uint32_t vtype) {
+    return gguf_skip_value_d(c, vtype, 0);
 }
 
 static int gguf_open(const char* path, Gguf* gguf) {
@@ -283,13 +302,48 @@ static int gguf_open(const char* path, Gguf* gguf) {
             goto fail;
         }
         t->nelem = 1;
+        int dims_ok = 1;
         for (uint32_t d = 0; d < t->n_dims; d++) {
             if (gguf_take_u64(&c, &t->dims[d]) != 0) goto fail;
-            t->nelem *= (int64_t)t->dims[d];
+            if (!dims_ok) continue;
+            /* A dim above INT64_MAX casts to a negative int64 and the
+             * product wraps. nbytes then goes negative and the file-bounds
+             * check below (`nbytes >= 0`) skips the tensor entirely. */
+            if (t->dims[d] > (uint64_t)INT64_MAX) { dims_ok = 0; continue; }
+            int64_t dim = (int64_t)t->dims[d];
+            if (dim != 0 && t->nelem > INT64_MAX / dim) { dims_ok = 0; continue; }
+            t->nelem *= dim;
         }
         if (gguf_take_u32(&c, &t->type) != 0) goto fail;
         if (gguf_take_u64(&c, &t->offset) != 0) goto fail;
-        t->nbytes = gguf_tensor_bytes((GgmlType)t->type, t->nelem);
+        if (!dims_ok) {
+            fprintf(stderr,
+                    "gguf_open: tensor %s dimension product does not fit in int64\n",
+                    t->name);
+            goto fail;
+        }
+        int type_known = (t->type < (uint32_t)GGML_TYPE_COUNT &&
+                          gguf_type_info[t->type].name != NULL);
+        if (!type_known) {
+            t->nbytes = -1; /* unknown type: size not computable, left unchecked */
+        } else {
+            int eb = gguf_type_info[t->type].elements_per_block;
+            if (eb <= 0 || (t->nelem % eb) != 0) {
+                fprintf(stderr,
+                        "gguf_open: tensor %s type=%s nelem=%lld is not a multiple of block %d\n",
+                        t->name, gguf_type_info[t->type].name,
+                        (long long)t->nelem, eb);
+                goto fail;
+            }
+            t->nbytes = gguf_tensor_bytes((GgmlType)t->type, t->nelem);
+            if (t->nbytes < 0) {
+                fprintf(stderr,
+                        "gguf_open: tensor %s type=%s nelem=%lld byte size overflows int64\n",
+                        t->name, gguf_type_info[t->type].name,
+                        (long long)t->nelem);
+                goto fail;
+            }
+        }
     }
 
     uint64_t after_index = (uint64_t)(c.p - gguf->mmap_base);
@@ -401,11 +455,14 @@ static int gguf_get_f32(const Gguf* gguf, const char* key, float* out) {
 static char* gguf_get_string_dup(const Gguf* gguf, const char* key) {
     const GgufKV* kv = gguf_find_kv(gguf, key);
     if (!kv || kv->vtype != GGUF_VAL_STRING) return NULL;
+    if (kv->bytes_len < 8) return NULL;
     uint64_t n;
     memcpy(&n, kv->bytes, 8);
-    char* s = (char*)malloc(n + 1);
+    if (n > kv->bytes_len - 8) return NULL;
+    if (n > (uint64_t)SIZE_MAX - 1) return NULL;
+    char* s = (char*)malloc((size_t)n + 1);
     if (!s) return NULL;
-    memcpy(s, kv->bytes + 8, n);
+    memcpy(s, kv->bytes + 8, (size_t)n);
     s[n] = 0;
     return s;
 }
