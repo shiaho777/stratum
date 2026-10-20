@@ -28,7 +28,7 @@ All run on the CPU path (`STRATUM_NO_GPU=1`), greedy decoding.
 
 The other records (`manifesto_results.json`, `memory_floor.json`, `pressure_test_results.txt`) were captured against earlier engine revisions whose harnesses lived in the removed Python-era line; the data is kept as historical evidence, but those harnesses are not part of the current tree.
 
-Scope note: nothing in this directory evidences the MoE or H3 spikes — those carry no memory-floor claim. MoE evidence is the tiny oracle agreement (`tiny_moe_oracle.py`); H3 evidence lives per-kernel in the `ENVVARS.md` appendix (oracle-gated attention kernels, NC-vs-CPU dump identity, bottleneck profiles).
+Scope note: nothing in this directory evidences the MoE or H3 spikes — those carry no memory-floor claim. MoE evidence is the tiny oracle agreement (`tiny_moe_oracle.py`) plus the pack byte-check (`moe_expert_pack.py`, `STRATUM_MOE_PACK_CHECK=1`); the procedure is in `VALIDATION.md`. H3 evidence lives per-kernel in the `ENVVARS.md` appendix (oracle-gated attention kernels, NC-vs-CPU dump identity, bottleneck profiles).
 
 ## What was removed
 

@@ -6,12 +6,19 @@
  * experts from stacked tensors (ffn_gate_exps / ffn_up_exps / ffn_down_exps,
  * each [K_in, N_out, E]) -> weighted sum.
  *
- * THE streaming point (epic: extend "weights are a stream" to MoE): only
- * k of E expert slices are touched per token. Each expert slice IS a
- * contiguous byte range inside its tensor (slice e = e*K*N bytes), so
- * after the router fires we madvise WILLNEED those ranges — the next
- * layer's dense work then overlaps the expert pages faulting in. No page
- * is ever locked; residency stays under OS control (memory boundary).
+ * THE streaming point: only k of E expert slices are touched per token.
+ * Three reclaimable-only mechanisms (no mlock, no copies, routing unchanged):
+ *   1. STRATUM_MOE_PACK — sidecar that lays gate|up|down of one expert in
+ *      one byte range (values copied, not requantized), so one WILLNEED
+ *      covers the expert. Built by tools/moe_expert_pack.py.
+ *   2. STRATUM_MOE_AHEAD — before attention, a hint router on the pre-attn
+ *      residual prefetches likely experts so the fault overlaps attention.
+ *      The real post-attn router still selects; misses are hinted then.
+ *   3. STRATUM_MOE_ADAPT — decayed per-expert counts, WILLNEED the hottest
+ *      experts that fit in STRATUM_MOE_ADAPT_MB. Hints only. DONTNEED is
+ *      opt-in (STRATUM_MOE_ADAPT_DROP) because dropping a page the next
+ *      token needs is a fault, not a saving.
+ * No page is ever locked; residency stays under OS control.
  *
  * Greedy contract: top-k selection breaks ties by smaller expert id;
  * routing depends only on activations, never on timing or threads, so
@@ -25,6 +32,10 @@
 #include <stdio.h>
 #include <math.h>
 #include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "stratum_arch.h"
 #include "stratum_linear.h"
@@ -223,30 +234,377 @@ static int64_t moe_slice_bytes(const GgufTensor* t, int K_in, int N_out) {
     return (t->nbytes - 0) / e_all;
 }
 
-/* WILLNEED the byte range of expert `e` inside a stacked tensor. Advisory
- * only — pages stay reclaimable; this overlaps future faults with compute
- * and never wires anything (memory boundary). */
-static void moe_prefetch_slice(const GgufTensor* t, int64_t slice_bytes,
-                               int e) {
-    if (!t) return;
-    size_t off = t->offset + (size_t)e * (size_t)slice_bytes;
-    madvise((void*)((const char*)g_st.mmap_base + off),
-            (size_t)slice_bytes, MADV_WILLNEED);
+/* ---- pack sidecar + adaptive hints + ahead prefetch ------------------ *
+ * Pack file (tools/moe_expert_pack.py), little-endian, payload page-aligned:
+ *   magic "MOEP" | u32 version=1 | u32 n_layers | u32 n_experts
+ *   | u32 n_embed | u32 n_ff | u32 gate_type | u32 up_type | u32 down_type
+ *   | u64 gate_slice | u64 up_slice | u64 down_slice | u64 data_off
+ *   | pad to data_off | for each layer, for each expert: gate|up|down bytes
+ * The bytes are a copy of the GGUF slices. Kernels see the same type. */
+
+typedef struct __attribute__((packed)) {
+    char     magic[4];
+    uint32_t version;
+    uint32_t n_layers;
+    uint32_t n_experts;
+    uint32_t n_embed;
+    uint32_t n_ff;
+    uint32_t gate_type;
+    uint32_t up_type;
+    uint32_t down_type;
+    uint64_t gate_slice;
+    uint64_t up_slice;
+    uint64_t down_slice;
+    uint64_t data_off;
+} MoePackHdr;
+
+static const uint8_t* moe_pack_base = NULL;
+static size_t         moe_pack_size = 0;
+static int            moe_pack_fd   = -1;
+static uint64_t       moe_pack_data_off = 0;
+static uint64_t       moe_pack_gate = 0, moe_pack_up = 0, moe_pack_down = 0;
+static uint64_t       moe_pack_stride = 0;
+static int            moe_pack_on = 0;
+
+static float*  moe_adapt_hits = NULL;
+static uint8_t* moe_adapt_hot = NULL;
+static size_t  moe_adapt_budget = 0;
+static int     moe_adapt_on = 0;
+static int     moe_adapt_drop = 0;
+
+static int moe_ahead_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("STRATUM_MOE_AHEAD");
+        v = e ? (atoi(e) != 0) : 1;
+    }
+    return v;
 }
 
-static void moe_dispatch_slice(const GgufTensor* t, int e,
+static int moe_spec_conf_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("STRATUM_SPEC_CONF");
+        v = e ? (atoi(e) != 0) : 1;
+    }
+    return v;
+}
+
+static int moe_page_resident(const void* p, size_t n) {
+    if (!p || n == 0) return 0;
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps < 4096) ps = 4096;
+    uintptr_t a = (uintptr_t)p & ~(uintptr_t)(ps - 1);
+    size_t len = ((uintptr_t)p + n) - a;
+    size_t np = (len + (size_t)ps - 1) / (size_t)ps;
+    if (np > 8) np = 8;                 /* sample the first pages only */
+    char vec[8];
+    if (mincore((void*)a, np * (size_t)ps, vec) != 0) return 0;
+    for (size_t i = 0; i < np; i++) if ((vec[i] & 1) == 0) return 0;
+    return 1;
+}
+
+static const uint8_t* moe_pack_which(int li, int e, int which) {
+    uint64_t off = moe_pack_data_off
+        + ((uint64_t)li * (uint64_t)moe_g_cfg.n_experts + (uint64_t)e) * moe_pack_stride;
+    if (which == 1) off += moe_pack_gate;
+    else if (which == 2) off += moe_pack_gate + moe_pack_up;
+    return moe_pack_base + off;
+}
+
+static size_t moe_expert_span(int li) {
+    if (moe_pack_on) return (size_t)moe_pack_stride;
+    moe_BlockTensors* b = &moe_g_blocks[li];
+    int H = moe_g_cfg.n_embed, Ff = moe_g_cfg.n_ff;
+    return (size_t)moe_slice_bytes(b->ffn_gate_exps, H, Ff)
+         + (size_t)moe_slice_bytes(b->ffn_up_exps, H, Ff)
+         + (size_t)moe_slice_bytes(b->ffn_down_exps, Ff, H);
+}
+
+/* Bind one expert slice to a stack tensor whose bytes the linear kernels
+ * read via g_st.mmap_base + offset. Pack pages live in a second mapping;
+ * the offset is the pointer difference, so no weight bytes are copied. */
+static void moe_bind_slice(GgufTensor* dst, int li, int which,
+                           const GgufTensor* t, int e, int64_t slice,
+                           int N_out, int K_in) {
+    *dst = *t;
+    dst->nelem  = (int64_t)K_in * N_out;
+    dst->nbytes = slice;
+    const uint8_t* p = moe_pack_on
+        ? moe_pack_which(li, e, which)
+        : g_st.mmap_base + t->offset + (uint64_t)e * (uint64_t)slice;
+    dst->offset = (uint64_t)(p - g_st.mmap_base);
+}
+
+static void moe_advise_expert(int li, int e, int advice) {
+    if (e < 0) return;
+    if (moe_pack_on) {
+        const uint8_t* p = moe_pack_which(li, e, 0);
+        size_t n = (size_t)moe_pack_stride;
+        if (advice == MADV_WILLNEED && moe_page_resident(p, n)) return;
+        madvise((void*)p, n, advice);
+        return;
+    }
+    moe_BlockTensors* b = &moe_g_blocks[li];
+    int H = moe_g_cfg.n_embed, Ff = moe_g_cfg.n_ff;
+    const GgufTensor* ts[3] = { b->ffn_gate_exps, b->ffn_up_exps, b->ffn_down_exps };
+    int64_t sb[3] = {
+        moe_slice_bytes(b->ffn_gate_exps, H, Ff),
+        moe_slice_bytes(b->ffn_up_exps, H, Ff),
+        moe_slice_bytes(b->ffn_down_exps, Ff, H)
+    };
+    for (int w = 0; w < 3; w++) {
+        if (!ts[w]) continue;
+        const uint8_t* p = g_st.mmap_base + ts[w]->offset + (uint64_t)e * (uint64_t)sb[w];
+        if (advice == MADV_WILLNEED && moe_page_resident(p, (size_t)sb[w])) continue;
+        madvise((void*)p, (size_t)sb[w], advice);
+    }
+}
+
+static void moe_prefetch_expert(int li, int e) {
+    moe_advise_expert(li, e, MADV_WILLNEED);
+}
+
+static void moe_topk(const float* w, int E, int K, int* sel, float* selw) {
+    for (int s = 0; s < K; s++) { sel[s] = -1; selw[s] = -1.0f; }
+    for (int e = 0; e < E; e++) {
+        float ww = w[e];
+        for (int s = 0; s < K; s++) {
+            if (ww > selw[s]) {
+                for (int t2 = K - 1; t2 > s; t2--) {
+                    sel[t2] = sel[t2 - 1];
+                    selw[t2] = selw[t2 - 1];
+                }
+                sel[s] = e;
+                selw[s] = ww;
+                break;
+            }
+        }
+    }
+}
+
+/* Hint, not a decision: router on the pre-attention residual. The real
+ * router runs again on the post-attention residual and is what gets used. */
+static void moe_ahead_prefetch_one(int li, const float* x) {
+    if (!moe_ahead_on()) return;
+    moe_BlockTensors* b = &moe_g_blocks[li];
+    int H = moe_g_cfg.n_embed;
+    int E = moe_g_cfg.n_experts;
+    int K = moe_g_cfg.n_experts_used;
+    const float* gain = st_f32_tensor_ptr(b->ffn_norm);
+    if (!gain || K > 64) return;
+    moe_rmsnorm(x, gain, H, moe_g_cfg.rms_eps, moe_g_xn);
+    if (st_linear_dispatch(b->ffn_gate_inp, moe_g_xn, moe_g_router, E, H) != 0)
+        return;
+    moe_softmax_inplace(moe_g_router, E);
+    int sel[64];
+    float selw[64];
+    moe_topk(moe_g_router, E, K, sel, selw);
+    for (int s = 0; s < K; s++) moe_prefetch_expert(li, sel[s]);
+}
+
+static void moe_adapt_touch(int li, int e) {
+    if (!moe_adapt_on || e < 0 || !moe_adapt_hits) return;
+    moe_adapt_hits[(size_t)li * (size_t)moe_g_cfg.n_experts + (size_t)e] += 1.0f;
+}
+
+static int moe_hit_cmp(const void* a, const void* b) {
+    const int* ia = (const int*)a;
+    const int* ib = (const int*)b;
+    float ha = moe_adapt_hits[*ia];
+    float hb = moe_adapt_hits[*ib];
+    if (ha < hb) return 1;
+    if (ha > hb) return -1;
+    return *ia - *ib;
+}
+
+static void moe_adapt_rebalance(void) {
+    if (!moe_adapt_on || !moe_adapt_hits) return;
+    int L = moe_g_cfg.n_layers, E = moe_g_cfg.n_experts;
+    int n = L * E;
+    int* idx = (int*)malloc(sizeof(int) * (size_t)n);
+    uint8_t* neu = (uint8_t*)calloc((size_t)n, 1);
+    if (!idx || !neu) { free(idx); free(neu); return; }
+    int m = 0;
+    for (int i = 0; i < n; i++) if (moe_adapt_hits[i] > 0.0f) idx[m++] = i;
+    qsort(idx, (size_t)m, sizeof(int), moe_hit_cmp);
+    size_t used = 0;
+    for (int j = 0; j < m; j++) {
+        int i = idx[j];
+        int li = i / E, e = i % E;
+        size_t bytes = moe_expert_span(li);
+        if (bytes == 0 || used + bytes > moe_adapt_budget) break;
+        neu[i] = 1;
+        used += bytes;
+        if (!moe_adapt_hot[i]) moe_advise_expert(li, e, MADV_WILLNEED);
+    }
+    for (int i = 0; i < n; i++) {
+        if (moe_adapt_hot[i] && !neu[i] && moe_adapt_drop)
+            moe_advise_expert(i / E, i % E, MADV_DONTNEED);
+        moe_adapt_hot[i] = neu[i];
+        moe_adapt_hits[i] *= 0.5f;
+        if (moe_adapt_hits[i] < 0.05f) moe_adapt_hits[i] = 0.0f;
+    }
+    free(idx);
+    free(neu);
+}
+
+static int moe_pack_check_slice(int li, int e, int which, const GgufTensor* t,
+                                int64_t slice) {
+    const uint8_t* got = moe_pack_which(li, e, which);
+    const uint8_t* exp = g_st.mmap_base + t->offset + (uint64_t)e * (uint64_t)slice;
+    return memcmp(got, exp, (size_t)slice) == 0;
+}
+
+/* Returns 0 when the pack is in use, 1 when no pack was requested,
+ * -1 when a requested pack cannot be used. */
+static int moe_pack_load(const char* path) {
+    if (!path || !path[0]) return 1;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "  MOE_PACK: cannot open %s (%s)\n", path, strerror(errno));
+        return -1;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(MoePackHdr)) {
+        fprintf(stderr, "  MOE_PACK: %s is not a pack file\n", path);
+        close(fd);
+        return -1;
+    }
+    size_t sz = (size_t)st.st_size;
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps < 4096) ps = 4096;
+    uintptr_t hint_a = ((uintptr_t)g_st.mmap_base + g_st.mmap_size
+                        + (uintptr_t)ps + (uintptr_t)ps) & ~(uintptr_t)(ps - 1);
+    void* reserved = mmap((void*)hint_a, sz, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    void* p = MAP_FAILED;
+    if (reserved == (void*)hint_a) {
+        munmap(reserved, sz);
+        p = mmap((void*)hint_a, sz, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
+    } else if (reserved != MAP_FAILED) {
+        munmap(reserved, sz);
+    }
+    if (p == MAP_FAILED)
+        p = mmap(NULL, sz, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (p == MAP_FAILED) {
+        fprintf(stderr, "  MOE_PACK: mmap %s failed (%s)\n", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    /* Kernels address weights as g_st.mmap_base + offset. A pack mapped
+     * below the model cannot be expressed that way until the base moves
+     * down with it and every tensor offset shifts by the same delta.
+     * mmap_size stays the model length: it is only a chunking hint. */
+    if ((const uint8_t*)p < g_st.mmap_base) {
+        ptrdiff_t delta = g_st.mmap_base - (const uint8_t*)p;
+        g_st.mmap_base = (const uint8_t*)p;
+        for (uint64_t i = 0; i < moe_g_gguf.n_tensors; i++)
+            moe_g_gguf.tensors[i].offset += (uint64_t)delta;
+    }
+    MoePackHdr hdr;
+    memcpy(&hdr, p, sizeof hdr);
+    int H = moe_g_cfg.n_embed, Ff = moe_g_cfg.n_ff, E = moe_g_cfg.n_experts;
+    int L = moe_g_cfg.n_layers;
+    moe_BlockTensors* b0 = &moe_g_blocks[0];
+    int64_t gsb = moe_slice_bytes(b0->ffn_gate_exps, H, Ff);
+    int64_t usb = moe_slice_bytes(b0->ffn_up_exps, H, Ff);
+    int64_t dsb = moe_slice_bytes(b0->ffn_down_exps, Ff, H);
+    int ok = memcmp(hdr.magic, "MOEP", 4) == 0 && hdr.version == 1
+          && (int)hdr.n_layers == L && (int)hdr.n_experts == E
+          && (int)hdr.n_embed == H && (int)hdr.n_ff == Ff
+          && hdr.gate_type == b0->ffn_gate_exps->type
+          && hdr.up_type == b0->ffn_up_exps->type
+          && hdr.down_type == b0->ffn_down_exps->type
+          && hdr.gate_slice == (uint64_t)gsb
+          && hdr.up_slice == (uint64_t)usb
+          && hdr.down_slice == (uint64_t)dsb
+          && hdr.data_off >= sizeof(MoePackHdr)
+          && hdr.data_off < sz;
+    uint64_t stride = hdr.gate_slice + hdr.up_slice + hdr.down_slice;
+    uint64_t need = hdr.data_off + (uint64_t)L * (uint64_t)E * stride;
+    if (ok && need > sz) ok = 0;
+    if (!ok) {
+        fprintf(stderr, "  MOE_PACK: %s does not match this model\n", path);
+        munmap(p, sz);
+        close(fd);
+        return -1;
+    }
+    moe_pack_base = (const uint8_t*)p;
+    moe_pack_size = sz;
+    moe_pack_fd = fd;
+    moe_pack_data_off = hdr.data_off;
+    moe_pack_gate = hdr.gate_slice;
+    moe_pack_up = hdr.up_slice;
+    moe_pack_down = hdr.down_slice;
+    moe_pack_stride = stride;
+    moe_pack_on = 1;
+
+    const char* chk = getenv("STRATUM_MOE_PACK_CHECK");
+    int full = chk && atoi(chk) != 0;
+    int bad = 0, checked = 0;
+    for (int li = 0; li < L && !bad; li++) {
+        moe_BlockTensors* b = &moe_g_blocks[li];
+        int64_t gs = moe_slice_bytes(b->ffn_gate_exps, H, Ff);
+        int64_t us = moe_slice_bytes(b->ffn_up_exps, H, Ff);
+        int64_t ds = moe_slice_bytes(b->ffn_down_exps, Ff, H);
+        if (gs != gsb || us != usb || ds != dsb) { bad = 1; break; }
+        for (int e = 0; e < E; e++) {
+            int sample = full || e == 0 || e == E / 2 || e == E - 1;
+            if (!sample) continue;
+            checked++;
+            if (!moe_pack_check_slice(li, e, 0, b->ffn_gate_exps, gs)
+                || !moe_pack_check_slice(li, e, 1, b->ffn_up_exps, us)
+                || !moe_pack_check_slice(li, e, 2, b->ffn_down_exps, ds)) {
+                bad = 1;
+                break;
+            }
+        }
+    }
+    if (bad) {
+        fprintf(stderr, "  MOE_PACK: byte check failed — refusing the sidecar\n");
+        munmap(p, sz);
+        close(fd);
+        moe_pack_base = NULL;
+        moe_pack_on = 0;
+        moe_pack_fd = -1;
+        return -1;
+    }
+    fprintf(stderr, "  MOE_PACK: %s  stride %.1f KB  (%s check, %d experts)\n",
+            path, (double)stride / 1024.0, full ? "full" : "sample", checked);
+    return 0;
+}
+
+static int moe_stream_init(void) {
+    int n = moe_g_cfg.n_layers * moe_g_cfg.n_experts;
+    if (n < 1) return -1;
+    moe_adapt_hits = (float*)calloc((size_t)n, sizeof(float));
+    moe_adapt_hot  = (uint8_t*)calloc((size_t)n, 1);
+    if (!moe_adapt_hits || !moe_adapt_hot) return -1;
+    const char* ae = getenv("STRATUM_MOE_ADAPT");
+    const char* mb = getenv("STRATUM_MOE_ADAPT_MB");
+    long mib = mb ? atol(mb) : 256;
+    if (mib < 0) mib = 0;
+    moe_adapt_budget = (size_t)mib * 1024u * 1024u;
+    moe_adapt_on = (ae ? atoi(ae) != 0 : 1) && mib > 0;
+    const char* dr = getenv("STRATUM_MOE_ADAPT_DROP");
+    moe_adapt_drop = dr && atoi(dr) != 0;
+    fprintf(stderr, "  stream: ahead=%d adapt=%d budget=%ldMB drop=%d spec_conf=%d\n",
+            moe_ahead_on(), moe_adapt_on, mib, moe_adapt_drop, moe_spec_conf_on());
+    return 0;
+}
+
+static void moe_dispatch_slice(int li, int which, const GgufTensor* t, int e,
                                int64_t slice_bytes,
                                const float* x, float* y, int N_out, int K_in) {
-    GgufTensor tmp = *t;
-    tmp.offset  = t->offset + (uint64_t)e * (uint64_t)slice_bytes;
-    tmp.nelem   = (int64_t)K_in * N_out;
-    tmp.nbytes  = slice_bytes;
+    GgufTensor tmp;
+    moe_bind_slice(&tmp, li, which, t, e, slice_bytes, N_out, K_in);
     if (st_linear_dispatch(&tmp, x, y, N_out, K_in) != 0)
         fprintf(stderr, "moe: dispatch failed for expert %d\n", e);
 }
 
 static int moe_forward_block(int li, int position) {
     moe_BlockTensors* b = &moe_g_blocks[li];
+    moe_ahead_prefetch_one(li, moe_g_x);
     int H  = moe_g_cfg.n_embed;
     int Hd = moe_g_cfg.head_dim;
     int Nq = moe_g_cfg.n_q_heads;
@@ -353,22 +711,14 @@ static int moe_forward_block(int li, int position) {
         }
     }
 
-    /* stream prefetch hint FIRST (the whole point): each selected expert's
-     * gate/up/down slices are contiguous ranges — nudge the kernel to read
-     * them ahead while dense work of later layers proceeds. Reclaimable
-     * page-cache hints only; no locking (memory boundary). */
-    {
-        int64_t g_sb = moe_slice_bytes(b->ffn_gate_exps, H, Ff);
-        int64_t u_sb = moe_slice_bytes(b->ffn_up_exps, H, Ff);
-        int64_t d_sb = moe_slice_bytes(b->ffn_down_exps, Ff, H);
-        for (int s = 0; s < K_; s++) {
-            int e = moe_g_sel[s];
-            if (e < 0) continue;
-            moe_prefetch_slice(b->ffn_gate_exps, g_sb, e);
-            moe_prefetch_slice(b->ffn_up_exps, u_sb, e);
-            moe_prefetch_slice(b->ffn_down_exps, d_sb, e);
-            if (moe_stats_on()) moe_stat_expert_touches++;
-        }
+    /* True selection. Ahead may already have hinted a guess; this covers
+     * the misses. One range when the pack sidecar is on. */
+    for (int s = 0; s < K_; s++) {
+        int e = moe_g_sel[s];
+        if (e < 0) continue;
+        moe_prefetch_expert(li, e);
+        moe_adapt_touch(li, e);
+        if (moe_stats_on()) moe_stat_expert_touches++;
     }
 
     /* accumulate weighted expert outputs */
@@ -378,14 +728,14 @@ static int moe_forward_block(int li, int position) {
         if (e < 0) continue;
         float w = moe_g_selw[s];
         static float ff_out_tmp[8192];
-        moe_dispatch_slice(b->ffn_gate_exps, e,
+        moe_dispatch_slice(li, 0, b->ffn_gate_exps, e,
                            moe_slice_bytes(b->ffn_gate_exps, H, Ff),
                            moe_g_xn, moe_g_ff_g, Ff, H);
-        moe_dispatch_slice(b->ffn_up_exps, e,
+        moe_dispatch_slice(li, 1, b->ffn_up_exps, e,
                            moe_slice_bytes(b->ffn_up_exps, H, Ff),
                            moe_g_xn, moe_g_ff_u, Ff, H);
         moe_swiglu(moe_g_ff_g, moe_g_ff_u, Ff, moe_g_ff_a);
-        moe_dispatch_slice(b->ffn_down_exps, e,
+        moe_dispatch_slice(li, 2, b->ffn_down_exps, e,
                            moe_slice_bytes(b->ffn_down_exps, Ff, H),
                            moe_g_ff_a, ff_out_tmp, H, Ff);
         for (int i = 0; i < H; i++) moe_g_ff_acc[i] += w * ff_out_tmp[i];
@@ -433,6 +783,7 @@ static int moe_forward_one_token(int token_id, int position) {
     }
 
     moe_stats_end_step();
+    moe_adapt_rebalance();
     moe_g_kv_len++;
     return 0;
 }
@@ -454,14 +805,12 @@ static int moe_forward_one_token(int token_id, int position) {
  * runs strictly in its own top-k rank order, preserving the exact FP
  * summation order of the single-stream path (greedy-token identical). */
 
-static void moe_multix_slice(const GgufTensor* t, int e,
+static void moe_multix_slice(int li, int which, const GgufTensor* t, int e,
                              int64_t slice_bytes,
                              const float* const* xs, float* const* ys,
                              int B, int N_out, int K_in) {
-    GgufTensor tmp = *t;
-    tmp.offset  = t->offset + (uint64_t)e * (uint64_t)slice_bytes;
-    tmp.nelem   = (int64_t)K_in * N_out;
-    tmp.nbytes  = slice_bytes;
+    GgufTensor tmp;
+    moe_bind_slice(&tmp, li, which, t, e, slice_bytes, N_out, K_in);
     st_linear_multix(&tmp, xs, ys, B, N_out, K_in);
 }
 
@@ -586,6 +935,26 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
     moe_stats_begin_step();
     for (int li = 0; li < moe_g_cfg.n_layers; li++) {
         moe_BlockTensors* b = &moe_g_blocks[li];
+        if (moe_ahead_on() && K_ <= 64) {
+            const float* hgain = st_f32_tensor_ptr(b->ffn_norm);
+            if (hgain) {
+                const float* hx[moe_B_MAX];
+                float* hy[moe_B_MAX];
+                for (int s = 0; s < B; s++) {
+                    moe_rmsnorm(x[s], hgain, H, moe_g_cfg.rms_eps, xn[s]);
+                    hx[s] = xn[s];
+                    hy[s] = rt[s];
+                }
+                st_linear_multix(b->ffn_gate_inp, hx, hy, B, E, H);
+                int hsel[64];
+                float hselw[64];
+                for (int s = 0; s < B; s++) {
+                    moe_softmax_inplace(rt[s], E);
+                    moe_topk(rt[s], E, K_, hsel, hselw);
+                    for (int k = 0; k < K_; k++) moe_prefetch_expert(li, hsel[k]);
+                }
+            }
+        }
         pt = MOE_PROF_T();
         {
             const float* gain = st_f32_tensor_ptr(b->attn_norm);
@@ -777,12 +1146,11 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
         int64_t g_sb = moe_slice_bytes(b->ffn_gate_exps, H, Ff);
         int64_t u_sb = moe_slice_bytes(b->ffn_up_exps, H, Ff);
         int64_t d_sb = moe_slice_bytes(b->ffn_down_exps, Ff, H);
-        /* prefetch each selected expert's slices once (reclaimable hints) */
+        /* prefetch each selected expert once (reclaimable hints) */
         for (int e = 0; e < E; e++) {
             if (!mcnt[e]) continue;
-            moe_prefetch_slice(b->ffn_gate_exps, g_sb, e);
-            moe_prefetch_slice(b->ffn_up_exps, u_sb, e);
-            moe_prefetch_slice(b->ffn_down_exps, d_sb, e);
+            moe_prefetch_expert(li, e);
+            moe_adapt_touch(li, e);
             if (moe_stats_on()) moe_stat_expert_touches += mcnt[e];
         }
 
@@ -823,14 +1191,14 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
                 oa[j] = maf + (size_t)m * Ff;
                 od[j] = ffo + (size_t)m * H;
             }
-            moe_multix_slice(b->ffn_gate_exps, e, g_sb, xe, og, M, Ff, H);
-            moe_multix_slice(b->ffn_up_exps,   e, u_sb, xe, ou, M, Ff, H);
+            moe_multix_slice(li, 0, b->ffn_gate_exps, e, g_sb, xe, og, M, Ff, H);
+            moe_multix_slice(li, 1, b->ffn_up_exps,   e, u_sb, xe, ou, M, Ff, H);
             for (int j = 0; j < M; j++) {
                 int m = memb[(size_t)e * B + tk_j0[t] + j];
                 moe_swiglu(mgf + (size_t)m * Ff, muf + (size_t)m * Ff,
                            Ff, maf + (size_t)m * Ff);
             }
-            moe_multix_slice(b->ffn_down_exps, e, d_sb, oa, od, M, H, Ff);
+            moe_multix_slice(li, 2, b->ffn_down_exps, e, d_sb, oa, od, M, H, Ff);
             if (moe_stats_on())
                 for (int j = 0; j < M; j++) {
                     int ee = e + li * E;
@@ -894,6 +1262,7 @@ static int moe_forward_b(const int* tokens, const int* pos, const int* kvlen,
         if (++lc % 8 == 0)
             fprintf(stderr, "  [moe-prof] lm_head=%.0f us\n", lm_us/lc*8);
     }
+    moe_adapt_rebalance();
     return 0;
 }
 
@@ -1054,6 +1423,7 @@ int run_moe_arch(int argc, char** argv) {
     fprintf(stderr, "\n");
 
     if (moe_discover_blocks() != 0) return 1;
+    if (moe_stream_init() != 0) return 1;
 
     {
         int ncpu = 0; size_t l = sizeof(ncpu);
@@ -1066,6 +1436,7 @@ int run_moe_arch(int argc, char** argv) {
                 g_st.nchunks, ncpu);
     }
     madvise((void*)g_st.mmap_base, g_st.mmap_size, MADV_WILLNEED);
+    if (moe_pack_load(getenv("STRATUM_MOE_PACK")) < 0) return 1;
 
     static StratumVocab moe_vocab;
     stratum_vocab_init(&moe_g_gguf, moe_g_gguf.mmap_base, &moe_vocab);
@@ -1226,6 +1597,7 @@ int run_moe_arch(int argc, char** argv) {
             int hyp[moe_B_MAX]; hyp[0] = next_tok; int hn = 1;
             while (B <= spec_k) {
                 int prop = -1;
+                int conf = moe_spec_conf_on();
                 for (int ng = 3; ng >= 2 && prop < 0; ng--) {
                     int total = hlen + hn;
                     if (total < ng + 1) continue;
@@ -1234,6 +1606,7 @@ int run_moe_arch(int argc, char** argv) {
                         int idx = total - ng + i;
                         suf[i] = (idx < hlen) ? hist[idx] : hyp[idx - hlen];
                     }
+                    int cand0 = -1, amb = 0;
                     for (int start = total - ng - 1; start >= 0; start--) {
                         int match = 1;
                         for (int i = 0; i < ng; i++) {
@@ -1241,12 +1614,16 @@ int run_moe_arch(int argc, char** argv) {
                             int tk = (idx < hlen) ? hist[idx] : hyp[idx - hlen];
                             if (tk != suf[i]) { match = 0; break; }
                         }
-                        if (match) {
-                            int nidx = start + ng;
-                            prop = (nidx < hlen) ? hist[nidx] : hyp[nidx - hlen];
-                            break;
-                        }
+                        if (!match) continue;
+                        int nidx = start + ng;
+                        int cand = (nidx < hlen) ? hist[nidx] : hyp[nidx - hlen];
+                        if (cand0 < 0) cand0 = cand;
+                        else if (cand != cand0 && conf) { amb = 1; break; }
+                        if (!conf) break;   /* historical: first match wins */
                     }
+                    /* Ambiguous n-gram: try the shorter suffix. A draft we
+                     * do not propose is emitted by the next real step. */
+                    if (cand0 >= 0 && !amb) prop = cand0;
                 }
                 if (prop < 0) break;
                 btok[B] = prop; bpos[B] = position + B;
@@ -1294,8 +1671,10 @@ int run_moe_arch(int argc, char** argv) {
                 else break;
             }
             int emit_n = accepted + 1;
-            spec_accepts += accepted;
+            if (g + emit_n > n_gen) emit_n = n_gen - g;
+            spec_accepts += emit_n - 1;
             for (int s = 0; s < emit_n; s++) {
+                fprintf(stderr, "  step %2d  in=%d  (spec)\n", g + s, btok[s]);
                 hist[hlen++] = btok[s];
                 if (moe_vocab.available) {
                     char tok_text[256];
@@ -1304,7 +1683,7 @@ int run_moe_arch(int argc, char** argv) {
                 }
             }
             position += emit_n; moe_g_kv_len += emit_n; g += emit_n;
-            next_tok = stratum_argmax(moe_gb_logits[accepted],
+            next_tok = stratum_argmax(moe_gb_logits[emit_n - 1],
                                       moe_g_cfg.vocab_size);
             fprintf(stderr, "  spec: B=%d accepted=%d (cum %d/%d calls)\n",
                     B, accepted, spec_accepts, spec_calls);

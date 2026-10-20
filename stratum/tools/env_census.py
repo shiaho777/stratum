@@ -61,6 +61,14 @@ SANCTIONED = {
     "STRATUM_YARN_BETA_SLOW": "YaRN beta_slow (default 1)",
     "STRATUM_YARN_EXT": "YaRN extrapolation mix (default 1)",
     "STRATUM_YARN_ATTN": "YaRN attention mscale override",
+    "STRATUM_MOE_PACK": "contiguous gate|up|down expert sidecar (byte copy)",
+    "STRATUM_MOE_PACK_CHECK": "full byte-compare of the expert sidecar at load",
+    "STRATUM_MOE_AHEAD": "prefetch experts guessed before attention (default on for MoE)",
+    "STRATUM_MOE_ADAPT": "decayed expert hot-set WILLNEED within a byte budget",
+    "STRATUM_MOE_ADAPT_MB": "hot-set hint budget in MiB (default 256, 0 disables)",
+    "STRATUM_MOE_ADAPT_DROP": "DONTNEED experts that fell out of the hot set",
+    "STRATUM_SPEC_CONF": "n-gram drafts only when the continuation is unique",
+    "STRATUM_SPEC_MIN_P": "stop MTP chain extension below this top-1 probability",
 }
 
 

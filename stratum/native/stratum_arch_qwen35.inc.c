@@ -21630,6 +21630,16 @@ server_request:
                 if (k_ext > 7) k_ext = 7;
                 if (k_ext > rem) k_ext = rem;
                 if (k_ext > tree_B - 1) k_ext = tree_B - 1;
+                /* Opt-in. A low-confidence draft that misses still pays a
+                 * weight sweep. Stopping the chain here does not change the
+                 * accepted tokens: the next main step emits the same argmax. */
+                {
+                    const char* mp = getenv("STRATUM_SPEC_MIN_P");
+                    if (mp && mp[0]) {
+                        float thr = (float)atof(mp);
+                        if (thr > 0.0f && leaf_pmax < thr) break;
+                    }
+                }
                 if (k_ext < 1) break;
                 int etok[q35_B_MAX], epos[q35_B_MAX], epar[q35_B_MAX], edep[q35_B_MAX];
                 etok[0] = next_tok; epar[0] = -1; edep[0] = 0;
