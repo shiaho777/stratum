@@ -74,23 +74,23 @@ all: $(METAL_LIB)
 # never needs to be edited to register an architecture.
 ARCH_INCS := $(wildcard stratum_arch_*.inc.c)
 
-stratum_archs.gen.h: $(ARCH_INCS)
-	@rm -f $@; for f in $(ARCH_INCS); do echo "#include \"$$f\""; done > $@
+# stratum.c is a single translation unit: every header in this directory is
+# #included (directly or transitively) into that one compile. The hand-kept
+# list below went stale as headers were added (tokenize.h, attn_lg.h,
+# rope.h, ...), so editing an unlisted header silently produced a stale
+# binary. Collect them automatically instead.
+ENGINE_HDRS := $(wildcard *.h)
 
-stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) $(MEMX_OBJ) \
-         stratum_gguf.h stratum_arch.h stratum_linear.h stratum_engine.h stratum_soft_io.h \
-         stratum_attn_lg.h stratum_rope.h \
-         stratum_metal.h \
-         stratum_memx.h \
-         stratum_sro.h \
-         stratum_q2k.h stratum_q2k_neon.h stratum_q3k.h stratum_q3k_neon.h \
-         stratum_q4k.h stratum_q4k_neon.h \
-         stratum_q5k.h stratum_q5k_neon.h \
-         stratum_q6k.h stratum_q6k_neon.h \
-         stratum_q8_0.h \
-         stratum_bf16.h \
-         stratum_lin_attn_v3.h stratum_lin_attn_v3_bf16.h stratum_st.h \
-         stratum_q4k_w16_amx.h
+# Write to a temp file first: a failed shell loop must not leave a truncated
+# gen.h with a fresh mtime (make would then treat it as up to date). Only
+# replace the target when the include list actually changed, so an unchanged
+# build does not force a full recompile of the single TU.
+stratum_archs.gen.h: $(ARCH_INCS)
+	@tmp=$@.tmp; \
+	 for f in $(ARCH_INCS); do echo "#include \"$$f\""; done > $$tmp; \
+	 if [ -f $@ ] && cmp -s $$tmp $@; then rm -f $$tmp; else mv -f $$tmp $@; fi
+
+stratum: stratum.c stratum_archs.gen.h $(METAL_OBJ) $(MEMX_OBJ) $(ENGINE_HDRS)
 	$(CC) $(CFLAGS) -o $@ stratum.c $(METAL_OBJ) $(LDFLAGS)
 
 # Q4_K -> Q4K_W16 (type 43) converter: lays weights out as k-major i16 tiles
@@ -146,6 +146,13 @@ config_geometry_test: config_geometry_test.c stratum_arch.h stratum_gguf.h strat
 gguf_bounds_test: gguf_bounds_test.c stratum_gguf.h stratum_memx.h
 	$(CC) -O1 -g -o $@ gguf_bounds_test.c
 
+# Model-free regression for the GGUF parser guards and KV geometry.
+# Only two headers are included, but every engine header is a prerequisite
+# so a change to shared infrastructure cannot leave a stale test binary.
+input_guards_test: input_guards_test.c $(ENGINE_HDRS)
+	$(CC) -O1 -g -Wno-deprecated-declarations -DACCELERATE_NEW_LAPACK \
+	      -I. -o $@ input_guards_test.c -framework Accelerate -lpthread
+
 dit_probe: dit_probe.c
 	$(CC) -O2 -fblocks -mcpu=apple-m1 -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations -framework Metal -framework Foundation -o $@ $<
 
@@ -179,11 +186,12 @@ verify: stratum
 	@test -n "$(MODEL)" || { echo "make verify MODEL=<small.gguf>  (no default model)"; exit 1; }
 	./verify_backends.sh "$(MODEL)"
 
-tests: quant_test spec_sample_test config_geometry_test gguf_bounds_test
+tests: quant_test spec_sample_test config_geometry_test gguf_bounds_test input_guards_test
 	./quant_test
 	./spec_sample_test
 	./config_geometry_test
 	./gguf_bounds_test
+	./input_guards_test
 
 # Fetch + build the optional MemX dependency (clone/pull upstream, then
 # compile the dylib). Re-run to pull upstream updates.
@@ -191,6 +199,8 @@ deps: $(MEMX_DYLIB)
 	@echo "memx dependency ready: $(MEMX_DYLIB)"
 
 clean:
-	rm -f stratum quant_test metal_test spec_sample_test config_geometry_test gguf_bounds_test logit_compare dit_probe stratum_metal.o \
-	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h
+	rm -f stratum quant_test metal_test spec_sample_test config_geometry_test gguf_bounds_test \
+	      input_guards_test logit_compare dit_probe stratum_metal.o \
+	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h \
+	      stratum_archs.gen.h.tmp
 	rm -rf $(MEMX_HOME)/build

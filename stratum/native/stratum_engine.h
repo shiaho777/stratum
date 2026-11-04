@@ -105,10 +105,27 @@ static inline void stratum_engine_init(size_t mmap_size) {
     if (sysctlbyname("hw.memsize", &g_eng.total_ram, &len, NULL, 0) != 0)
         g_eng.total_ram = 0;
 
-    /* Override from env */
+    /* Override from env. KV geometry is validated as a pair:
+     * stratum_kv_slot() computes ring_size = max_kv - sink and takes
+     * % ring_size, so max_kv <= sink (or a negative sink) traps on the
+     * first decode. Keep the defaults and say why rather than accepting a
+     * configuration that would crash much later. */
     const char* e;
-    if ((e = getenv("STRATUM_MAX_KV")))      g_eng.max_kv = atoi(e);
-    if ((e = getenv("STRATUM_KV_SINK")))     g_eng.kv_sink = atoi(e);
+    {
+        const char* e_mk = getenv("STRATUM_MAX_KV");
+        const char* e_sk = getenv("STRATUM_KV_SINK");
+        int mk = e_mk ? atoi(e_mk) : g_eng.max_kv;
+        int sk = e_sk ? atoi(e_sk) : g_eng.kv_sink;
+        if (sk < 0 || mk <= sk) {
+            fprintf(stderr,
+                    "stratum: invalid KV geometry (max_kv=%d, sink=%d); "
+                    "keeping defaults (%d, %d)\n",
+                    mk, sk, g_eng.max_kv, g_eng.kv_sink);
+        } else {
+            g_eng.max_kv = mk;
+            g_eng.kv_sink = sk;
+        }
+    }
     if ((e = getenv("STRATUM_NGRAM_SPEC")))  g_eng.spec_k = atoi(e);
     if ((e = getenv("STRATUM_B_MAX")))       g_eng.spec_b = atoi(e);
     if ((e = getenv("STRATUM_PREFETCH")))    g_eng.prefetch_ahead = atoi(e);
@@ -171,6 +188,10 @@ static inline int stratum_kv_slot(const StratumKVCache* kv, int logical_pos) {
 
     int ring_pos = logical_pos - kv->sink;
     int ring_size = kv->max_kv - kv->sink;
+    /* stratum_engine_init() rejects max_kv <= sink. Keep this guard for a
+     * caller that builds its own StratumKVCache — a zero/negative modulo
+     * would trap instead of merely producing a wrong slot. */
+    if (ring_size <= 0) return 0;
     int physical = kv->sink + (ring_pos % ring_size);
     return physical;
 }

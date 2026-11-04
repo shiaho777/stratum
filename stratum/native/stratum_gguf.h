@@ -266,6 +266,22 @@ static int gguf_open(const char* path, Gguf* gguf) {
     if (gguf_take_u64(&c, &gguf->n_tensors) != 0) goto fail;
     if (gguf_take_u64(&c, &gguf->n_kv) != 0) goto fail;
 
+    /* A corrupt count must not drive a huge calloc or a near-infinite parse
+     * loop. Bound both counts by what the mapped file could possibly hold:
+     * one tensor info needs at least 8 (name length) + 4 (n_dims) + 4 (type)
+     * + 8 (offset) bytes, and one KV entry at least 8 (key length) + 4
+     * (vtype). This is derived from the file size, so it rejects only files
+     * that cannot possibly be well formed — no model-specific constant. */
+    if (gguf->n_tensors > (uint64_t)gguf->mmap_size / 24 ||
+        gguf->n_kv      > (uint64_t)gguf->mmap_size / 12) {
+        fprintf(stderr,
+                "gguf_open: implausible counts (n_tensors=%llu n_kv=%llu) "
+                "for a %zu-byte file\n",
+                (unsigned long long)gguf->n_tensors,
+                (unsigned long long)gguf->n_kv, gguf->mmap_size);
+        goto fail;
+    }
+
     /* :1 guards — a well-formed GGUF always has both sections, but a
      * zero count must not be read as allocation failure. */
     gguf->kv = (GgufKV*)calloc(gguf->n_kv ? gguf->n_kv : 1, sizeof(GgufKV));
@@ -352,13 +368,36 @@ static int gguf_open(const char* path, Gguf* gguf) {
 
     for (uint64_t i = 0; i < gguf->n_tensors; i++) {
         GgufTensor* t = &gguf->tensors[i];
+        /* A malicious offset near UINT64_MAX would wrap to a small value
+         * here and slip past the range check below, leaving mmap_base+offset
+         * pointing outside the mapping. Reject the wrap before adding. */
+        if (t->offset > UINT64_MAX - gguf->body_offset) {
+            fprintf(stderr,
+                    "gguf_open: tensor %s offset %llu overflows with body "
+                    "offset %llu\n",
+                    t->name, (unsigned long long)t->offset,
+                    (unsigned long long)gguf->body_offset);
+            goto fail;
+        }
         t->offset += gguf->body_offset;
-        /* Corrupt-file guard: every tensor with a computable size must lie
-         * inside the mapped file — fail here with a clear message instead
-         * of faulting mid-inference on an out-of-range address. */
+
+        /* Every tensor pointer must name a byte inside the file even when
+         * its size is not computable (unknown / extension quant type) —
+         * that is the existing "size not computable" path, but the pointer
+         * itself still has to be safe to dereference. */
+        if (t->offset > gguf->mmap_size) {
+            fprintf(stderr,
+                    "gguf_open: tensor %s type=%s offset %llu exceeds file "
+                    "size %llu\n",
+                    t->name, gguf_type_name((GgmlType)t->type),
+                    (unsigned long long)t->offset,
+                    (unsigned long long)gguf->mmap_size);
+            goto fail;
+        }
+        /* Corrupt-file guard: tensors with a computable size must fit too —
+         * fail here with a clear message instead of faulting mid-inference. */
         if (t->nbytes >= 0 &&
-            (t->offset > gguf->mmap_size ||
-             (uint64_t)t->nbytes > gguf->mmap_size - t->offset)) {
+            (uint64_t)t->nbytes > gguf->mmap_size - t->offset) {
             fprintf(stderr,
                     "gguf_open: tensor %s type=%s dims=[%llu,%llu] [%llu + %lld) "
                     "exceeds file size %llu\n",
@@ -382,7 +421,13 @@ fail:
         for (uint64_t i = 0; i < gguf->n_tensors; i++) free(gguf->tensors[i].name);
         free(gguf->tensors);
     }
-    if (gguf->mmap_base) munmap((void*)gguf->mmap_base, gguf->mmap_size);
+    if (gguf->mmap_base) {
+        /* Same teardown as gguf_close: with MemX active the mapping is owned
+         * by the compressed plane, so a bare munmap would leave it behind. */
+        if (stratum_memx_weight_munmap((void*)gguf->mmap_base, gguf->mmap_size) != 0) {
+            munmap((void*)gguf->mmap_base, gguf->mmap_size);
+        }
+    }
     close(gguf->fd);
     memset(gguf, 0, sizeof(*gguf));
     return -1;

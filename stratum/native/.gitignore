@@ -7,8 +7,10 @@ metal_quant_test
 spec_sample_test
 config_geometry_test
 gguf_bounds_test
+input_guards_test
 *_probe
 *.metallib
 *.air
 *.o
 *.dSYM/
+stratum_archs.gen.h.tmp
