@@ -143,6 +143,9 @@ spec_sample_test: spec_sample_test.c
 config_geometry_test: config_geometry_test.c stratum_arch.h stratum_gguf.h stratum_memx.h
 	$(CC) -O1 -g -o $@ config_geometry_test.c
 
+gguf_bounds_test: gguf_bounds_test.c stratum_gguf.h stratum_memx.h
+	$(CC) -O1 -g -o $@ gguf_bounds_test.c
+
 dit_probe: dit_probe.c
 	$(CC) -O2 -fblocks -mcpu=apple-m1 -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations -framework Metal -framework Foundation -o $@ $<
 
@@ -176,10 +179,11 @@ verify: stratum
 	@test -n "$(MODEL)" || { echo "make verify MODEL=<small.gguf>  (no default model)"; exit 1; }
 	./verify_backends.sh "$(MODEL)"
 
-tests: quant_test spec_sample_test config_geometry_test
+tests: quant_test spec_sample_test config_geometry_test gguf_bounds_test
 	./quant_test
 	./spec_sample_test
 	./config_geometry_test
+	./gguf_bounds_test
 
 # Fetch + build the optional MemX dependency (clone/pull upstream, then
 # compile the dylib). Re-run to pull upstream updates.
@@ -187,6 +191,6 @@ deps: $(MEMX_DYLIB)
 	@echo "memx dependency ready: $(MEMX_DYLIB)"
 
 clean:
-	rm -f stratum quant_test metal_test spec_sample_test config_geometry_test logit_compare dit_probe stratum_metal.o \
+	rm -f stratum quant_test metal_test spec_sample_test config_geometry_test gguf_bounds_test logit_compare dit_probe stratum_metal.o \
 	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h
 	rm -rf $(MEMX_HOME)/build

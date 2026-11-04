@@ -6,6 +6,7 @@ metal_test
 metal_quant_test
 spec_sample_test
 config_geometry_test
+gguf_bounds_test
 *_probe
 *.metallib
 *.air
