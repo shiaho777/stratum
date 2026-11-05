@@ -1,18 +1,18 @@
 #!/usr/bin/env zsh
-# h3_test_gate.sh — 边界3合规的大模型测试门禁 + 清理
+# large_model_gate.sh — boundary-3 pre-run gate for large-model tests + cleanup
 #
 # 用法:
-#   h3_test_gate.sh check              检查系统是否允许启动大模型测试
-#   h3_test_gate.sh clean <model...>   测试后立即释放指定模型文件的页缓存
+#   large_model_gate.sh check          check whether a large-model run is safe
+#   large_model_gate.sh clean <model…> release page cache after the run
 #
 # 协议（对齐 AGENTS.md 边界3）:
-#   1. free+inactive >= H3_MIN_FREE_GB (默认8GB) 才允许启动
-#   2. swap used 占比 >= H3_MAX_SWAP_PCT (默认60%) 时拒绝启动
+#   1. free+inactive >= STRATUM_GATE_MIN_FREE_GB (default 8 GB)
+#   2. swap used ratio >= STRATUM_GATE_MAX_SWAP_PCT (default 60%)
 #   3. 大测试结束后必须立刻对用过的每个模型文件执行 clean
 set -euo pipefail
 
-MIN_FREE_GB="${H3_MIN_FREE_GB:-8}"
-MAX_SWAP_PCT="${H3_MAX_SWAP_PCT:-60}"
+MIN_FREE_GB="${STRATUM_GATE_MIN_FREE_GB:-8}"
+MAX_SWAP_PCT="${STRATUM_GATE_MAX_SWAP_PCT:-60}"
 
 mem_stats() {
     local stats=$(vm_stat | python3 -c "
@@ -43,7 +43,7 @@ check)
         echo "❌ 拒绝启动: 可用内存 ${AVAIL_GB}GB < 1GB，激活内存都不够"
         exit 1
     fi
-    if pgrep -f "h3_forward|te_qwen3vl|h3_vae_decode|h3_audio_decode" > /dev/null 2>&1; then
+    if pgrep -x stratum > /dev/null 2>&1; then
         echo "❌ 拒绝启动: 已有大模型测试进程在跑（并发重活违反边界3）"
         exit 1
     fi

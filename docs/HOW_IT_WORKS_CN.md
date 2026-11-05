@@ -75,7 +75,6 @@ Metal 可选。每次 matmul 可以把自己那块 tensor（大约 100 MB 以内
 | `llama`、`qwen3` | `stratum_arch_llama.inc.c` |
 | `qwen35`、`qwen35moe`、`qwen38` | `stratum_arch_qwen35.inc.c` — Gated DeltaNet 加全注意力，以及 MTP head |
 | `llama-moe`、`llama_moe`、`moe`、`olmoe` | `stratum_arch_moe.inc.c` |
-| mini-DiT、H3 视频 | `dit_probe`、`h3_*.c` — 独立程序，不是 `./stratum` |
 
 加一种架构就是在旁边放一个 `stratum_arch_<name>.inc.c`。Makefile 会收进去。`stratum.c` 不增加名字判断。
 
@@ -117,5 +116,5 @@ GPU 那一档的 1843 MB 是急切分配的 KV。权重在文件里。
 
 - 一个进程一个模型。`STRATUM_SERVER` 是串行的 stdin 循环。
 - Dense 解码停在上面的公式上。MULTISEQ 提高的是合计 token，不是单条流的延迟。
-- MoE 和 H3 没有 v199–v217 gate，也没有内存地板承诺。H3 在 768p 的激活是 GB 级。
+- MoE 没有 v199–v217 gate，也没有内存地板承诺。
 - 仅 Apple Silicon。

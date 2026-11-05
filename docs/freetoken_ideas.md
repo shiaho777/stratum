@@ -114,7 +114,6 @@ FreeToken 的 idle-safe-point rebuild(engine.py:769-913,先校验几何再破坏
 |---|---|---|
 | DFloat11 无损 BF16 压缩(~11 bit/weight,bit-exact) | `kernel/triton/df11.py` | 值不变→合法,但 Huffman Metal decoder 成本高;BF16 非 Stratum 主打格式 |
 | 多后端运行时探测+诚实降级阶梯 | `nvfp4_backends.py:183-272` | "probe 到符号才承诺"模式可用于未来 Metal 特性开关 |
-| H3 Phase 3 稀疏注意力 | `attention/dsa_indexer.py`、`dsv4_sparse.py` | Triton 实现,算法可移植 Metal;H3 NaN 解决后再看 |
 | 内核缓存构建印章配对 | `kernel/utils.py:89-103` | metallib 随二进制走,暂无 JIT 问题 |
 
 ---

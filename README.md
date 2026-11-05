@@ -19,7 +19,7 @@ Measured on an M4 Pro, 24 GB, greedy, CPU unless noted.
 | vs llama.cpp, TinyLlama 1.1B | **7.4 MB vs 634.9 MB** anonymous (**85.7×**) |
 | vs llama.cpp Metal, Qwen3-0.6B Q4_K_M | **247–252 tok/s** vs 224–231 (fused GPU, stop at end of turn, `STRATUM_MAX_KV=8192`) |
 | Engine | ~752 KB binary. Apple Silicon. GPU optional |
-| Architectures | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 hybrid (`qwen35`) · MoE (`llama-moe`, experimental) · DiT and H3 video spikes (separate programs) |
+| Architectures | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 hybrid (`qwen35`) · MoE (`llama-moe`, experimental) |
 
 ## Quick start
 

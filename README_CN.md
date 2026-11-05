@@ -19,7 +19,7 @@
 | 对比 llama.cpp，TinyLlama 1.1B | 匿名内存 **7.4 MB 对 634.9 MB**（**85.7×**） |
 | 对比 llama.cpp Metal，Qwen3-0.6B Q4_K_M | 融合 GPU **247–252 tok/s** 对 224–231（在回合结束处停下，需要 `STRATUM_MAX_KV=8192`） |
 | 引擎 | 二进制约 752 KB。仅 Apple Silicon。GPU 可选 |
-| 架构 | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 混合（`qwen35`）· MoE（`llama-moe`，实验性）· DiT 与 H3 视频探针（独立程序） |
+| 架构 | Llama / Qwen2 / Qwen3 dense · Qwen3.5/3.8 混合（`qwen35`）· MoE（`llama-moe`，实验性）|
 
 ## 快速开始
 

@@ -100,9 +100,7 @@ Stratum targets **any model**, not a specific one. These rules must not be viola
 - `stratum_arch_qwen35.inc.c` — Qwen3.8 hybrid architecture (GGUF arch id: `qwen35`, alias `qwen38`; Gated DeltaNet + full attention), self-registers (~25k lines, the main engine)
 - `stratum_arch_llama.inc.c` — Llama/Qwen2/Qwen3 dense architecture, self-registers
 - `stratum_arch_moe.inc.c` — MoE architecture (GGUF arch ids: `llama-moe,llama_moe,moe,olmoe`; experimental), self-registers: dense attention + router top-k expert FFN, deterministic tie-break. Streaming is per-slice `madvise` plus an optional contiguous pack, an ahead hint, and a budgeted hot set (see README "Expert streaming")
-- `h3_*.c`, `te_qwen3vl_step.c`, `stratum_h3_attn.metal` — H3 video-generation spikes (standalone binaries, NOT registered architectures, NOT part of `./stratum`): packed denoiser forward, text encoder, VAE decoders, Euler sampler, Metal flash attention
-- `dit_probe.c` / `dit_sample.c` — mini-DiT sequence-forward spike + flow-matching sampler (standalone; `dit_probe` is a `make` target and a CI gate)
-- `h3_test_gate.sh` — boundary-3 pre-run gate for large-model tests (`check` / `clean`), wraps `drop_page_cache.py`
+- `large_model_gate.sh` — boundary-3 pre-run gate for large-model tests (`check` / `clean`), wraps `drop_page_cache.py`
 - `stratum_metal.m/.h` — Metal GPU acceleration layer (GEMV kernels, batched-B, group dispatch, NC zero-copy)
 - `stratum_q2k/q3k/q4k/q5k/q6k.{h,neon.h,metal}` — quantized kernels (NEON + scalar + Metal shaders)
 - `v199~v217_gate.sh` — bit-exact regression gates (see Testing)
@@ -120,7 +118,7 @@ README's ~77 MB 27B wired-memory figure is measured with MemX enabled.
 
 ### Standalone tools (`stratum/tools/`)
 
-Python GGUF utilities independent of the engine: `make_tiny_model.py` (deterministic generators for `--arch llama/qwen35/qwen35-hybrid/dit/moe`, incl. Q4_K weights), `moe_expert_pack.py` (byte-copy gate|up|down sidecar), oracles (`tiny_moe_oracle.py`, `dit_oracle.py`, `hidden_oracle.py`), `env_census.py` (regenerates `docs/ENVVARS.md`; preserves the hand-maintained H3 appendix), `drop_page_cache.py` + `thermal_report.sh` (boundary-3 hygiene), plus `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
+Python GGUF utilities independent of the engine: `make_tiny_model.py` (deterministic generators for `--arch llama/qwen35/qwen35-hybrid/moe`, incl. Q4_K weights), `moe_expert_pack.py` (byte-copy gate|up|down sidecar), oracles (`tiny_moe_oracle.py`, `hidden_oracle.py`), `env_census.py` (regenerates `docs/ENVVARS.md`), `drop_page_cache.py` + `thermal_report.sh` (boundary-3 hygiene), plus `decode_gguf_ids.py`, `encode_prompt.py`, `gguf_inspect.py`, `quantize_qwen3_5.py`, `lowrank_decompose.py`, etc.
 
 ### Experiment evidence (`stratum/docs/`)
 
@@ -189,7 +187,7 @@ run (`stratum_enforce_boundaries()` in `stratum_engine.h`). Key ones:
 3. **Check memory before big tests**: `vm_stat` free pages and `sysctl vm.swapusage`; abort if the system is under pressure. After a big-model run, return the resident weight pages (`stratum/tools/drop_page_cache.py <model.gguf>`, mincore-verified) so the next test starts from a known cache state
 4. **bit-exact validation**: run `v217_gate.sh` (or the relevant `v*_gate.sh`) — asserts greedy argmax sequence `[2, 220, 16, 13]` and `tok/main >= 8.0`. Any engine change must keep these gates passing. `run_all_gates.sh <model.gguf>` runs every gate in sequence.
 5. **Backend consistency**: `verify_backends.sh <small.gguf>` asserts CPU / GPU-NC / GPU2 greedy sequences are identical (needs metallib). See `docs/VALIDATION.md` for the full matrix — what the gates cover, what they don't, and the per-kernel-change checklist.
-6. **Spike validation (not gates)**: MoE via `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` (numpy cross-check). The same greedy ids must hold for `STRATUM_MOE_AHEAD=0`, the ahead+adapt defaults, `STRATUM_MOE_PACK` with `STRATUM_MOE_PACK_CHECK=1`, and `STRATUM_NGRAM_SPEC`. Mini-DiT via `dit_probe` + `dit_oracle.py` (CI runs it, max|diff| ≤ 5e-7); H3 via `h3_test_gate.sh check` before and `clean <model…>` after every large run, with dump-identity (md5 / max|d|) comparisons — never token argmax.
+6. **Spike validation (not gates)**: MoE via `make_tiny_model.py --arch moe` + `tiny_moe_oracle.py` (numpy cross-check). The same greedy ids must hold for `STRATUM_MOE_AHEAD=0`, the ahead+adapt defaults, `STRATUM_MOE_PACK` with `STRATUM_MOE_PACK_CHECK=1`, and `STRATUM_NGRAM_SPEC`. Use `large_model_gate.sh check` before and `clean <model…>` after every large run.
 7. **Performance reporting**: always report wired (anon) memory alongside wall time and tok/s, plus thermal state (`stratum/tools/thermal_report.sh`; `run_all_gates.sh` records it automatically) — a throttled or swapping run changes tok/s without changing output
 
 ### Determinism & exactness contract

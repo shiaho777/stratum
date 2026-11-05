@@ -16,7 +16,7 @@
 #         projected, needs its full 1.76x-expanded Q2K bytes resident)
 #
 # Protocol:
-#   1. boundary-3 gate (h3_test_gate.sh check)
+#   1. boundary-3 gate (large_model_gate.sh check)
 #   2. warm until weight-cache residency >= 90% AND swap < 60% — a "hot"
 #      number measured while the machine swaps is a streaming number in
 #      disguise (measured: ~5.3 GB/s effective vs ~200 GB/s true hot)
@@ -58,7 +58,7 @@ swap_pct() {
 now() { python3 -c "import time;print(time.time())"; }
 
 echo "== hot_ab: $MODEL =="
-./h3_test_gate.sh check || exit 1
+./large_model_gate.sh check || exit 1
 
 # --- step 2: warm until genuinely hot -------------------------------------
 SP=$(swap_pct)
@@ -79,7 +79,7 @@ done
 if (( resident < 90 )); then
     echo "❌ residency stuck at ${resident}% (<90) — machine can't hold the model."
     echo "   This measurement would be streaming, not hot. Aborting (no fake number)."
-    ./h3_test_gate.sh clean "$MODEL" > /dev/null 2>&1
+    ./large_model_gate.sh clean "$MODEL" > /dev/null 2>&1
     exit 3
 fi
 echo "  ✅ resident ${resident}% — hot regime confirmed"
@@ -156,6 +156,6 @@ else
 fi
 
 # --- step 5: clean ----------------------------------------------------------
-./h3_test_gate.sh clean "$MODEL" 2>&1 | tail -1
-[[ -n "$NIB" ]] && ./h3_test_gate.sh clean "$NIB" 2>&1 | tail -1
+./large_model_gate.sh clean "$MODEL" 2>&1 | tail -1
+[[ -n "$NIB" ]] && ./large_model_gate.sh clean "$NIB" 2>&1 | tail -1
 echo "== done. Record: machine swap was ${SP}% at start; residency ${resident}% =="
