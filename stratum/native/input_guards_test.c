@@ -15,6 +15,7 @@
  */
 #include "stratum_gguf.h"
 #include "stratum_engine.h"
+#include <sys/wait.h>
 
 static int failures = 0;
 
@@ -63,6 +64,21 @@ static void write_case(const char* path, uint64_t n_tensors, uint64_t n_kv,
     fclose(f);
 }
 
+/* Run stratum_enforce_boundaries() in a child: it calls exit(1) on a
+ * forbidden switch, so a direct call would kill the test process. */
+static int boundary_child(const char* name, const char* value) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        freopen("/dev/null", "w", stderr);
+        setenv(name, value, 1);
+        stratum_enforce_boundaries();
+        _exit(0);
+    }
+    int st = 0;
+    if (waitpid(pid, &st, 0) < 0) return -1;
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+}
+
 static int open_expect(const char* label, uint64_t n_tensors, uint64_t n_kv,
                        uint32_t type, uint64_t offset, size_t body, int want) {
     const char* path = "/tmp/stratum_input_guards.gguf";
@@ -94,6 +110,16 @@ int main(void) {
     open_expect("unknown type, offset outside file", 1, 1, 100,
                 1ULL << 40, 512, 0);
     open_expect("unknown type, valid offset accepted", 1, 1, 100, 0, 512, 1);
+    /* header=116B, body_offset=128, body=512 -> mmap_size=640. An offset of
+     * 512 is exactly one-past-end. This is an intentional contract (a
+     * never-dereferenced pointer for an unsupported/zero-length tensor),
+     * pinned by gguf_bounds_test — do not tighten it to >=. */
+    open_expect("unknown type, one-past-end stays accepted", 1, 1, 100,
+                512, 512, 1);
+    /* A hostile type id cast to the enum used to index gguf_type_info with a
+     * negative offset on the error-print path. */
+    CHECK(strcmp(gguf_type_name(0xFFFFFFFFu), "?") == 0,
+          "high type id does not index out of bounds");
 
     /* Corrupt counts must be refused before a giant calloc or a long loop. */
     open_expect("implausible n_tensors", 1ULL << 40, 1,
@@ -129,6 +155,19 @@ int main(void) {
           "valid env KV geometry accepted 64/8");
     unsetenv("STRATUM_MAX_KV");
     unsetenv("STRATUM_KV_SINK");
+
+    /* Forbidden switches: only an explicit "0" is tolerated (the 19 v2xx
+     * gates export STRATUM_KEEP_RESIDENT=0). Non-numeric or fractional
+     * values used to slip through atoi() and bypass the boundary. */
+    unsetenv("STRATUM_Q4_0");
+    CHECK(boundary_child("STRATUM_Q4_0", "0") == 0,
+          "explicit =0 keeps the gate-compatible path");
+    CHECK(boundary_child("STRATUM_Q4_0", "1") == 1, "=1 is refused");
+    CHECK(boundary_child("STRATUM_Q4_0", "true") == 1, "=true is refused");
+    CHECK(boundary_child("STRATUM_Q4_0", "0.5") == 1, "=0.5 is refused");
+    CHECK(boundary_child("STRATUM_Q4_0", "abc") == 1, "=abc is refused");
+    CHECK(boundary_child("STRATUM_KEEP_RESIDENT", "0") == 0,
+          "gate scripts' STRATUM_KEEP_RESIDENT=0 still accepted");
 
     fprintf(stderr, "== input guards: %d failure(s) ==\n", failures);
     return failures ? 1 : 0;

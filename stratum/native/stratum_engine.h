@@ -53,7 +53,11 @@ static inline void stratum_enforce_boundaries(void) {
     };
     for (size_t i = 0; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
         const char* v = getenv(forbidden[i]);
-        if (v && atoi(v) != 0) {
+        /* Only an explicit "0" disables a forbidden switch. "Present means
+         * forbidden" would break all 19 v2xx gate scripts, which export
+         * STRATUM_KEEP_RESIDENT=0; but plain atoi() also accepted =true,
+         * =0.5 and =abc as "off", silently bypassing the boundary. */
+        if (v && !(v[0] == '0' && v[1] == '\0')) {
             fprintf(stderr, "stratum: ERROR: %s is forbidden by project boundary"
                             " (quality / wired-memory) — refusing to run.\n",
                     forbidden[i]);

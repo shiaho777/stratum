@@ -2,7 +2,7 @@
 
 ## Project Identity
 
-Stratum is an inference engine for Transformer models on Apple Silicon that runs with an extremely low wired-memory footprint. Its core advantage is the **mmap streaming architecture** — wired memory is decoupled from model size: ~7 MB anonymous memory runs a 27B dense model. Speed is a secondary goal; the memory advantage is the lifeblood.
+Stratum is an inference engine for Transformer models on Apple Silicon that runs with an extremely low wired-memory footprint. Its core advantage is the **mmap streaming architecture** — wired memory is decoupled from model size: the engine itself needs ~7 MB of anonymous memory for 0.5B–1B models, and ~77 MB for a 27B dense model once its KV/SSM state is counted (weights contribute ~0). Speed is a secondary goal; the memory advantage is the lifeblood.
 
 The engine is a **native C/Metal codebase** (`stratum/native/`). An early Python reference implementation existed but was removed (2026-08) — the native engine is the only maintained line. Python scripts under `stratum/tools/` are standalone GGUF utilities, not part of the engine.
 
@@ -22,7 +22,7 @@ The following boundaries must not be violated, must not be traded away for speed
 
 ### 2. Never increase wired memory
 
-- Wired (anonymous, non-reclaimable) memory must stay at the ~7 MB level
+- Wired (anonymous, non-reclaimable) memory must stay at the ~7 MB engine floor; runtime state (activations, KV cache, SSM state) is allowed and accounts for the ~77 MB measured on the 27B
 - Never mlock the whole model or large weight blocks into physical RAM
 - Never pre-allocate large buffers to cache weights (GPU staging buffers excepted, must be bounded)
 - Weights must be streamed via mmap from the OS page cache; page cache is reclaimable
@@ -34,9 +34,9 @@ The following boundaries must not be violated, must not be traded away for speed
 
 Current rules:
 
-- **Allowed**: per-tensor NoCopy direct-read (`STRATUM_GPU_NC=1`) — each matmul wraps only its own tensor (<100 MB) in a NoCopy buffer, dispatches, and releases. Measured safe and bit-exact on the 27B model.
+- **Allowed**: per-tensor NoCopy direct-read (`STRATUM_GPU_NC=1`) — each matmul wraps only its own tensor in a NoCopy buffer, dispatches, and releases. Measured safe and bit-exact on the 27B model. Single tensors are well under 100 MB in practice; `stratum_metal.m` enforces a hard 1 GiB cap (`STRATUM_METAL_MAX_NOCOPY_BYTES`) at every NoCopy entry so no caller can accidentally register the whole mmap.
 - **Allowed**: batched NC submission (`stratum_metal_nc_batch_*`) — multiple independent matmuls share one command buffer (17.3× vs per-matmul waits).
-- **Forbidden**: registering the whole model (or chunks > ~1 GB) as one NoCopy buffer — this is the V54 failure mode.
+- **Forbidden**: registering the whole model (or chunks > ~1 GB) as one NoCopy buffer — this is the V54 failure mode. `stratum_metal_init` now refuses whole-model registration above 1 GiB outright; small models still use a single sub-1-GiB view (the measured GPU-full path in README).
 - **Forbidden**: `keep_resident` auto mode (locks page cache = implicit mlock). `STRATUM_HOT_FAST` is the sanctioned replacement: it reuses the resident fast path for scheduling but does **not** lock page cache.
 - GPU2 (staging) remains the cold-weight path; measured slower than CPU for hot weights — do not route hot weights to staging.
 
@@ -97,7 +97,7 @@ Stratum targets **any model**, not a specific one. These rules must not be viola
 - `stratum_arch.h` — generic registry interface + generic config loader
 - `stratum_linear.h` — generic quantized linear layers (Q4_K/Q5_K/Q6_K/Q3_K/Q2_K/Q8_0/F16/F32 dispatch)
 - `stratum_engine.h` — generic engine infrastructure (CPU detect/GPU init/madvise/spec decode/memory reporting)
-- `stratum_arch_qwen35.inc.c` — Qwen3.8 hybrid architecture (GGUF arch id: `qwen35`, alias `qwen38`; Gated DeltaNet + full attention), self-registers (~24k lines, the main engine)
+- `stratum_arch_qwen35.inc.c` — Qwen3.8 hybrid architecture (GGUF arch id: `qwen35`, alias `qwen38`; Gated DeltaNet + full attention), self-registers (~25k lines, the main engine)
 - `stratum_arch_llama.inc.c` — Llama/Qwen2/Qwen3 dense architecture, self-registers
 - `stratum_arch_moe.inc.c` — MoE architecture (GGUF arch ids: `llama-moe,llama_moe,moe,olmoe`; experimental), self-registers: dense attention + router top-k expert FFN, deterministic tie-break. Streaming is per-slice `madvise` plus an optional contiguous pack, an ahead hint, and a budgeted hot set (see README "Expert streaming")
 - `h3_*.c`, `te_qwen3vl_step.c`, `stratum_h3_attn.metal` — H3 video-generation spikes (standalone binaries, NOT registered architectures, NOT part of `./stratum`): packed denoiser forward, text encoder, VAE decoders, Euler sampler, Metal flash attention
@@ -221,7 +221,7 @@ What is guaranteed, what is exempt, and what re-validates it — stated explicit
 
 ## Git
 
-- The repository was rebuilt (2026-08) as a clean two-commit history: initial engine + path cleanup. Keep it clean.
+- Keep the history linear (squash merges into `main`) and commits in logical units. An older note here described a 2026-08 rebuild with a "clean two-commit history"; that is stale — the repository has 200+ commits.
 - Commit in logical units with a message covering: what, why, bit-exact gate result, perf data when relevant
 - Never commit: model weights (GGUF/safetensors), binaries, `*.metallib`, `.venv`, `__pycache__`, the fetched MemX dependency dir (`stratum/native/memx/`) — all covered by `.gitignore`
 - Never commit machine-specific absolute paths (`/Users/...`); use relative paths or placeholders

@@ -11234,8 +11234,11 @@ static int q35_stream_init(void) {
             fprintf(stderr, "stream: failed to alloc %zu-byte buffer %d\n", maxlen, s);
             return -1;
         } else {
+            /* Touch every page so the buffer is ready before use. Deliberately
+             * NOT mlock'd: these are bounded per-layer staging buffers whose
+             * pages must stay reclaimable (AGENTS.md wired-memory boundary);
+             * MemX-managed allocations handle their own residency. */
             memset(q35_g_stream_buf[s], 0, maxlen);
-            mlock(q35_g_stream_buf[s], maxlen);
         }
         q35_g_stream_buf_layer[s] = -1;
 #ifdef STRATUM_USE_METAL
