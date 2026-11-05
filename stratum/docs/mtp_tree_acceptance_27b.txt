@@ -13,7 +13,7 @@ Configuration (all runs):
   model               : qwen3.6-27b-mixed.gguf (Q2_K 48% / Q4_K 35% / Q6_K 18%)
   CPU/Metal/SDOT      : CPU-only path (STRATUM_NO_GPU=1); SDOT on
   cache state         : streaming mode — swap 90%, model evicted between
-                        forwards (h3_test_gate.sh check: "streaming mode")
+                        forwards (large_model_gate.sh check: "streaming mode")
   env                 : STRATUM_TREE_B=4 STRATUM_TREE_STATS=1
                         (auto-spec engaged MTP TREE B=7 maxw=2 ngram=6
                         + async I/O by default)

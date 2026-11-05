@@ -150,9 +150,6 @@ input_guards_test: input_guards_test.c $(ENGINE_HDRS)
 	$(CC) -O1 -g -Wno-deprecated-declarations -DACCELERATE_NEW_LAPACK \
 	      -I. -o $@ input_guards_test.c -framework Accelerate -lpthread
 
-dit_probe: dit_probe.c
-	$(CC) -O2 -fblocks -mcpu=apple-m1 -DACCELERATE_NEW_LAPACK -Wno-deprecated-declarations -framework Metal -framework Foundation -o $@ $<
-
 # Offline backend/config comparison for STRATUM_LOGITS_DUMP files
 # (KL(base||candidate), top-1 agreement). See stratum_engine.h for the dump.
 logit_compare: tools_logit_compare.c
@@ -197,7 +194,7 @@ deps: $(MEMX_DYLIB)
 
 clean:
 	rm -f stratum quant_test metal_test spec_sample_test config_geometry_test gguf_bounds_test \
-	      input_guards_test logit_compare dit_probe stratum_metal.o \
+	      input_guards_test logit_compare stratum_metal.o \
 	      stratum_q4k.metallib stratum_q4k.air stratum_archs.gen.h \
 	      stratum_archs.gen.h.tmp
 	rm -rf $(MEMX_HOME)/build

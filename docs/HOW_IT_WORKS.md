@@ -75,7 +75,6 @@ Fused full-GPU decode (`STRATUM_GPU=1 STRATUM_GPU_FULL=1` plus `STRATUM_MAX_KV=8
 | `llama`, `qwen3` | `stratum_arch_llama.inc.c` |
 | `qwen35`, `qwen35moe`, `qwen38` | `stratum_arch_qwen35.inc.c` — Gated DeltaNet plus full attention, and the MTP head |
 | `llama-moe`, `llama_moe`, `moe`, `olmoe` | `stratum_arch_moe.inc.c` |
-| mini-DiT, H3 video | `dit_probe`, `h3_*.c` — separate binaries, not `./stratum` |
 
 Add an architecture by dropping `stratum_arch_<name>.inc.c` next to the others. The Makefile picks it up. `stratum.c` does not grow a name check.
 
@@ -117,5 +116,5 @@ The 1843 MB GPU footprint is the eager KV slab. Weights stay in the file.
 
 - One process, one model. `STRATUM_SERVER` is a serial stdin loop.
 - Dense decode stays on the formula above. MULTISEQ raises aggregate tokens, not the latency of one stream.
-- MoE and H3 have no v199–v217 gate and no memory-floor claim. H3 activations at 768p are gigabytes.
+- MoE has no v199–v217 gate and no memory-floor claim.
 - Apple Silicon only.

@@ -11,9 +11,9 @@ make tests                                  # quant kernels + sampler (no model 
 make check MODEL=/path/to/model.gguf        # tests + one llama-arch smoke
 ./run_all_gates.sh /path/to/qwen35.gguf     # every v*_gate.sh in sequence
 ./verify_backends.sh /path/to/small.gguf    # CPU vs GPU-NC vs GPU2 argmax identity
-./h3_test_gate.sh check                     # boundary-3 pre-run gate for large-model tests
-./h3_test_gate.sh clean <model.gguf>        # release page cache after a large run
-python3 stratum/tools/env_census.py         # regenerate docs/ENVVARS.md (preserves the H3 appendix)
+./large_model_gate.sh check                # boundary-3 pre-run gate for large-model tests
+./large_model_gate.sh clean <model.gguf>     # release page cache after a large run
+python3 stratum/tools/env_census.py         # regenerate docs/ENVVARS.md
 python3 stratum/tools/make_tiny_model.py --arch llama --out /tmp/tiny.gguf
 STRATUM_NO_GPU=1 ./stratum /tmp/tiny.gguf 4 1 2 3 4 5 6 7 8   # llama smoke
 python3 stratum/tools/make_tiny_model.py --arch moe --weights f16 --out /tmp/tinymoe.gguf
@@ -41,12 +41,6 @@ decode settings. **Any engine change must keep every gate passing.**
 
 ## What the gates cover beyond v199–v217
 
-- **mini-DiT sequence forward** (`dit_probe`, a `make` target): CI generates
-  a mini-DiT model (`make_tiny_model.py --arch dit`: packed (t,h,w) grid,
-  MM-RoPE, bidirectional attention, AdaLN-lite) and runs the probe against
-  the torch oracle (`dit_oracle.py`) at max|diff| ≤ 5e-7. `dit_sample.c`
-  adds the flow-matching Euler sampler loop on top (steps=1 must equal one
-  probe forward).
 - **MoE tiny cross-check** (local, not CI): `make_tiny_model.py --arch moe`
   + `tiny_moe_oracle.py` reimplement the `llama-moe` arithmetic (dense
   attention + router top-k expert FFN, deterministic tie-break) in numpy
@@ -58,7 +52,7 @@ decode settings. **Any engine change must keep every gate passing.**
   Q4_K tiny models can disagree with the oracle on a late near-tie; the
   engine modes must still agree with each other. The pack is refused if
   a checked slice differs from the GGUF.
-- **H3 large-run hygiene** (`h3_test_gate.sh`): `check` refuses to start
+- **Large-run hygiene** (`large_model_gate.sh`): `check` refuses to start
   when available memory is < 1 GB or a sibling large-model process is
   running; `clean <model…>` drops the used files from page cache
   (mincore-verified) so the next test starts from a known state.
@@ -73,11 +67,6 @@ decode settings. **Any engine change must keep every gate passing.**
   still have no gate,
 - the **MoE** architecture beyond the tiny oracle (no CI gate, no
   full-scale validation),
-- the **H3 video pipeline** (denoiser / VAE / sampler spikes): validated by
-  dump identity (md5 / max|d| between paths), never by token argmax; int8
-  SDOT is killed there (diffusion has no argmax to hide behind), and the
-  kernels default to the conservative path pending gate decisions — see the
-  `ENVVARS.md` H3 appendix for the current per-kernel status,
 - **small models** (gates target the 27B; small-model argmax identity is
   checked by `verify_backends.sh` on whatever small GGUF you have),
 - **GPU paths** (Metal, GPU2 staging, GPU-NC) — gates are CPU-only,
@@ -107,21 +96,18 @@ full chain, not just the default path:
    unset when re-running the qwen35 v-gates.
 4. If scheduling/IO touched: run the v*_gate.sh for the affected scenario
    (`run_all_gates.sh`).
-5. If the H3/DiT spikes touched: re-run the oracle comparison for that
-   spike (`dit_probe` vs `dit_oracle.py`; `tiny_moe_oracle.py`;
-   H3 packed-dump md5 / max|d| between the affected paths). H3 numerics
-   have their own rule: no int8 prequant in the denoiser, and e2e A/B
-   under swap pressure swings ±9% run-to-run — sub-second effects are only
-   resolvable in micro-benchmarks, never in e2e wall time.
+5. If a GPU kernel changed: re-run `verify_backends.sh` and, for
+   quant dispatch changes, the full `run_all_gates.sh` sequence. Sub-second
+   effects are only resolvable in micro-benchmarks, never in e2e wall time.
 
 ## Before large-model runs
 
 Per AGENTS.md: check `vm_stat` free pages and `sysctl vm.swapusage` first
-(`./h3_test_gate.sh check` automates the refusal conditions); do not start
+(`./large_model_gate.sh check` automates the refusal conditions); do not start
 a 27B run when the system is under pressure or when heavy background
 processes are active. Prefer 1–2 token correctness checks; a full 8-token
 speed run is only acceptable when the model is already hot in page cache
-and free memory allows. After the run, `./h3_test_gate.sh clean <model…>`
+and free memory allows. After the run, `./large_model_gate.sh clean <model…>`
 returns the resident weight pages so the next test starts from a known
 cache state.
 
@@ -130,7 +116,4 @@ cache state.
 `stratum/tools/env_census.py` regenerates `docs/ENVVARS.md` — the single map
 of every `STRATUM_*` switch, its call sites, and its
 sanctioned/forbidden/experimental status. Re-run it whenever a switch is
-added, removed, or reclassified. The script preserves the hand-maintained
-H3 appendix below the generated table (H3 spike switches are mostly `H3_*`
-without the `STRATUM_` prefix, so the scan cannot see them — edit that
-section by hand, never by re-running the census).
+added, removed, or reclassified.

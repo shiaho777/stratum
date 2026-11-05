@@ -26,7 +26,7 @@ No weights needed — `make check` generates deterministic tiny models.
 | `docs/HOW_IT_WORKS.md` | The stream, MoE, MTP, Metal, measurements |
 | `AGENTS.md` | Development guide: boundaries, env vars, determinism contract |
 | `stratum/docs/VALIDATION.md` | What the gates cover and don't |
-| `stratum/docs/ENVVARS.md` | All STRATUM_* switches (generated table + hand-maintained H3 appendix) — regenerate with `python3 stratum/tools/env_census.py` |
+| `stratum/docs/ENVVARS.md` | All STRATUM_* switches (generated table) — regenerate with `python3 stratum/tools/env_census.py` |
 
 ## Hard boundaries
 
@@ -44,9 +44,6 @@ call `STRATUM_REGISTER_ARCH()`. The Makefile auto-collects `*.inc.c` files.
 See `stratum_arch_llama.inc.c` (~1.3k lines) for a minimal example,
 `stratum_arch_moe.inc.c` for an experimental one.
 
-Standalone spikes (`h3_*.c`, `dit_*.c`, `te_*.c`) are NOT architectures —
-they are separate binaries with their own mains. Do not register them;
-document their switches in the `ENVVARS.md` H3 appendix by hand.
 
 ## Code style
 
