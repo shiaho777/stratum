@@ -99,20 +99,19 @@ gguf_w16_convert: tools_gguf_w16_convert.c
 	$(CC) -O2 -o $@ tools_gguf_w16_convert.c
 
 # AMX w16 kernel microbenchmark / correctness gate (synthetic type-43 blob).
-bench_w16_amx: bench_w16_amx.c stratum_q4k_w16_amx.h stratum_linear.h \
-               stratum_gguf.h stratum_q4k.h stratum_q4k_neon.h
+bench_w16_amx: bench_w16_amx.c $(ENGINE_HDRS)
 	$(CC) $(CFLAGS) -o $@ bench_w16_amx.c $(LDFLAGS)
 
 # Single-stream Q4_K SDOT kernel-restructure probe (v2/v3 variants; the v3
 # f32-vector accumulator is what became q4k_dot_row_sdot_f).
-bench_single_q4k: bench_single_q4k.c stratum_q4k.h stratum_q4k_neon.h
+bench_single_q4k: bench_single_q4k.c $(ENGINE_HDRS)
 	$(CC) -O3 -ffast-math -mcpu=apple-m1 -o $@ bench_single_q4k.c
 
 # Batched-decode kernel shootout (A/M1/M2/M3; see docs/PERF-ROADMAP.md).
-bench_batch_q4k: bench_batch_q4k.c stratum_q4k.h stratum_q4k_neon.h
+bench_batch_q4k: bench_batch_q4k.c $(ENGINE_HDRS)
 	$(CC) -O3 -ffast-math -mcpu=apple-m1 -o $@ bench_batch_q4k.c -framework Accelerate
 
-stratum_metal.o: stratum_metal.m stratum_metal.h
+stratum_metal.o: stratum_metal.m $(ENGINE_HDRS)
 	$(CC) -ObjC -O3 -fobjc-arc -c stratum_metal.m -o stratum_metal.o
 
 stratum_q4k.metallib: stratum_q4k.metal stratum_q5k.metal stratum_q6k.metal stratum_q2k.metal
@@ -128,22 +127,20 @@ stratum_q4k.metallib: stratum_q4k.metal stratum_q5k.metal stratum_q6k.metal stra
 # it depends on stratum_prefetch.h, which no longer exists, so it is NOT
 # buildable and has no build target. See stratum_p35.c header comment.
 
-quant_test: quant_test.c stratum_q2k.h stratum_q2k_neon.h stratum_q3k.h stratum_q3k_neon.h stratum_q4k.h \
-            stratum_q4k_neon.h stratum_q5k.h stratum_q5k_neon.h \
-            stratum_q6k.h stratum_q6k_neon.h stratum_q8_0.h stratum_bf16.h
+quant_test: quant_test.c $(ENGINE_HDRS)
 	$(CC) -O3 -ffast-math -fblocks -mcpu=apple-m1 -o $@ quant_test.c
 
-metal_test: metal_test.c stratum_metal.o stratum_q4k.metallib
+metal_test: metal_test.c $(ENGINE_HDRS) stratum_metal.o stratum_q4k.metallib
 	$(CC) -O3 -ffast-math -fobjc-arc -framework Metal -framework Foundation \
 	    -o $@ metal_test.c stratum_metal.o
 
 spec_sample_test: spec_sample_test.c
 	$(CC) -O2 -o $@ spec_sample_test.c
 
-config_geometry_test: config_geometry_test.c stratum_arch.h stratum_gguf.h stratum_memx.h
+config_geometry_test: config_geometry_test.c $(ENGINE_HDRS)
 	$(CC) -O1 -g -o $@ config_geometry_test.c
 
-gguf_bounds_test: gguf_bounds_test.c stratum_gguf.h stratum_memx.h
+gguf_bounds_test: gguf_bounds_test.c $(ENGINE_HDRS)
 	$(CC) -O1 -g -o $@ gguf_bounds_test.c
 
 # Model-free regression for the GGUF parser guards and KV geometry.

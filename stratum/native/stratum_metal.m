@@ -230,6 +230,12 @@ static size_t                     g_ybuf_size = 0;
 #define STRATUM_METAL_MAX_CHUNKS 16
 #define STRATUM_METAL_CHUNK_SIZE  ((size_t)10 * 1024 * 1024 * 1024)
 #define STRATUM_METAL_STEP        ((size_t) 8 * 1024 * 1024 * 1024)
+/* AGENTS.md boundary 2a forbids a whole-model (or >~1 GiB) NoCopy view:
+ * that single-chunk registration is the V54 wired-memory blowup. The
+ * device's maxBufferLength is NOT a safe limit (~14 GiB on M4 Pro). Keep
+ * the documented cap here so the boundary is enforced by code, not by a
+ * comment at the call site. */
+#define STRATUM_METAL_MAX_NOCOPY_BYTES ((size_t)1 * 1024 * 1024 * 1024)
 static id<MTLBuffer>              g_model_chunks[STRATUM_METAL_MAX_CHUNKS] = {nil};
 static int                        g_model_n_chunks = 0;
 static const void*                g_model_base = NULL;
@@ -685,6 +691,19 @@ int stratum_metal_init(const char* metallib_path,
         #undef LOAD_PSO_Q
 
         if (model_base && model_size) {
+            /* V54 failure mode: one NoCopy view over the entire mmap wires
+             * the whole model on first GPU touch. Small models legitimately
+             * use a single <1 GiB view (README GPU-full measurements), but
+             * a large model must go through per-tensor NoCopy / CPU instead.
+             * maxBufferLength alone would allow an 11.98 GB model here. */
+            if (model_size > STRATUM_METAL_MAX_NOCOPY_BYTES) {
+                fprintf(stderr,
+                    "  Metal: refusing whole-model NoCopy registration for a "
+                    "%.2f GiB model (1 GiB cap, AGENTS.md boundary 2a); "
+                    "use STRATUM_GPU_NC=1 or the CPU path for large models\n",
+                    (double)model_size / (1024.0 * 1024.0 * 1024.0));
+                return -1;
+            }
             g_model_base = model_base;
             g_model_size = model_size;
 
@@ -2973,7 +2992,8 @@ int stratum_metal_staged_sgemv(int handle, uint64_t woff, int gguf_type,
  * (<50MB, release after use)" GPU mode. */
 int stratum_metal_nc_sgemv2(const void* wptr, size_t nbytes, int gguf_type,
                             const float* x, float* y, int N, int K, int B) {
-    if (!wptr || nbytes == 0 || !g_device) return -1;
+    if (!wptr || nbytes == 0 || nbytes > STRATUM_METAL_MAX_NOCOPY_BYTES ||
+        !g_device) return -1;
     id<MTLComputePipelineState> pso, bpso;
     switch (gguf_type) {
         case 10: pso = g_q2k_sgemv;  bpso = (B >= 1 && B <= 32) ? g_q2k_sgemv_b[B] : nil; break;
@@ -3668,6 +3688,7 @@ static NCWReg g_ncw_cache[NCW_SLOTS];
 static int g_ncw_cache_on = -1;
 
 static id<MTLBuffer> nc_window_cached(void* aptr, size_t alen) {
+    if (!aptr || alen == 0 || alen > STRATUM_METAL_MAX_NOCOPY_BYTES) return nil;
     if (g_ncw_cache_on < 0) {
         const char* e = getenv("STRATUM_NC_WCACHE");
         g_ncw_cache_on = (e && atoi(e)) ? 1 : 0;
@@ -3858,7 +3879,8 @@ int stratum_metal_nc_batch_add(const void* wptr, size_t nbytes, int gguf_type,
 int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf_type,
                                const float* x, float* y, int N, int K, int B,
                                int xstride, int ystride) {
-    if (!wptr || nbytes == 0 || !g_device) return -1;
+    if (!wptr || nbytes == 0 || nbytes > STRATUM_METAL_MAX_NOCOPY_BYTES ||
+        !g_device) return -1;
     if (g_ncb_ny >= 512) return -1;
     /* stride==dim fast path: rows are contiguous in caller memory, so
      * normalize to the compact form — staging copy-in and flush copy-back
@@ -4078,7 +4100,8 @@ int stratum_metal_nc_batch_add_strided(const void* wptr, size_t nbytes, int gguf
 
 int stratum_metal_nc_batch_add_streams(const void* wptr, size_t nbytes, int gguf_type,
                                       const float* x, float* const* ys, int N, int K, int B) {
-    if (!wptr || nbytes == 0 || !g_device) return -1;
+    if (!wptr || nbytes == 0 || nbytes > STRATUM_METAL_MAX_NOCOPY_BYTES ||
+        !g_device) return -1;
     if (g_ncb_ny >= 512) return -1;
     if (!g_ncb_cmd) return -2;   /* caller falls back to sync nc_sgemv2 */
     /* 2D bparallel path mirrors nc_batch_add: only for B>32, where the

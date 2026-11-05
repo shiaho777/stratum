@@ -78,8 +78,12 @@ static const GgmlTypeInfo gguf_type_info[] = {
     [GGML_TYPE_Q6K_W16] = { 1,  2,   "Q6K_W16" },
 };
 
-static inline int64_t gguf_tensor_bytes(GgmlType t, int64_t nelem) {
-    if ((int)t < 0 || t >= GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return -1;
+/* Take uint32_t, not GgmlType: a hostile type id cast to the enum can be
+ * negative (implementation-defined underlying type), which would make
+ * `t >= GGML_TYPE_COUNT` false and index gguf_type_info with a negative
+ * offset. An unsigned id has exactly one well-defined out-of-range answer. */
+static inline int64_t gguf_tensor_bytes(uint32_t t, int64_t nelem) {
+    if (t >= (uint32_t)GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return -1;
     if (nelem < 0) return -1;
     int eb = gguf_type_info[t].elements_per_block;
     int bb = gguf_type_info[t].bytes_per_block;
@@ -93,8 +97,8 @@ static inline int64_t gguf_tensor_bytes(GgmlType t, int64_t nelem) {
     return nblk * (int64_t)bb;
 }
 
-static inline const char* gguf_type_name(GgmlType t) {
-    if (t >= GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return "?";
+static inline const char* gguf_type_name(uint32_t t) {
+    if (t >= (uint32_t)GGML_TYPE_COUNT || gguf_type_info[t].name == NULL) return "?";
     return gguf_type_info[t].name;
 }
 
@@ -385,6 +389,12 @@ static int gguf_open(const char* path, Gguf* gguf) {
          * its size is not computable (unknown / extension quant type) —
          * that is the existing "size not computable" path, but the pointer
          * itself still has to be safe to dereference. */
+        /* Reject offsets past the end of the mapping even for unknown quant
+         * types, whose size is not computable and therefore skips the size
+         * check below. An offset equal to mmap_size stays allowed on purpose:
+         * it is a one-past-end pointer that is never dereferenced (a
+         * zero-length or unsupported tensor). gguf_bounds_test pins this
+         * contract, and config_geometry_test builds a file that relies on it. */
         if (t->offset > gguf->mmap_size) {
             fprintf(stderr,
                     "gguf_open: tensor %s type=%s offset %llu exceeds file "
